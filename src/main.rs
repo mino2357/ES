@@ -72,6 +72,8 @@ struct Observation {
     air_flow_gps: f64,
     trapped_air_mg: f64,
     imep_bar: f64,
+    wiebe_phase_deg: f64,
+    wiebe_burn_rate: f64,
     stable_idle: bool,
     pv_points: Vec<(f64, f64)>,
 }
@@ -151,11 +153,33 @@ impl Simulator {
             && rpm > 120.0
             && self.intake.pressure_pa > 28_000.0;
 
+        let cycle_angle_deg = self.engine.crank_angle_rad.to_degrees();
+        let wiebe_burn_rate = wiebe_combustion_rate(
+            cycle_angle_deg,
+            self.params.cylinders,
+            365.0 + self.control.vvt_intake_deg * 0.2,
+            70.0,
+            5.0,
+            2.0,
+        );
+
         let torque_combustion = if combustion_enabled {
             self.engine.running = true;
-            indicated_torque(trapped_air, self.control.throttle, rpm)
+            indicated_torque(
+                trapped_air,
+                self.control.throttle,
+                rpm,
+                self.params.cylinders,
+                wiebe_burn_rate,
+            )
         } else if self.engine.running && self.control.fuel_on && self.control.spark_on {
-            indicated_torque(trapped_air, self.control.throttle, rpm) * 0.65
+            indicated_torque(
+                trapped_air,
+                self.control.throttle,
+                rpm,
+                self.params.cylinders,
+                wiebe_burn_rate,
+            ) * 0.65
         } else {
             self.engine.running = false;
             0.0
@@ -197,6 +221,8 @@ impl Simulator {
             air_flow_gps: m_dot_throttle * 1e3,
             trapped_air_mg: trapped_air * 1e6,
             imep_bar: imep_pa * 1e-5,
+            wiebe_phase_deg: cycle_angle_deg,
+            wiebe_burn_rate,
             stable_idle: self.engine.running
                 && (rpm - IDLE_TARGET_RPM).abs() < 120.0
                 && self.control.throttle < 0.18,
@@ -227,15 +253,59 @@ fn trapped_air_mass(displacement: f64, ve: f64, map_pa: f64, t: f64, cylinders: 
     cyl_vol * ve * map_pa / (R_AIR * t)
 }
 
-fn indicated_torque(trapped_air_kg: f64, throttle: f64, rpm: f64) -> f64 {
+fn indicated_torque(
+    trapped_air_kg: f64,
+    throttle: f64,
+    rpm: f64,
+    cylinders: usize,
+    wiebe_burn_rate: f64,
+) -> f64 {
     let lambda_eff = (0.7 + 0.6 * throttle).clamp(0.65, 1.15);
     let lhv = 43e6;
     let afr = 14.7 / lambda_eff;
     let fuel_mass = trapped_air_kg / afr;
     let eta = (0.2 + 0.13 * throttle - 0.00002 * (rpm - 2500.0).abs()).clamp(0.12, 0.35);
     let work_per_cyl_cycle = fuel_mass * lhv * eta;
-    let total_work = work_per_cyl_cycle * 4.0;
-    total_work / (4.0 * PI)
+    let total_work = work_per_cyl_cycle * cylinders as f64;
+    let mean_torque = total_work / (4.0 * PI);
+    mean_torque * wiebe_burn_rate.clamp(0.0, 6.0)
+}
+
+fn wiebe_combustion_rate(
+    cycle_angle_deg: f64,
+    cylinders: usize,
+    start_deg: f64,
+    duration_deg: f64,
+    a: f64,
+    m: f64,
+) -> f64 {
+    let mut dxb_sum = 0.0;
+    let firing_interval = 720.0 / cylinders as f64;
+
+    for cyl in 0..cylinders {
+        let phase_offset = cyl as f64 * firing_interval;
+        let mut theta = cycle_angle_deg - phase_offset;
+        while theta < 0.0 {
+            theta += 720.0;
+        }
+        while theta >= 720.0 {
+            theta -= 720.0;
+        }
+
+        let x = (theta - start_deg) / duration_deg;
+        if (0.0..=1.0).contains(&x) {
+            let dxb_dtheta =
+                a * (m + 1.0) / duration_deg * x.powf(m) * (-a * x.powf(m + 1.0)).exp();
+            dxb_sum += dxb_dtheta;
+        }
+    }
+
+    let mean_rate = cylinders as f64 / 720.0;
+    if mean_rate > 0.0 {
+        dxb_sum / mean_rate
+    } else {
+        0.0
+    }
 }
 
 fn starter_torque(rpm: f64) -> f64 {
@@ -304,9 +374,11 @@ fn draw_ui(sim: &Simulator, obs: &Observation) -> std::io::Result<()> {
         out,
         "          [w/x] throttle +/-  [a/z] intake VVT +/-  [k/m] exhaust VVT +/-"
     )?;
+    writeln!(out, "          [2/3/4/6/8] cylinder count")?;
     writeln!(out)?;
 
     writeln!(out, "Throttle: {:>5.1}%", sim.control.throttle * 100.0)?;
+    writeln!(out, "Cylinders: {}", sim.params.cylinders)?;
     writeln!(out, "Starter : {}", flag(sim.control.starter_on))?;
     writeln!(out, "Spark   : {}", flag(sim.control.spark_on))?;
     writeln!(out, "Fuel    : {}", flag(sim.control.fuel_on))?;
@@ -329,6 +401,8 @@ fn draw_ui(sim: &Simulator, obs: &Observation) -> std::io::Result<()> {
     writeln!(out, "Starter torque   : {:>7.2} Nm", obs.torque_starter_nm)?;
     writeln!(out, "Friction torque  : {:>7.2} Nm", obs.torque_friction_nm)?;
     writeln!(out, "IMEP             : {:>7.2} bar", obs.imep_bar)?;
+    writeln!(out, "Wiebe phase      : {:>7.1} deg", obs.wiebe_phase_deg)?;
+    writeln!(out, "Wiebe burn rate  : {:>7.2} (-)", obs.wiebe_burn_rate)?;
     writeln!(
         out,
         "State            : {}",
@@ -456,6 +530,11 @@ fn handle_key(sim: &mut Simulator, b: u8) -> bool {
         'z' => sim.control.vvt_intake_deg = (sim.control.vvt_intake_deg - 1.0).clamp(-40.0, 40.0),
         'k' => sim.control.vvt_exhaust_deg = (sim.control.vvt_exhaust_deg + 1.0).clamp(-40.0, 40.0),
         'm' => sim.control.vvt_exhaust_deg = (sim.control.vvt_exhaust_deg - 1.0).clamp(-40.0, 40.0),
+        '2' => sim.params.cylinders = 2,
+        '3' => sim.params.cylinders = 3,
+        '4' => sim.params.cylinders = 4,
+        '6' => sim.params.cylinders = 6,
+        '8' => sim.params.cylinders = 8,
         _ => {}
     }
     false
