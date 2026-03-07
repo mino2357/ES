@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
-use std::io::{Read, Write, stdin, stdout};
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use eframe::egui;
+use egui_plot::{Line, Plot, PlotPoints};
 
 const R_AIR: f64 = 287.0;
 const T_AIR: f64 = 300.0;
@@ -62,7 +63,7 @@ struct EngineState {
     cycle_phase: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Observation {
     rpm: f64,
     map_kpa: f64,
@@ -111,7 +112,7 @@ impl Simulator {
                 running: false,
                 cycle_phase: 0.0,
             },
-            history_rpm: VecDeque::with_capacity(200),
+            history_rpm: VecDeque::with_capacity(500),
         }
     }
 
@@ -232,6 +233,160 @@ impl Simulator {
                 self.exhaust.pressure_pa,
             ),
         }
+    }
+}
+
+struct DashboardApp {
+    sim: Simulator,
+    latest: Observation,
+    last_tick: Instant,
+}
+
+impl DashboardApp {
+    fn new() -> Self {
+        let mut sim = Simulator::new();
+        let latest = sim.step(DT);
+        Self {
+            sim,
+            latest,
+            last_tick: Instant::now(),
+        }
+    }
+
+    fn apply_shortcuts(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::Q) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if i.key_pressed(egui::Key::S) {
+                self.sim.control.starter_on = !self.sim.control.starter_on;
+            }
+            if i.key_pressed(egui::Key::I) {
+                self.sim.control.spark_on = !self.sim.control.spark_on;
+            }
+            if i.key_pressed(egui::Key::F) {
+                self.sim.control.fuel_on = !self.sim.control.fuel_on;
+            }
+            if i.key_pressed(egui::Key::W) {
+                self.sim.control.throttle = (self.sim.control.throttle + 0.01).clamp(0.0, 1.0);
+            }
+            if i.key_pressed(egui::Key::X) {
+                self.sim.control.throttle = (self.sim.control.throttle - 0.01).clamp(0.0, 1.0);
+            }
+        });
+    }
+
+    fn advance_simulation(&mut self) {
+        let now = Instant::now();
+        let mut steps = ((now - self.last_tick).as_secs_f64() / DT).floor() as usize;
+        steps = steps.clamp(1, 16);
+
+        for _ in 0..steps {
+            self.latest = self.sim.step(DT);
+        }
+        self.last_tick = now;
+    }
+}
+
+impl eframe::App for DashboardApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.apply_shortcuts(ctx);
+        self.advance_simulation();
+
+        egui::TopBottomPanel::top("header").show(ctx, |ui| {
+            ui.heading("4-stroke Engine Start / Idle Realtime Dashboard");
+            ui.label("Shortcut: [Q] quit [S] starter [I] spark [F] fuel [W/X] throttle ±");
+        });
+
+        egui::SidePanel::left("controls").show(ctx, |ui| {
+            ui.heading("Controls");
+            ui.add(egui::Slider::new(&mut self.sim.control.throttle, 0.0..=1.0).text("Throttle"));
+            ui.checkbox(&mut self.sim.control.starter_on, "Starter");
+            ui.checkbox(&mut self.sim.control.spark_on, "Spark");
+            ui.checkbox(&mut self.sim.control.fuel_on, "Fuel");
+            ui.add(
+                egui::Slider::new(&mut self.sim.control.vvt_intake_deg, -40.0..=40.0)
+                    .text("VVT Intake [deg]"),
+            );
+            ui.add(
+                egui::Slider::new(&mut self.sim.control.vvt_exhaust_deg, -40.0..=40.0)
+                    .text("VVT Exhaust [deg]"),
+            );
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                for cyl in [2, 3, 4, 6, 8] {
+                    ui.selectable_value(&mut self.sim.params.cylinders, cyl, format!("{cyl} cyl"));
+                }
+            });
+            ui.separator();
+            ui.label(if self.latest.stable_idle {
+                "State: IDLE STABLE"
+            } else {
+                "State: TRANSIENT"
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.columns(2, |columns| {
+                columns[0].group(|ui| {
+                    ui.label(format!("RPM: {:.1}", self.latest.rpm));
+                    ui.label(format!("MAP: {:.1} kPa", self.latest.map_kpa));
+                    ui.label(format!("Air flow: {:.2} g/s", self.latest.air_flow_gps));
+                    ui.label(format!(
+                        "Trapped air: {:.2} mg/cyl",
+                        self.latest.trapped_air_mg
+                    ));
+                    ui.label(format!(
+                        "Torque (comb/starter/friction): {:.2} / {:.2} / {:.2} Nm",
+                        self.latest.torque_combustion_nm,
+                        self.latest.torque_starter_nm,
+                        self.latest.torque_friction_nm
+                    ));
+                    ui.label(format!("IMEP: {:.2} bar", self.latest.imep_bar));
+                    ui.label(format!(
+                        "Wiebe phase/rate: {:.1} deg / {:.2}",
+                        self.latest.wiebe_phase_deg, self.latest.wiebe_burn_rate
+                    ));
+                });
+
+                columns[1].group(|ui| {
+                    let rpm_points: PlotPoints<'_> = self
+                        .sim
+                        .history_rpm
+                        .iter()
+                        .enumerate()
+                        .map(|(i, rpm)| [i as f64, *rpm])
+                        .collect();
+                    let rpm_line = Line::new("RPM", rpm_points).color(egui::Color32::LIGHT_GREEN);
+                    Plot::new("rpm_plot")
+                        .height(200.0)
+                        .allow_scroll(false)
+                        .allow_drag(false)
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(rpm_line);
+                        });
+
+                    let pv_points: PlotPoints<'_> = self
+                        .latest
+                        .pv_points
+                        .iter()
+                        .map(|(v, p)| [*v, *p * 1e-3])
+                        .collect();
+                    let pv_line = Line::new("p-V", pv_points)
+                        .color(egui::Color32::from_rgb(255, 170, 40))
+                        .width(2.0);
+                    Plot::new("pv_plot")
+                        .height(200.0)
+                        .allow_scroll(false)
+                        .allow_drag(false)
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(pv_line);
+                        });
+                });
+            });
+        });
+
+        ctx.request_repaint();
     }
 }
 
@@ -364,219 +519,15 @@ fn rad_s_to_rpm(rad_s: f64) -> f64 {
     rad_s * 60.0 / (2.0 * PI)
 }
 
-fn draw_ui(sim: &Simulator, obs: &Observation) -> std::io::Result<()> {
-    let mut out = stdout();
-    write!(out, "\x1b[2J\x1b[H")?;
-    writeln!(out, "4-stroke Engine Start/Idle Simulator (Rust)")?;
-    writeln!(out, "================================================")?;
-    writeln!(out, "Controls: [q] quit  [s] starter  [i] spark  [f] fuel")?;
-    writeln!(
-        out,
-        "          [w/x] throttle +/-  [a/z] intake VVT +/-  [k/m] exhaust VVT +/-"
-    )?;
-    writeln!(out, "          [2/3/4/6/8] cylinder count")?;
-    writeln!(out)?;
-
-    writeln!(out, "Throttle: {:>5.1}%", sim.control.throttle * 100.0)?;
-    writeln!(out, "Cylinders: {}", sim.params.cylinders)?;
-    writeln!(out, "Starter : {}", flag(sim.control.starter_on))?;
-    writeln!(out, "Spark   : {}", flag(sim.control.spark_on))?;
-    writeln!(out, "Fuel    : {}", flag(sim.control.fuel_on))?;
-    writeln!(
-        out,
-        "VVT(I/E): {:+5.1} / {:+5.1} deg",
-        sim.control.vvt_intake_deg, sim.control.vvt_exhaust_deg
-    )?;
-    writeln!(out)?;
-
-    writeln!(out, "RPM              : {:>7.1}", obs.rpm)?;
-    writeln!(out, "MAP              : {:>7.1} kPa", obs.map_kpa)?;
-    writeln!(out, "Air flow         : {:>7.2} g/s", obs.air_flow_gps)?;
-    writeln!(out, "Trapped air      : {:>7.2} mg/cyl", obs.trapped_air_mg)?;
-    writeln!(
-        out,
-        "Comb torque      : {:>7.2} Nm",
-        obs.torque_combustion_nm
-    )?;
-    writeln!(out, "Starter torque   : {:>7.2} Nm", obs.torque_starter_nm)?;
-    writeln!(out, "Friction torque  : {:>7.2} Nm", obs.torque_friction_nm)?;
-    writeln!(out, "IMEP             : {:>7.2} bar", obs.imep_bar)?;
-    writeln!(out, "Wiebe phase      : {:>7.1} deg", obs.wiebe_phase_deg)?;
-    writeln!(out, "Wiebe burn rate  : {:>7.2} (-)", obs.wiebe_burn_rate)?;
-    writeln!(
-        out,
-        "State            : {}",
-        if obs.stable_idle {
-            "IDLE STABLE"
-        } else {
-            "TRANSIENT"
-        }
-    )?;
-
-    writeln!(out, "\nRPM trend:")?;
-    draw_sparkline(&mut out, sim.history_rpm.iter().copied().collect(), 64, 8)?;
-
-    writeln!(out, "\nApproximate p-V diagram:")?;
-    draw_xy_plot(&mut out, &obs.pv_points, 48, 12)?;
-
-    out.flush()?;
-    Ok(())
-}
-
-fn draw_sparkline<W: Write>(
-    out: &mut W,
-    values: Vec<f64>,
-    width: usize,
-    height: usize,
-) -> std::io::Result<()> {
-    if values.is_empty() {
-        return Ok(());
-    }
-
-    let max = values
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max)
-        .max(1.0);
-    let min = values
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min)
-        .min(max - 1.0);
-
-    let mut canvas = vec![vec![' '; width]; height];
-    let step = (values.len().max(width) as f64 / width as f64).max(1.0);
-
-    for x in 0..width {
-        let idx = ((x as f64 * step) as usize).min(values.len() - 1);
-        let v = values[idx];
-        let y = ((v - min) / (max - min + 1e-6) * ((height - 1) as f64)).round() as usize;
-        let row = height - 1 - y.min(height - 1);
-        canvas[row][x] = '*';
-    }
-
-    for row in canvas {
-        let line: String = row.into_iter().collect();
-        writeln!(out, "{}", line)?;
-    }
-    writeln!(out, "min:{:.0} rpm  max:{:.0} rpm", min, max)?;
-    Ok(())
-}
-
-fn draw_xy_plot<W: Write>(
-    out: &mut W,
-    points: &[(f64, f64)],
-    width: usize,
-    height: usize,
-) -> std::io::Result<()> {
-    if points.is_empty() {
-        return Ok(());
-    }
-
-    let (v_min, v_max) = points
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), (v, _)| {
-            (mn.min(*v), mx.max(*v))
-        });
-    let (p_min, p_max) = points
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), (_, p)| {
-            (mn.min(*p), mx.max(*p))
-        });
-
-    let mut canvas = vec![vec![' '; width]; height];
-    for (v, p) in points {
-        let x = (((v - v_min) / (v_max - v_min + 1e-12)) * ((width - 1) as f64)).round() as usize;
-        let y = (((p - p_min) / (p_max - p_min + 1e-12)) * ((height - 1) as f64)).round() as usize;
-        let row = height - 1 - y.min(height - 1);
-        let col = x.min(width - 1);
-        canvas[row][col] = 'o';
-    }
-
-    for row in canvas {
-        let line: String = row.into_iter().collect();
-        writeln!(out, "{}", line)?;
-    }
-    writeln!(
-        out,
-        "Vn [{:.2}..{:.2}]  p [{:.0}..{:.0}] Pa",
-        v_min, v_max, p_min, p_max
-    )?;
-    Ok(())
-}
-
-fn flag(on: bool) -> &'static str {
-    if on { "ON" } else { "OFF" }
-}
-
-fn set_raw_mode(enable: bool) {
-    let cmd = if enable {
-        "stty -icanon -echo min 0 time 0"
-    } else {
-        "stty sane"
-    };
-    let _ = Command::new("sh").arg("-c").arg(cmd).status();
-}
-
-fn handle_key(sim: &mut Simulator, b: u8) -> bool {
-    match b as char {
-        'q' => return true,
-        's' => sim.control.starter_on = !sim.control.starter_on,
-        'i' => sim.control.spark_on = !sim.control.spark_on,
-        'f' => sim.control.fuel_on = !sim.control.fuel_on,
-        'w' => sim.control.throttle = (sim.control.throttle + 0.01).clamp(0.0, 1.0),
-        'x' => sim.control.throttle = (sim.control.throttle - 0.01).clamp(0.0, 1.0),
-        'a' => sim.control.vvt_intake_deg = (sim.control.vvt_intake_deg + 1.0).clamp(-40.0, 40.0),
-        'z' => sim.control.vvt_intake_deg = (sim.control.vvt_intake_deg - 1.0).clamp(-40.0, 40.0),
-        'k' => sim.control.vvt_exhaust_deg = (sim.control.vvt_exhaust_deg + 1.0).clamp(-40.0, 40.0),
-        'm' => sim.control.vvt_exhaust_deg = (sim.control.vvt_exhaust_deg - 1.0).clamp(-40.0, 40.0),
-        '2' => sim.params.cylinders = 2,
-        '3' => sim.params.cylinders = 3,
-        '4' => sim.params.cylinders = 4,
-        '6' => sim.params.cylinders = 6,
-        '8' => sim.params.cylinders = 8,
-        _ => {}
-    }
-    false
-}
-
-fn main() -> std::io::Result<()> {
-    set_raw_mode(true);
-    print!("\x1b[?1049h\x1b[?25l");
-    stdout().flush()?;
-
-    let mut sim = Simulator::new();
-    let mut last_tick = Instant::now();
-    let mut input = stdin();
-    let mut buf = [0u8; 64];
-
-    let run_result = 'mainloop: loop {
-        match input.read(&mut buf) {
-            Ok(n) if n > 0 => {
-                for b in &buf[..n] {
-                    if handle_key(&mut sim, *b) {
-                        break 'mainloop Ok(());
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(_) => {}
-        }
-
-        let now = Instant::now();
-        let elapsed = now.duration_since(last_tick);
-        if elapsed.as_secs_f64() >= DT {
-            last_tick = now;
-            let obs = sim.step(DT);
-            draw_ui(&sim, &obs)?;
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+fn main() -> eframe::Result {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 760.0]),
+        ..Default::default()
     };
 
-    print!("\x1b[?25h\x1b[?1049l");
-    stdout().flush()?;
-    set_raw_mode(false);
-
-    run_result
+    eframe::run_native(
+        "ES Simulator Dashboard",
+        options,
+        Box::new(|_cc| Ok(Box::new(DashboardApp::new()))),
+    )
 }
