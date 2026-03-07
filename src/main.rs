@@ -1,9 +1,13 @@
 use std::collections::VecDeque;
+use std::f32::consts::PI as PI_F32;
 use std::f64::consts::PI;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
+use rodio::{OutputStream, Sink, Source};
 
 const R_AIR: f64 = 287.0;
 const T_AIR: f64 = 300.0;
@@ -76,7 +80,199 @@ struct Observation {
     wiebe_phase_deg: f64,
     wiebe_burn_rate: f64,
     stable_idle: bool,
+    exhaust_kpa: f64,
+    exhaust_pulse_norm: f64,
     pv_points: Vec<(f64, f64)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioParams {
+    rpm: f32,
+    throttle: f32,
+    torque_norm: f32,
+    starter_on: bool,
+    running: bool,
+    cylinders: usize,
+    exhaust_pressure_norm: f32,
+    exhaust_pulse_norm: f32,
+}
+
+impl Default for AudioParams {
+    fn default() -> Self {
+        Self {
+            rpm: 0.0,
+            throttle: 0.0,
+            torque_norm: 0.0,
+            starter_on: false,
+            running: false,
+            cylinders: 4,
+            exhaust_pressure_norm: 0.0,
+            exhaust_pulse_norm: 0.0,
+        }
+    }
+}
+
+struct ExhaustSynth {
+    sample_rate: u32,
+    phase: f32,
+    note_phase: f32,
+    pulse_env: f32,
+    lp_state: f32,
+    hp_state: f32,
+    hp_prev_in: f32,
+    noise_state: u32,
+    frame_count: u32,
+    cached: AudioParams,
+    shared: Arc<Mutex<AudioParams>>,
+}
+
+impl ExhaustSynth {
+    fn new(shared: Arc<Mutex<AudioParams>>, sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            phase: 0.0,
+            note_phase: 0.0,
+            pulse_env: 0.0,
+            lp_state: 0.0,
+            hp_state: 0.0,
+            hp_prev_in: 0.0,
+            noise_state: 0x1234_5678,
+            frame_count: 0,
+            cached: AudioParams::default(),
+            shared,
+        }
+    }
+
+    fn next_noise(&mut self) -> f32 {
+        self.noise_state = self
+            .noise_state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        let x = ((self.noise_state >> 8) & 0xFFFF) as f32 / 65535.0;
+        x * 2.0 - 1.0
+    }
+}
+
+impl Iterator for ExhaustSynth {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.frame_count % 256 == 0 {
+            if let Ok(v) = self.shared.lock() {
+                self.cached = *v;
+            }
+        }
+        self.frame_count = self.frame_count.wrapping_add(1);
+
+        let sr = self.sample_rate as f32;
+        let rpm = self.cached.rpm.max(0.0);
+        let cyl = self.cached.cylinders.max(1) as f32;
+
+        let firing_hz = (rpm / 120.0) * cyl;
+        let fundamental_hz = (rpm / 60.0) * (cyl * 0.5);
+
+        self.phase += firing_hz / sr;
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+            let hit_strength = 0.12
+                + self.cached.throttle * 0.45
+                + self.cached.torque_norm * 0.35
+                + self.cached.exhaust_pulse_norm * 0.55;
+            self.pulse_env += hit_strength;
+        }
+
+        self.pulse_env *= 0.994;
+
+        self.note_phase += 2.0 * PI_F32 * (fundamental_hz.max(20.0) / sr);
+        if self.note_phase > 2.0 * PI_F32 {
+            self.note_phase -= 2.0 * PI_F32;
+        }
+
+        let tone = self.note_phase.sin()
+            + 0.45 * (2.0 * self.note_phase).sin()
+            + 0.2 * (3.0 * self.note_phase).sin();
+        let crackle = self.next_noise()
+            * (0.15 + self.cached.throttle * 0.85)
+            * (0.4 + self.cached.exhaust_pressure_norm * 0.8)
+            * self.pulse_env.min(1.4);
+
+        let mut raw = tone * self.pulse_env + crackle * 0.35;
+
+        if self.cached.starter_on && rpm < 320.0 {
+            let starter_phase = self.frame_count as f32 * 2.0 * PI_F32 * 42.0 / sr;
+            raw += 0.12 * starter_phase.sin();
+        }
+
+        let lp_alpha = (0.14 + 0.18 * self.cached.exhaust_pressure_norm).clamp(0.08, 0.38);
+        self.lp_state += lp_alpha * (raw - self.lp_state);
+        let hp_alpha = 0.985;
+        self.hp_state = hp_alpha * (self.hp_state + self.lp_state - self.hp_prev_in);
+        self.hp_prev_in = self.lp_state;
+
+        let mut out = self.hp_state;
+        if !self.cached.running && !self.cached.starter_on {
+            out *= 0.05;
+        }
+
+        let gain = 0.12
+            + self.cached.throttle * 0.22
+            + self.cached.torque_norm * 0.20
+            + self.cached.exhaust_pressure_norm * 0.24
+            + self.cached.exhaust_pulse_norm * 0.12;
+        Some((out * gain).clamp(-0.95, 0.95))
+    }
+}
+
+impl Source for ExhaustSynth {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> u16 {
+        1
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
+struct AudioEngine {
+    _stream: OutputStream,
+    sink: Sink,
+    shared: Arc<Mutex<AudioParams>>,
+}
+
+impl AudioEngine {
+    fn new() -> Option<Self> {
+        let (stream, handle) = OutputStream::try_default().ok()?;
+        let sink = Sink::try_new(&handle).ok()?;
+        let sample_rate = 48_000;
+        let shared = Arc::new(Mutex::new(AudioParams::default()));
+        sink.append(ExhaustSynth::new(shared.clone(), sample_rate));
+        sink.play();
+        Some(Self {
+            _stream: stream,
+            sink,
+            shared,
+        })
+    }
+
+    fn update(&self, params: AudioParams) {
+        if let Ok(mut p) = self.shared.lock() {
+            *p = params;
+        }
+    }
+}
+
+impl Drop for AudioEngine {
+    fn drop(&mut self) {
+        self.sink.stop();
+    }
 }
 
 struct Simulator {
@@ -208,6 +404,19 @@ impl Simulator {
             0.0
         };
 
+        let engine_load = (m_dot_engine / 0.11).clamp(0.0, 2.0);
+        let combustion_pulse = wiebe_burn_rate.clamp(0.0, 6.0) / 6.0;
+        let exhaust_target_pa = P_EXHAUST
+            + 18_000.0 * engine_load
+            + 22_000.0 * combustion_pulse
+            + 10_000.0 * self.control.throttle;
+        let relax = if self.engine.running { 0.18 } else { 0.05 };
+        self.exhaust.pressure_pa += (exhaust_target_pa - self.exhaust.pressure_pa) * relax;
+        self.exhaust.pressure_pa = self
+            .exhaust
+            .pressure_pa
+            .clamp(P_EXHAUST * 0.90, P_EXHAUST + 60_000.0);
+
         if self.history_rpm.len() == self.history_rpm.capacity() {
             self.history_rpm.pop_front();
         }
@@ -227,6 +436,8 @@ impl Simulator {
             stable_idle: self.engine.running
                 && (rpm - IDLE_TARGET_RPM).abs() < 120.0
                 && self.control.throttle < 0.18,
+            exhaust_kpa: self.exhaust.pressure_pa * 1e-3,
+            exhaust_pulse_norm: combustion_pulse,
             pv_points: pv_diagram(
                 self.params.compression_ratio,
                 self.intake.pressure_pa,
@@ -240,6 +451,7 @@ struct DashboardApp {
     sim: Simulator,
     latest: Observation,
     last_tick: Instant,
+    audio: Option<AudioEngine>,
 }
 
 impl DashboardApp {
@@ -250,6 +462,7 @@ impl DashboardApp {
             sim,
             latest,
             last_tick: Instant::now(),
+            audio: AudioEngine::new(),
         }
     }
 
@@ -285,6 +498,21 @@ impl DashboardApp {
             self.latest = self.sim.step(DT);
         }
         self.last_tick = now;
+
+        if let Some(audio) = &self.audio {
+            let torque_norm = (self.latest.torque_combustion_nm / 140.0).clamp(0.0, 1.0) as f32;
+            audio.update(AudioParams {
+                rpm: self.latest.rpm as f32,
+                throttle: self.sim.control.throttle as f32,
+                torque_norm,
+                starter_on: self.sim.control.starter_on,
+                running: self.sim.engine.running,
+                cylinders: self.sim.params.cylinders,
+                exhaust_pressure_norm: ((self.latest.exhaust_kpa - 101.325) / 60.0).clamp(0.0, 1.0)
+                    as f32,
+                exhaust_pulse_norm: self.latest.exhaust_pulse_norm as f32,
+            });
+        }
     }
 }
 
@@ -324,6 +552,11 @@ impl eframe::App for DashboardApp {
             } else {
                 "State: TRANSIENT"
             });
+            ui.label(if self.audio.is_some() {
+                "Audio: ON (synthetic exhaust)"
+            } else {
+                "Audio: OFF (device unavailable)"
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -343,6 +576,10 @@ impl eframe::App for DashboardApp {
                         self.latest.torque_friction_nm
                     ));
                     ui.label(format!("IMEP: {:.2} bar", self.latest.imep_bar));
+                    ui.label(format!(
+                        "Exhaust pressure: {:.1} kPa",
+                        self.latest.exhaust_kpa
+                    ));
                     ui.label(format!(
                         "Wiebe phase/rate: {:.1} deg / {:.2}",
                         self.latest.wiebe_phase_deg, self.latest.wiebe_burn_rate
