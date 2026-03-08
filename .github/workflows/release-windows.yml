@@ -1,0 +1,166 @@
+name: release-windows
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to publish or create (for example v0.1.0)
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  resolve-release-metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+
+    steps:
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag_name }}"
+            $prerelease = "${{ inputs.prerelease }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+            $prerelease = "false"
+          }
+          if (-not $tag) {
+            throw "A release tag is required."
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "prerelease=$prerelease" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+  build-windows-package:
+    name: Build Windows x64 portable release
+    runs-on: windows-2022
+    needs: resolve-release-metadata
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Show Rust toolchain
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release
+
+      - name: Run release tests
+        shell: pwsh
+        run: cargo test --release -- --nocapture
+
+      - name: Package portable Windows zip
+        id: package
+        shell: pwsh
+        run: pwsh -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1 -Tag "${{ needs.resolve-release-metadata.outputs.tag }}"
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: es_sim-windows-x64-release
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  build-docs-pdf:
+    name: Build English/Japanese README PDFs
+    runs-on: ubuntu-latest
+    needs: resolve-release-metadata
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Install XeLaTeX and Japanese fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            texlive-xetex \
+            texlive-latex-extra \
+            texlive-lang-japanese \
+            fonts-noto-core \
+            fonts-noto-cjk \
+            fonts-dejavu-core
+
+      - name: Build README PDFs
+        run: bash ./scripts/build-doc-pdfs.sh
+
+      - name: Upload README PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: es_sim-docs-pdf-release
+          path: dist/docs/*.pdf
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release-assets:
+    name: Publish release assets on GitHub
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-release-metadata
+      - build-windows-package
+      - build-docs-pdf
+
+    steps:
+      - name: Download Windows package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: es_sim-windows-x64-release
+          path: dist
+
+      - name: Download README PDF artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: es_sim-docs-pdf-release
+          path: dist
+
+      - name: Publish release assets
+        run: |
+          $tag = "${{ needs.resolve-release-metadata.outputs.tag }}"
+          $assets = Get-ChildItem -Path dist -File -Recurse | Sort-Object FullName | ForEach-Object { $_.FullName }
+          if ($assets.Count -eq 0) {
+            throw "No files found in dist/"
+          }
+
+          & gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $tag @assets --clobber
+            exit $LASTEXITCODE
+          }
+
+          $args = @("release", "create", $tag)
+          $args += $assets
+          $args += @("--title", $tag, "--generate-notes", "--target", "${{ github.sha }}")
+          if ("${{ needs.resolve-release-metadata.outputs.prerelease }}" -eq "true") {
+            $args += "--prerelease"
+          }
+          & gh @args
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
