@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Prepare GitHub-flavored README markdown for Pandoc PDF conversion.
 
-GitHub renders fenced ```math blocks, while Pandoc expects TeX math delimiters.
-This script converts those blocks into $$...$$ form and leaves the rest intact.
+GitHub renders fenced ```math blocks, while the PDF build path is more reliable if
+those blocks become raw LaTeX display-math blocks. This preserves GitHub-friendly
+source markdown while avoiding Pandoc/LaTeX edge cases around some AMS equations.
 """
 
 from __future__ import annotations
@@ -15,16 +16,24 @@ def convert_math_fences(text: str) -> str:
     lines = text.splitlines()
     output: list[str] = []
     in_math_block = False
+    math_lines: list[str] = []
 
     for line in lines:
         stripped = line.strip()
         if not in_math_block and stripped == "```math":
-            output.append("$$")
             in_math_block = True
+            math_lines = []
             continue
         if in_math_block and stripped == "```":
-            output.append("$$")
+            output.append("```{=latex}")
+            output.append(r"\[")
+            output.extend(math_lines)
+            output.append(r"\]")
+            output.append("```")
             in_math_block = False
+            continue
+        if in_math_block:
+            math_lines.append(line)
             continue
         output.append(line)
 

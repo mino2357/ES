@@ -20,39 +20,31 @@ The engine layout is fixed to 4 cylinders throughout the simulator. Any `history
 
 ## Windows 11 Binary Download
 
-Prebuilt portable Windows x64 binaries are intended to be distributed from the GitHub Releases page of this repository.
+Prebuilt portable Windows x64 binaries are intended to be distributed from the GitHub Releases page of this repository as individual assets rather than as a zip archive.
 
-Download the latest asset named like:
-
-```text
-es_sim-windows-x64-v0.1.0.zip
-```
-
-Then:
-
-1. Extract the zip to any writable folder on your Windows 11 machine.
-2. Keep the extracted folder structure intact.
-3. Run `es_sim.exe`.
-
-The release zip contains:
+Download these release assets:
 
 - `es_sim.exe`
-- `config/sim.yaml`
-- `README.md`
-- `README.ja.md`
+- `sim.yaml`
+- `es_sim-readme-en.pdf`
+- `es_sim-readme-ja.pdf`
+
+Optional supporting assets:
+
 - `LICENSE`
 
-Each release also publishes a matching SHA-256 file:
+To run on Windows 11:
+
+1. Create or choose any writable folder.
+2. Put `es_sim.exe` and `sim.yaml` in the same folder.
+3. Run `es_sim.exe`.
+
+The binary still accepts the historical `config/sim.yaml` path if you prefer the old subfolder layout.
+
+Each release also publishes a matching SHA-256 manifest for the Windows runtime assets:
 
 ```text
 es_sim-windows-x64-v0.1.0.sha256
-```
-
-Each release also publishes PDF documentation assets:
-
-```text
-es_sim-readme-en.pdf
-es_sim-readme-ja.pdf
 ```
 
 If you download from a successful CI run instead of a formal release, the Actions artifact names are:
@@ -66,23 +58,26 @@ If you download from a successful CI run instead of a formal release, the Action
 cargo run --release
 ```
 
-## Package A Local Windows Zip
+## Stage Local Windows Release Assets
 
-Build the release binary first, then package the same portable layout used by GitHub Actions:
+Build the release binary first, then stage the flat Windows runtime assets published to GitHub Releases:
 
 ```powershell
 cargo build --release
-powershell -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1 -Tag v0.1.0
+powershell -ExecutionPolicy Bypass -File .\scripts\prepare-release-assets.ps1 -Tag v0.1.0
 ```
 
-The generated files are written to `dist/`.
+The generated files are written to `dist/release-assets/`.
+README PDFs are still produced separately by `scripts/build-doc-pdfs.sh` or by the `release-windows` workflow.
+
+If you still want a local portable zip, `scripts/package-windows.ps1` remains available.
 
 ## GitHub Automation
 
 This repository includes two GitHub Actions workflows relevant to distribution:
 
 - `ci`: runs on push / pull request, builds/tests the release binary, uploads a portable Windows snapshot zip, and uploads English/Japanese README PDFs as Actions artifacts
-- `release-windows`: runs on tag push `v*` or manual dispatch, publishes the Windows zip, `.sha256`, and English/Japanese README PDFs to GitHub Releases
+- `release-windows`: runs on tag push `v*` or manual dispatch, publishes `es_sim.exe`, `sim.yaml`, `LICENSE`, a `.sha256` manifest, and English/Japanese README PDFs to GitHub Releases
 
 Maintainer release flow:
 
@@ -95,7 +90,7 @@ git push origin v0.1.0
 ```
 
 3. Wait for the `release-windows` workflow to finish.
-4. Download the generated zip from the GitHub Release page.
+4. Download the generated release assets from the GitHub Release page.
 
 If you prefer manual release creation from the Actions tab, run `release-windows` with a `tag_name` input. The workflow will create the GitHub release if it does not already exist.
 
@@ -114,6 +109,7 @@ If you prefer manual release creation from the Actions tab, run `release-windows
 ## Configuration (YAML)
 
 Configuration is loaded from `config/sim.yaml`.
+The release binary also falls back to `sim.yaml` placed beside `es_sim.exe` so flat GitHub Release downloads work without creating a `config/` subfolder.
 
 Tuning constants that were previously hard-coded are now centralized in YAML sections:
 
@@ -213,35 +209,41 @@ If you publish the same Markdown through GitHub Pages, prefer the `GFM` Markdown
 
 For bench mode only, the time integration policy differs from the realtime dashboard path. The GUI bench first draws an instant preview from a coarse locked-cycle average and then warms at the start RPM before sweeping continuously according to
 
-$$
+```{=latex}
+\[
 \mathrm{rpm}_{target}(t)=
 \mathrm{rpm}_{start}
 \;+\;
 \left(\mathrm{rpm}_{end}-\mathrm{rpm}_{start}\right)
 \frac{t}{t_{sweep}},
 \qquad 0 \le t \le t_{sweep}
-$$
+\]
+```
 
 and samples are accumulated into the nearest configured RPM bin. The accepted timestep still starts from a crank-angle target
 
-$$
+```{=latex}
+\[
 \Delta t_{bench,nom}=
 \mathrm{clamp}\left(
 \frac{\Delta \theta_{bench}}{6\,\mathrm{rpm}},
 \Delta t_{bench,min},
 \Delta t_{bench,max}
 \right)
-$$
+\]
+```
 
 and uses RK2 step-doubling on the state vector
 
-$$
+```{=latex}
+\[
 \varepsilon_{bench}
 =
 \left\lVert
 \mathbf{x}_{RK2}(\Delta t)-\mathbf{x}_{RK2}\!\left(\tfrac{\Delta t}{2}\right)^{(2)}
 \right\rVert_{norm}
-$$
+\]
+```
 
 to halve the trial timestep until $\varepsilon_{bench}\le \varepsilon_{tol}$ or the configured refinement limit is reached.
 
@@ -249,13 +251,15 @@ to halve the trial timestep until $\varepsilon_{bench}\le \varepsilon_{tol}$ or 
 
 State vector:
 
-$$
+```{=latex}
+\[
 \mathbf{x}
 =
 \begin{bmatrix}
 \omega & \theta & p_{im} & p_{ir} & p_{em} & p_{er} & \dot m_{ir} & \dot m_{er} & \alpha_{th}
 \end{bmatrix}^{\mathsf T}
-$$
+\]
+```
 
 - $\omega$: crank angular speed $[\mathrm{rad/s}]$
 - $\theta$: crank angle $[\mathrm{rad}]$ (wrapped in $[0,4\pi)$)
@@ -269,13 +273,15 @@ $$
 
 Control input:
 
-$$
+```{=latex}
+\[
 \mathbf{u}
 =
 \begin{bmatrix}
 \alpha_{cmd} & u_{load} & u_{st} & u_{spk} & u_f & \Delta\theta_{ign} & \Delta\theta_{VVT,I} & \Delta\theta_{VVT,E}
 \end{bmatrix}^{\mathsf T}
-$$
+\]
+```
 
 - $\alpha_{cmd}$: throttle command
 - $u_{load}$: normalized external load command
@@ -287,78 +293,105 @@ $$
 
 ### 2. Continuous-time ODEs
 
-$$
+```{=latex}
+\[
 \dot \omega = \frac{\tau_{comb}+\tau_{start}-\tau_{fric}-\tau_{pump}-\tau_{load}}{J}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot \theta = \omega
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot p_{im} = \frac{R_{air}T_{im}}{V_{im}}\left(\dot m_{th}-\dot m_{ir}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot p_{ir} = \frac{R_{air}T_{im}}{V_{ir}}\left(\dot m_{ir}-\dot m_{cyl}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot p_{em} = \frac{R_{air}T_{exh,eff}}{V_{em}}\left(\dot m_{er}-\dot m_{tail}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot p_{er} = \frac{R_{air}T_{exh,eff}}{V_{er}}\left(\dot m_{exh,in}-\dot m_{er}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \frac{d\dot m_{ir}}{dt} = \frac{p_{im}-p_{ir}}{L_{ir}} - d_{ir}\dot m_{ir}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \frac{d\dot m_{er}}{dt} = \frac{p_{er}-p_{em}}{L_{er}} - d_{er}\dot m_{er}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot \alpha_{th} = \frac{\alpha_{cmd}-\alpha_{th}}{\tau_{th}},\quad \tau_{th}=0.060\ \mathrm{s}
-$$
+\]
+```
 
 #### Running steady-state interpretation
 
 A fired engine that is "steady" in the usual calibration sense is not a static equilibrium of the full state vector, because
 
-$$
+```{=latex}
+\[
 \dot \theta = \omega
-$$
+\]
+```
 
 and the gas-exchange / combustion closures are periodic functions of crank angle.  
 For this model, the correct equilibrium notion is therefore a periodic orbit, or equivalently a fixed point of a Poincare map on a fixed crank-angle section.
 
 Define the reduced running-state vector without the wrapped phase coordinate:
 
-$$
+```{=latex}
+\[
 \mathbf{x}_r
 =
 \begin{bmatrix}
 \omega & p_{im} & p_{ir} & p_{em} & p_{er} & \dot m_{ir} & \dot m_{er} & \alpha_{th}
 \end{bmatrix}^{\mathsf T}
-$$
+\]
+```
 
 At a chosen phase section $\theta=\theta_s$ sampled once every $720\ \mathrm{degCA}$, the simulator induces the cycle map
 
-$$
+```{=latex}
+\[
 \mathbf{x}_{r,k+1} = \mathcal{P}\!\left(\mathbf{x}_{r,k}\right)
-$$
+\]
+```
 
 and steady running means
 
-$$
+```{=latex}
+\[
 \mathbf{x}_r^* = \mathcal{P}\!\left(\mathbf{x}_r^*\right)
-$$
+\]
+```
 
 An equivalent cycle-averaged statement is
 
-$$
+```{=latex}
+\[
 \frac{\mathbf{x}_r(t+T_c)-\mathbf{x}_r(t)}{T_c}
 =
 \frac{1}{T_c}\int_t^{t+T_c}\dot{\mathbf{x}}_r(\tau)\,d\tau
@@ -366,7 +399,8 @@ $$
 \mathbf{0},
 \qquad
 T_c=\frac{4\pi}{\omega}
-$$
+\]
+```
 
 The regression test `representative_operating_points_are_periodic_steady_states` evaluates this exact idea in code: after settling fixed controls, it samples the reduced state on the same $\theta_s=360\ \mathrm{degCA}$ section across successive cycles and checks that the cycle-to-cycle drift is small.
 
@@ -374,86 +408,111 @@ The regression test `representative_operating_points_are_periodic_steady_states`
 
 Enabled only when auto mode is ON:
 
-$$
+```{=latex}
+\[
 u_{spk}\leftarrow 1,\quad u_f\leftarrow 1
-$$
+\]
+```
 
 Cranking condition:
 
-$$
+```{=latex}
+\[
 \text{cranking} = (\neg running)\ \lor\ (\mathrm{rpm}<600)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 u_{st} \leftarrow \text{cranking} \land (\mathrm{rpm}<760)
-$$
+\]
+```
 
 Target RPM:
 
-$$
+```{=latex}
+\[
 \mathrm{rpm}_{target}=
 \begin{cases}
 620, & u_{st}=1\\
 \mathrm{rpm}_{idle}, & u_{st}=0
 \end{cases}
-$$
+\]
+```
 
 Error:
 
-$$
+```{=latex}
+\[
 e = \mathrm{rpm}_{target}-\mathrm{rpm}
-$$
+\]
+```
 
 Controller gains:
 
-$$
+```{=latex}
+\[
 (k_p,k_i,b)=
 \begin{cases}
 (2.2\times 10^{-4},\ 8.0\times 10^{-5},\ 0.14), & u_{st}=1\\
 (1.2\times 10^{-4},\ 5.0\times 10^{-5},\ 0.040), & u_{st}=0
 \end{cases}
-$$
+\]
+```
 
 Integral state:
 
-$$
+```{=latex}
+\[
 I \leftarrow \mathrm{clamp}\left(I + e\Delta t,\ -600,\ 600\right)
-$$
+\]
+```
 
 Throttle command:
 
-$$
+```{=latex}
+\[
 \alpha_{cmd}\leftarrow \mathrm{clamp}\left(b+k_pe+k_iI,\ 0.02,\ 0.42\right)
-$$
+\]
+```
 
 Anti-windup decay:
 
-$$
+```{=latex}
+\[
 \mathrm{if}\ \mathrm{rpm}>\mathrm{rpm}_{target}+120,\quad I\leftarrow 0.85I
-$$
+\]
+```
 
 ### 4. Gas exchange and compressible flow
 
 Effective throttle area map:
 
-$$
+```{=latex}
+\[
 A_{th}=A_{th,max}\cdot\mathrm{clamp}\left(0.005+0.98\,\alpha_{th}^{1.8},\ 0.005,\ 1.0\right)
-$$
+\]
+```
 
 The code uses discharge-area factors:
 
-$$
+```{=latex}
+\[
 (C_dA)_{th}=0.82\,A_{th},\qquad (C_dA)_{tail}=0.87\,A_{tail}
-$$
+\]
+```
 
 Compressible orifice model (`orifice_mass_flow`; quasi-1D isentropic nozzle relation [S2]):
 
-$$
+```{=latex}
+\[
 \Pi=\mathrm{clamp}\!\left(\frac{p_d}{p_u},0,1\right),\quad
 \Pi_*=\left(\frac{2}{\gamma+1}\right)^{\frac{\gamma}{\gamma-1}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m=
 \begin{cases}
 C_dA\frac{p_u}{\sqrt{T_u}}
@@ -467,47 +526,65 @@ C_dA\frac{p_u}{\sqrt{T_u}}
 \right]^{1/2},
 & \Pi>\Pi_*
 \end{cases}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m \leftarrow \max(\dot m,0)
-$$
+\]
+```
 
 Applied in this simulator:
 
-$$
+```{=latex}
+\[
 \dot m_{th}=\dot m_{orifice}\!\left((C_dA)_{th},\ p_{amb},\ p_{im},\ T_{im}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m_{tail}=\dot m_{orifice}\!\left((C_dA)_{tail},\ p_{em},\ p_{amb},\ T_{exh,eff}\right)
-$$
+\]
+```
 
 Volumetric efficiency:
 
-$$
+```{=latex}
+\[
 \eta_v=\mathrm{clamp}\left(\eta_{rpm}\eta_{vvt}\eta_{th}g_{ov}g_{wave},\ 0.30,\ 1.08\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \eta_{rpm}=\mathrm{clamp}\left(0.78+0.22\exp\!\left(-\frac{(\mathrm{rpm}-4800)^2}{8.0\times 10^6}\right),\ 0.58,\ 1.00\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \eta_{vvt}=1+0.0022\,\Delta\theta_{VVT,I}-0.0016\,\Delta\theta_{VVT,E}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \eta_{th}=\mathrm{clamp}\left(0.40+0.62\sqrt{\alpha_{th}},\ 0.38,\ 1.03\right)
-$$
+\]
+```
 
 Overlap / exhaust-interference correction:
 
-$$
+```{=latex}
+\[
 \ell_{ov}=\min\!\left(\tilde l_I(360^\circ),\tilde l_E(360^\circ)\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 g_{ov}=
 \mathrm{clamp}\left(
 1+\ell_{ov}
@@ -518,7 +595,8 @@ k_f\frac{\dot m_{er}}{\dot m_{ref}}
 \right],
 g_{min},g_{max}
 \right)
-$$
+\]
+```
 
 with
 $k_p=0.22$,
@@ -529,38 +607,49 @@ $g_{max}=1.12$.
 
 Grouped intake / exhaust wave-action closure:
 
-$$
+```{=latex}
+\[
 G_I=\max\left\{d\in\mathbb{N}\mid d\le G_I^*,\ d\mid N_{cyl}\right\},\qquad
 G_E=\max\left\{d\in\mathbb{N}\mid d\le G_E^*,\ d\mid N_{cyl}\right\}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 a_I=\sqrt{\gamma R T_{im}},\qquad
 a_E=\sqrt{\gamma R T_{exh,eff}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 f_{q,I}=\frac{a_I}{4L_I},\qquad
 f_{q,E}=\frac{a_E}{4L_E}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \tau_{d,I}=s_I\frac{L_I}{a_I},\qquad
 \tau_{d,E}=s_E\frac{L_E}{a_E}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 K(t;\tau_d,\tau_{dec},f_q)=
 \begin{cases}
 0, & t<\tau_d\\[4pt]
 \exp\!\left[-\frac{t-\tau_d}{\tau_{dec}}\right]
 \cos\!\left(2\pi f_q(t-\tau_d)\right), & t\ge \tau_d
 \end{cases}
-$$
+\]
+```
 
 For each intake or exhaust branch group $g$, the code sums recent valve-event impulses from the cylinders bundled into that branch:
 
-$$
+```{=latex}
+\[
 \Delta p_{I,g}(\theta)=
 \mathrm{clamp}\left(
 k_{p,I}p_{amb}\frac{\dot m_{I,src}}{\dot m_{I,ref}}
@@ -570,9 +659,11 @@ K_I\!\left(\frac{\Delta\theta_{c}(\theta)+720n}{6\,\mathrm{rpm}}\right),
 -\Delta p_{I,max},
 \Delta p_{I,max}
 \right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \Delta p_{E,g}(\theta)=
 \mathrm{clamp}\left(
 -k_{p,E}p_{amb}\frac{\dot m_{E,src}}{\dot m_{E,ref}}
@@ -582,55 +673,70 @@ K_E\!\left(\frac{\Delta\theta_{c}(\theta)+720n}{6\,\mathrm{rpm}}\right),
 -\Delta p_{E,max},
 \Delta p_{E,max}
 \right)
-$$
+\]
+```
 
 where $n_{g,\bullet}$ is the number of cylinders inside the branch group and $\Delta\theta_c(\theta)$ is the positive crank-angle distance from the most recent source event of cylinder $c$ to the current evaluation angle $\theta$.
 
 Current valve-window weighted wave pressures:
 
-$$
+```{=latex}
+\[
 \bar{\Delta p}_{I,cur}=
 \frac{\sum_g w_{I,g}(\theta)\Delta p_{I,g}(\theta)}
 {\sum_g w_{I,g}(\theta)},\qquad
 \bar{\Delta p}_{E,cur}=
 \frac{\sum_g w_{E,g}(\theta)\Delta p_{E,g}(\theta)}
 {\sum_g w_{E,g}(\theta)}
-$$
+\]
+```
 
 where the weights are sums of normalized valve lifts for the cylinders connected to group $g$.
 
 Event-averaged wave pressures used in VE:
 
-$$
+```{=latex}
+\[
 \bar{\Delta p}_{I,IVC}=
 \frac{1}{N_{cyl}}\sum_{c=1}^{N_{cyl}}\Delta p_{I,g(c)}(\theta_{IVC,c})
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \bar{\Delta p}_{I,ov}=
 \frac{1}{N_{cyl}}\sum_{c=1}^{N_{cyl}}\Delta p_{I,g(c)}(\theta_{TDC,ov,c}),\qquad
 \bar{\Delta p}_{E,ov}=
 \frac{1}{N_{cyl}}\sum_{c=1}^{N_{cyl}}\Delta p_{E,g(c)}(\theta_{TDC,ov,c})
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 g_{ram}=1+k_{ram}\frac{\bar{\Delta p}_{I,IVC}}{p_{amb}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 g_{scav}=1+k_{scav}\frac{\bar{\Delta p}_{I,ov}-\bar{\Delta p}_{E,ov}}{p_{amb}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 g_{wave}=\mathrm{clamp}\left(g_{ram}g_{scav},\ g_{wave,min},\ g_{wave,max}\right)
-$$
+\]
+```
 
 Valve-event pulse factors:
 
-$$
+```{=latex}
+\[
 \phi_I = 1+\beta_I(\tilde l_I-1),\qquad
 \phi_E = 1+\beta_E(\tilde l_E-1)
-$$
+\]
+```
 
 where $\tilde l_I,\tilde l_E$ are normalized aggregate lift sums over all cylinders, with cycle mean equal to 1, and
 $\beta_I=0.32$,
@@ -638,10 +744,12 @@ $\beta_E=0.40$.
 
 Effective cylinder-side boundary pressures:
 
-$$
+```{=latex}
+\[
 p_{I,cyl} = (1-w_I)p_{im}+w_Ip_{ir}+\bar{\Delta p}_{I,IVC},\qquad
 p_{E,cyl} = (1-w_E)p_{em}+w_Ep_{er}+\bar{\Delta p}_{E,ov}
-$$
+\]
+```
 
 with
 $w_I=0.35$ and
@@ -649,281 +757,364 @@ $w_E=0.45$.
 
 Cylinder air consumption:
 
-$$
+```{=latex}
+\[
 f_{cyc}=\frac{\mathrm{rpm}}{120},\qquad
 m_{air,cycle}= \frac{V_d\eta_v p_{I,cyl}}{R_{air}T_{charge}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m_{cyl,mean}=\max\left(m_{air,cycle}f_{cyc},0\right),\qquad
 \psi_I=\max\left(1+k_{\psi,I}\frac{\bar{\Delta p}_{I,cur}}{p_{amb}},0\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m_{cyl}=\phi_I\psi_I\dot m_{cyl,mean}
-$$
+\]
+```
 
 Exhaust delivery into the runner state:
 
-$$
+```{=latex}
+\[
 \psi_E=\max\left(1-k_{\psi,E}\frac{\bar{\Delta p}_{E,cur}}{p_{amb}},0\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m_{exh,in}=\phi_E\psi_E\dot m_{exh,mean}
-$$
+\]
+```
 
 Trapped air per cylinder:
 
-$$
+```{=latex}
+\[
 m_{air,cyl}=\frac{V_d/N_{cyl}\cdot\eta_v p_{I,cyl}}{R_{air}T_{charge}}
-$$
+\]
+```
 
 ### 5. Combustion and torque
 
 Spark timing and burn duration:
 
-$$
+```{=latex}
+\[
 \Delta\theta_{spark}=\mathrm{clamp}\left(\Delta\theta_{ign},\ -5,\ 45\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \theta_{start}=360-\Delta\theta_{spark}+0.08\,\Delta\theta_{VVT,I}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \Delta\theta_b=\mathrm{clamp}\left(66-8\alpha_{th},\ 38,\ 75\right)
-$$
+\]
+```
 
 MBT reference and timing error:
 
-$$
+```{=latex}
+\[
 \Delta\theta_{MBT}=\mathrm{clamp}\left(12+0.0018(\mathrm{rpm}-900)+3(1-load),\ 8,\ 26\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 e_{ign}=\Delta\theta_{spark}-\Delta\theta_{MBT}
-$$
+\]
+```
 
 Combustion phasing efficiency:
 
-$$
+```{=latex}
+\[
 \eta_{phase}=
 \begin{cases}
 \exp\!\left[-\left(\frac{e_{ign}}{6.5}\right)^2\right], & e_{ign}\ge 0\\[4pt]
 \exp\!\left[-\left(\frac{e_{ign}}{15}\right)^2\right], & e_{ign}<0
 \end{cases}
-$$
+\]
+```
 
 Stability gate (very advanced/retarded timing -> no combustion):
 
-$$
+```{=latex}
+\[
 phase\_stable = (e_{ign}\le 14)\land (e_{ign}\ge -32)
-$$
+\]
+```
 
 Multi-cylinder Wiebe burn-rate proxy:
 
-$$
+```{=latex}
+\[
 \theta_c = \left(\theta_{deg}-c\frac{720}{N_{cyl}}\right)\bmod 720,\quad
 x_c=\frac{\theta_c-\theta_{start}}{\Delta\theta_b}
-$$
+\]
+```
 
 For each cylinder $c\in\{0,\dots,N_{cyl}-1\}$:
 
-$$
+```{=latex}
+\[
 \frac{dx_{b,c}}{d\theta}=
 \begin{cases}
 \dfrac{a(m+1)}{\Delta\theta_b}x_c^m e^{-ax_c^{m+1}}, & 0\le x_c\le 1\\
 0, & \text{otherwise}
 \end{cases}
-$$
+\]
+```
 
 with $a=5.2$, $m=2.0$.
 
 Summed and normalized:
 
-$$
+```{=latex}
+\[
 r_{burn}=
 \frac{\sum_c dx_{b,c}/d\theta}{N_{cyl}/720}
-$$
+\]
+```
 
 Fueling:
 
-$$
+```{=latex}
+\[
 \lambda=
 \begin{cases}
 \lambda_{override}, & \text{if a bench mode forces lambda}\\
 \mathrm{clamp}(1.15-0.35\alpha_{th},\ 0.82,\ 1.12), & \text{otherwise}
 \end{cases}
-$$
+\]
+```
 
 The bench-mode override is:
 
-$$
+```{=latex}
+\[
 \lambda_{override}=
 \begin{cases}
 \lambda_{bench,\ rich}=0.88, & \text{rich charge-cooling bench}\\
 \lambda_{bench,\ 1}=1.0, & \text{lambda=1 bench}
 \end{cases}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 AFR=14.7\lambda
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 m_{f,cycle,cyl}=\frac{m_{air,cyl}}{AFR}
-$$
+\]
+```
 
 Charge cooling from fuel evaporation (bench modes only):
 
-$$
+```{=latex}
+\[
 Q_{evap}=m_{f,guess}h_{fg}\chi_{evap}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 T_{charge}=\mathrm{clamp}\left(
 T_{im}-\frac{Q_{evap}}{(m_{air,guess}+m_{f,guess})c_p},
 T_{charge,min},
 T_{im}
 \right)
-$$
+\]
+```
 
 The implementation evaluates a first-pass trapped air and fuel mass at $T_{im}$, computes $T_{charge}$, and then recomputes $m_{air,cyl}$ and $\dot m_{cyl,mean}$ with that cooled charge temperature.
 Because $m_{f,guess}$ is larger in the rich bench mode than in the `lambda=1` bench mode, the rich bench gets a larger evaporative-cooling effect and therefore a slightly denser trapped charge.
 
 Empirical thermal efficiency:
 
-$$
+```{=latex}
+\[
 load=\mathrm{clamp}\left(\frac{p_{I,cyl}}{p_{amb}},\ 0.20,\ 1.20\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \eta_{th,base}=\mathrm{clamp}\left(0.17+0.22\,load-1.2\times 10^{-5}\left|\mathrm{rpm}-2500\right|,\ 0.08,\ 0.40\right)
-$$
+\]
+```
 
 Woschni-inspired single-zone wall heat loss:
 
-$$
+```{=latex}
+\[
 T_{comp}=T_{charge}r_c^{\gamma-1},\qquad
 c_p=\frac{\gamma R}{\gamma-1}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 T_g=\mathrm{clamp}\left(T_{comp}+k_{\Delta T}\eta_{phase}\frac{m_{f,cycle,cyl}LHV}{(m_{air,cyl}+m_{f,cycle,cyl})c_p},\ T_{im},\ T_{g,max}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 h=h_0\left(\frac{p_c}{p_{ref}}\right)^{a_p}
 \left(\frac{T_g}{T_{ref}}\right)^{a_T}
 \left(\frac{U_p}{U_{ref}}\right)^{a_u}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 Q_{loss}=
 \mathrm{clamp}\left(
 hA_w\max(T_g-T_w,0)\tau_{exp},
 0,
 \chi_{max}m_{f,cycle,cyl}LHV
 \right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \eta_{th,emp}=
 \mathrm{clamp}\left(
 \eta_{th,base}\eta_{phase}-\frac{Q_{loss}}{m_{f,cycle,cyl}LHV},
 0.02,
 0.42
 \right)
-$$
+\]
+```
 
 Cycle work and mean combustion torque:
 
-$$
+```{=latex}
+\[
 W_{cyc,cyl}=m_{f,cycle,cyl}\,LHV\,\eta_{th,emp}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \tau_{comb,mean}=\frac{W_{cyc,cyl}\,N_{cyl}}{4\pi}
-$$
+\]
+```
 
 Combustion enable condition:
 
-$$
+```{=latex}
+\[
 enabled=
 u_f\land u_{spk}
 \land (\mathrm{rpm}>120)
 \land (p_{I,cyl}>25000)
 \land phase\_stable
 \land (u_{st}\lor running\lor \mathrm{rpm}>450)
-$$
+\]
+```
 
 Exhaust-temperature submodel (retard raises $T_{exh}$, advance lowers it):
 
-$$
+```{=latex}
+\[
 s_T=\mathrm{clamp}\left(1+0.024\max(-e_{ign},0)-0.010\max(e_{ign},0),\ 0.75,\ 1.70\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 T_{exh,phase}=\mathrm{clamp}(T_{exh,base}\,s_T,\ 500,\ 1900)\ \mathrm{K}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 T_{exh,eff}=\mathrm{clamp}\left(T_{exh,phase}\left[1-k_Q\frac{Q_{loss}}{m_{f,cycle,cyl}LHV}\right],\ 500,\ 1900\right)\ \mathrm{K}
-$$
+\]
+```
 
 Instantaneous combustion torque:
 
-$$
+```{=latex}
+\[
 \tau_{comb}=
 \begin{cases}
 \tau_{comb,mean}\cdot\mathrm{clamp}(r_{burn},0,5.5), & enabled\\
 0, & \neg enabled
 \end{cases}
-$$
+\]
+```
 
 Fuel and exhaust inflow rates:
 
-$$
+```{=latex}
+\[
 \dot m_f=
 \begin{cases}
 m_{f,cycle,cyl}\,f_{cyc}\,N_{cyl}, & enabled\\
 0, & \neg enabled
 \end{cases}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m_{exh,in}=\phi_E\left(\dot m_{cyl,mean}+\dot m_f\right)
-$$
+\]
+```
 
 ### 6. Mechanical torques and mode switching
 
 Friction torque:
 
-$$
+```{=latex}
+\[
 \tau_{fric}=c_0+c_1\omega+c_2\omega^2
-$$
+\]
+```
 
 Pumping torque:
 
-$$
+```{=latex}
+\[
 \tau_{pump}=\mathrm{clamp}\left(\frac{(p_{E,cyl}-p_{I,cyl})V_d}{4\pi},\ -12,\ 25\right)
-$$
+\]
+```
 
 Starter torque map:
 
-$$
+```{=latex}
+\[
 \tau_{start}=
 \begin{cases}
 62, & u_{st}=1\ \land\ \mathrm{rpm}<220\\
 36, & u_{st}=1\ \land\ 220\le \mathrm{rpm}<450\\
 0, & \text{otherwise}
 \end{cases}
-$$
+\]
+```
 
 External load torque:
 
-$$
+```{=latex}
+\[
 \tau_{load,ref}
 =
 \mathrm{clamp}\left(
@@ -931,16 +1122,19 @@ $$
 \tau_{L,min},
 \tau_{L,max}
 \right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \tau_{load}
 =
 \begin{cases}
 0, & u_{load}\le 0\\
 u_{load}^{\gamma_L}\tau_{load,ref}, & u_{load}>0
 \end{cases}
-$$
+\]
+```
 
 with default coefficients
 $\gamma_L=1.20$,
@@ -952,119 +1146,161 @@ $\tau_{L,max}=220\ \mathrm{Nm}$.
 
 Net torque:
 
-$$
+```{=latex}
+\[
 \tau_{net}=\tau_{comb}+\tau_{start}-\tau_{fric}-\tau_{pump}-\tau_{load}
-$$
+\]
+```
 
 Brake mean effective pressure shown in the GUI:
 
-$$
+```{=latex}
+\[
 \mathrm{BMEP}_{br}=\frac{4\pi\tau_{net}}{V_d}
-$$
+\]
+```
 
 State clamps after each RK2 step:
 
-$$
+```{=latex}
+\[
 \omega\leftarrow \max(\omega,0),\quad
 \theta\leftarrow \theta \bmod 4\pi
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 p_{im}\leftarrow \mathrm{clamp}(p_{im},18000,130000)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 p_{ir},p_{er}\leftarrow \mathrm{clamp}\left(p,18000,320000\right),\qquad
 p_{em}\leftarrow \mathrm{clamp}\left(p_{em},0.78p_{amb},p_{amb}+120000\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \dot m_{ir},\dot m_{er}\leftarrow \mathrm{clamp}\left(\dot m,\ -0.45,\ 0.45\right)\ \mathrm{kg/s}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \alpha_{th}\leftarrow \mathrm{clamp}(\alpha_{th},0,1)
-$$
+\]
+```
 
 Running flag hysteresis:
 
-$$
+```{=latex}
+\[
 \mathrm{if}\ (u_{spk}\land u_f\land \mathrm{rpm}>520)\ \Rightarrow\ running\leftarrow 1
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \mathrm{if}\ (\mathrm{rpm}<260\land \neg u_{st})\ \Rightarrow\ running\leftarrow 0
-$$
+\]
+```
 
 ### 7. Time integration and RPM-linked variable timestep
 
 RK2 midpoint integration:
 
-$$
+```{=latex}
+\[
 \mathbf{k}_1=f(\mathbf{x}_n,\mathbf{u}),\quad
 \mathbf{x}_{mid}=\mathbf{x}_n+\frac{\Delta t}{2}\mathbf{k}_1
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \mathbf{k}_2=f(\mathbf{x}_{mid},\mathbf{u}),\quad
 \mathbf{x}_{n+1}=\mathbf{x}_n+\Delta t\,\mathbf{k}_2
-$$
+\]
+```
 
 Nominal RPM-linked timestep (`rpm_linked_dt`):
 
-$$
+```{=latex}
+\[
 \Delta t_{base}'=\max(\Delta t_{base},5\times 10^{-5}),\quad
 \mathrm{rpm}_{idle}'=\max(\mathrm{rpm}_{idle},200)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \Delta\theta_{target}=\mathrm{clamp}(6\Delta t_{base}'\mathrm{rpm}_{idle}',1,12)\ \ [\deg/\text{step}]
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \mathrm{rpm}_{eff}=\max(\mathrm{rpm},80),\quad
 \Delta t_{raw}=\frac{\Delta\theta_{target}}{6\,\mathrm{rpm}_{eff}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \Delta t_{min,local}=\max(0.08\Delta t_{base}',5\times 10^{-5}),\quad
 \Delta t_{max,local}=\min(2.5\Delta t_{base}',0.012)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \Delta t_{nom}=\mathrm{clamp}(\Delta t_{raw},\Delta t_{min,local},\Delta t_{max,local})
-$$
+\]
+```
 
 Real-time floor from benchmark (`estimate_realtime_dt_floor`):
 
-$$
+```{=latex}
+\[
 \Delta t_{rt,min}=\mathrm{clamp}(1.25\,t_{wall/step},1\times 10^{-5},6\Delta t_{probe})
-$$
+\]
+```
 
 Global bounds in dashboard:
 
-$$
+```{=latex}
+\[
 \Delta t_{min}=\max(\Delta t_{rt,min},0.05\Delta t_{base}),\quad
 \Delta t_{max}=\max(3\Delta t_{base},1.5\Delta t_{min})
-$$
+\]
+```
 
 Runtime step target:
 
-$$
+```{=latex}
+\[
 \Delta t_{target}=\mathrm{clamp}(\Delta t_{nom},\Delta t_{min},\Delta t_{max})
-$$
+\]
+```
 
 To avoid jitter, dashboard applies first-order smoothing to timestep:
 
-$$
+```{=latex}
+\[
 \Delta t_{next}\leftarrow \Delta t_{next}+0.25(\Delta t_{target}-\Delta t_{next})
-$$
+\]
+```
 
 Then each simulation substep uses:
 
-$$
+```{=latex}
+\[
 \Delta t_{step}=\max\left(\min(\Delta t_{next},\ t_{remaining}),10^{-6}\right)
-$$
+\]
+```
 
 The real-time frame budget is consumed by repeatedly applying RK2 with $\Delta t_{step}$ until simulated time catches elapsed wall time.
 
@@ -1072,105 +1308,142 @@ The real-time frame budget is consumed by repeatedly applying RK2 with $\Delta t
 
 Per-cylinder normalized volume model:
 
-$$
+```{=latex}
+\[
 v_{min}=\frac{1}{r-1},\quad v_{max}=v_{min}+1
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 v(\theta)=v_{min}+\frac{1}{2}(v_{max}-v_{min})\left(1-\cos(\theta\bmod 2\pi)\right)
-$$
+\]
+```
 
 Compression and expansion exponents are fixed:
 
-$$
+```{=latex}
+\[
 \gamma_c=1.34,\quad \gamma_e=1.24
-$$
+\]
+```
 
 Combustion strength from instantaneous combustion torque:
 
-$$
+```{=latex}
+\[
 s_{comb}=
 \begin{cases}
 1, & m_{f,cycle,cyl}>10^{-9}\\
 0, & \text{otherwise}
 \end{cases}
-$$
+\]
+```
 
 Peak-pressure helper terms:
 
-$$
+```{=latex}
+\[
 p_{comp,end}=p_{im}\left(\frac{v_{max}}{v_{min}}\right)^{\gamma_c}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 p_{comp,pk}=\mathrm{clamp}(p_{im}r^{1.32},\ p_{im},\ 6.0\times10^6)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 V_{d,cyl}=\frac{V_d}{N_{cyl}},\quad
 V_{cyl,clr}=\max\left(\frac{V_{d,cyl}}{\max(r-1,1)},10^{-6}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 load=\mathrm{clamp}\left(\frac{p_{im}}{p_{amb}},0.20,1.20\right),\quad
 G_p=0.38\,load^{1.35}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 Q_{f,cycle}=m_{f,cycle,cyl}LHV,\quad
 \Delta p_{comb}=G_p\,\eta_{phase}\frac{Q_{f,cycle}}{V_{cyl,clr}}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 p_{pk}=\mathrm{clamp}\left(p_{comp,pk}+\Delta p_{comb},\ p_{comp,pk},\ 8.0\times10^6\right)
-$$
+\]
+```
 
 In `instantaneous_pv_sample`, effective peak is:
 
-$$
+```{=latex}
+\[
 p_{pk}'=\max(p_{pk},p_{comp,end})
-$$
+\]
+```
 
 The p-V burn window now follows the same combustion phasing model used for torque generation:
 
-$$
+```{=latex}
+\[
 \theta_{SOC}=\theta_{b,start}=360-\Delta\theta_{ign}+0.08\Delta\theta_{VVT,I}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \Delta\theta_b=
 \mathrm{clamp}\left(66-8\alpha_{th},38,75\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \theta_{EOC}=\theta_{SOC}+\Delta\theta_b
-$$
+\]
+```
 
 Blowdown timing remains fixed in the display model:
 
-$$
+```{=latex}
+\[
 \theta_{EVO}=565,\qquad \theta_{BD,end}=620\ \ [\deg]
-$$
+\]
+```
 
 Smoothstep:
 
-$$
+```{=latex}
+\[
 \mathrm{smoothstep}(x)=t^2(3-2t),\quad t=\mathrm{clamp}(x,0,1)
-$$
+\]
+```
 
 Burn progress:
 
-$$
+```{=latex}
+\[
 x_b=\mathrm{smoothstep}\left(\frac{\theta_{deg}-\theta_{SOC}}{\theta_{EOC}-\theta_{SOC}}\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 p_{tdc,fired}=p_{comp,end}+s_{comb}(p_{pk}'-p_{comp,end})x_b
-$$
+\]
+```
 
 Pressure piecewise model:
 
-$$
+```{=latex}
+\[
 p(\theta)=
 \begin{cases}
 p_{im}\left(1-0.02\sin^2\!\left(\pi\theta_{deg}/180\right)\right), & 0\le\theta_{deg}<180\\[4pt]
@@ -1179,43 +1452,54 @@ p_{im}\left(\dfrac{v_{max}}{v}\right)^{\gamma_c}, & 180\le\theta_{deg}<360\\[8pt
 p_{pow,EVO}+(p_{exh}-p_{pow,EVO})\mathrm{smoothstep}\!\left(\dfrac{\theta_{deg}-\theta_{EVO}}{\theta_{BD,end}-\theta_{EVO}}\right), & \theta_{EVO}\le\theta_{deg}<\theta_{BD,end}\\[8pt]
 p_{exh}+(p_{im}-p_{exh})\mathrm{smoothstep}\!\left(\dfrac{\theta_{deg}-\theta_{BD,end}}{720-\theta_{BD,end}}\right), & \theta_{BD,end}\le\theta_{deg}<720
 \end{cases}
-$$
+\]
+```
 
 where
 
-$$
+```{=latex}
+\[
 p_{pow,EVO}=p_{tdc,fired}\left(\frac{v_{min}}{v(\theta_{EVO})}\right)^{\gamma_e}
-$$
+\]
+```
 
 Final clamp:
 
-$$
+```{=latex}
+\[
 p\leftarrow \max(p,20000\ \mathrm{Pa})
-$$
+\]
+```
 
 Subsampling of each integration step (`pv_subsamples_per_step = N_{sub}`):
 
-$$
+```{=latex}
+\[
 \theta_i=\theta_{start}+(\theta_{end}-\theta_{start})\frac{i}{N_{sub}},\quad i=1,\dots,N_{sub}
-$$
+\]
+```
 
 with linear interpolation of state variables between previous and current state for each subsample.
 
 Recent-cycle retention:
 
-$$
+```{=latex}
+\[
 cycle_{min}=cycle_{current}-(N_{pv}-1)
-$$
+\]
+```
 
 and old samples with `cycle < cycle_min` are removed.
 
 Display smoothing by crank-angle bins:
 
-$$
+```{=latex}
+\[
 k=\left\lfloor \frac{\theta_{deg}}{720}\cdot 1440\right\rfloor,\quad
 \bar v_k=\frac{1}{n_k}\sum v_j,\quad
 \bar p_k=\frac{1}{n_k}\sum p_j
-$$
+\]
+```
 
 If enough bins are populated, plotted points are $\{(\bar v_k,\bar p_k)\}$ plus first-point closure.
 
@@ -1223,102 +1507,134 @@ If enough bins are populated, plotted points are $\{(\bar v_k,\bar p_k)\}$ plus 
 
 Net torque smoothing (first-order filter):
 
-$$
+```{=latex}
+\[
 \tau_{net,cycle\ mean}=\frac{1}{N_s}\sum_{j=1}^{N_s}\tau_{net,j}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \tau_{net,target}=
 \begin{cases}
 \dfrac{1}{N_r}\sum_{k=1}^{N_r}\tau_{net,cycle\ mean,k},\ \ N_r\le 4, & \text{at least one complete cycle exists}\\
 \tau_{net}, & \text{startup (before first complete cycle)}
 \end{cases}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \alpha_\tau=\mathrm{clamp}\left(\frac{\Delta t}{0.180+\Delta t},0,1\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \tau_{net,filt}\leftarrow \tau_{net,filt}+\alpha_\tau(\tau_{net,target}-\tau_{net,filt})
-$$
+\]
+```
 
 Combustion-cycle mean torque:
 
-$$
+```{=latex}
+\[
 \tau_{comb,cycle\ mean}=\frac{1}{N_s}\sum_{j=1}^{N_s}\tau_{comb,j}
-$$
+\]
+```
 
 (updated when a 720 deg cycle boundary is crossed).
 
 Theoretical Otto efficiency:
 
-$$
+```{=latex}
+\[
 \eta_{th,Otto}=\mathrm{clamp}\left(1-\frac{1}{r^{\gamma-1}},0,1\right)
-$$
+\]
+```
 
 Indicated cycle work from sampled p-V loop:
 
-$$
+```{=latex}
+\[
 V_i=v_i\cdot V_{d,cyl}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 W_i\approx \sum_{i=1}^{n-1}\frac{p_i+p_{i+1}}{2}(V_{i+1}-V_i)
 +\frac{p_n+p_1}{2}(V_1-V_n)
-$$
+\]
+```
 
 (`n<4` samples -> no valid cycle work).
 
 Mean indicated work over recent complete cycles:
 
-$$
+```{=latex}
+\[
 \bar W_i=\frac{1}{N}\sum_{c=1}^{N}W_{i,c},\quad N\le 3
-$$
+\]
+```
 
 IMEP and indicated thermal efficiency:
 
-$$
+```{=latex}
+\[
 IMEP=\frac{\bar W_i}{V_{d,cyl}},\qquad
 IMEP_{bar}=IMEP\times 10^{-5}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 Q_{in,cycle}=m_{f,cycle,cyl}LHV
-$$
+\]
+```
 
 For numerical stability under throttle transitions, the implementation uses recent-cycle average fuel:
 
-$$
+```{=latex}
+\[
 \bar m_{f,cycle}=\frac{1}{N}\sum_{c=1}^{N}m_{f,cycle,c},\quad N\le 3
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 Q_{in,cycle}=\bar m_{f,cycle}LHV
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \eta_{th,ind}=
 \begin{cases}
 \mathrm{clamp}\left(\dfrac{\bar W_i}{Q_{in,cycle}},-0.20,0.44\right), & Q_{in,cycle}>10^{-9}\\
 0, & \text{otherwise}
 \end{cases}
-$$
+\]
+```
 
 Idle-stable indicator in GUI:
 
-$$
+```{=latex}
+\[
 stable\_idle=
 running
 \land |\mathrm{rpm}-\mathrm{rpm}_{idle}|<90
 \land \alpha_{cmd}<0.20
-$$
+\]
+```
 
 GUI redraw cadence is capped to approximately:
 
-$$
+```{=latex}
+\[
 f_{GUI}\approx 30\ \mathrm{Hz}
-$$
+\]
+```
 
 ## Steady-State Efficiency Calibration (Default Config)
 
@@ -1339,9 +1655,11 @@ Reference sweep (test `steady_state_efficiency_sweep_matches_gasoline_si_range`)
 
 Target assertion band in test:
 
-$$
+```{=latex}
+\[
 0.08 \le \eta_{th,ind} \le 0.44
-$$
+\]
+```
 
 #### Representative periodic steady-state check
 
@@ -1359,25 +1677,31 @@ These points are therefore treated as periodic steady states of the reduced ODE:
 
 Centerlines with VVT:
 
-$$
+```{=latex}
+\[
 \theta_{I,center}=\theta_{I,cl}-\Delta\theta_{VVT,I},\qquad
 \theta_{E,center}=\theta_{E,cl}+\Delta\theta_{VVT,E}
-$$
+\]
+```
 
 For generic lobe (center $\theta_c$, duration $\Delta\theta$, max lift $L_{max}$):
 
-$$
+```{=latex}
+\[
 h=\max\left(\frac{\Delta\theta}{2},1\right),\quad
 \delta=((\theta-\theta_c+360)\bmod 720)-360
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 L(\theta)=
 \begin{cases}
 0, & |\delta|\ge h\\
 L_{max}\left[\frac{1+\cos\left(\pi\,\mathrm{clamp}(\delta/h,-1,1)\right)}{2}\right]^{1.2}, & |\delta|<h
 \end{cases}
-$$
+\]
+```
 
 ### 11. Exhaust audio synthesis model
 
@@ -1391,47 +1715,59 @@ The implemented audio model does not use recorded assets. It uses:
 
 The GUI observation supplies exhaust pressure in `kPa`:
 
-$$
+```{=latex}
+\[
 p_{exh,kPa}=10^{-3}p_{exh}
-$$
+\]
+```
 
 Normalized exhaust overpressure:
 
-$$
+```{=latex}
+\[
 p_n=\mathrm{clamp}\left(\frac{p_{exh,kPa}-p_{amb,kPa}}{\Delta p_{span}},0,1\right)
-$$
+\]
+```
 
 RPM gate:
 
-$$
+```{=latex}
+\[
 g_{rpm}=
 \mathrm{clamp}\left(
 \frac{\mathrm{rpm}-\mathrm{rpm}_{gate,0}}
 {\mathrm{rpm}_{gate,1}-\mathrm{rpm}_{gate,0}},
 0,1
 \right)^{\beta_{rpm}}
-$$
+\]
+```
 
 Smoothed pressure state and pressure rise:
 
-$$
+```{=latex}
+\[
 \tilde p_n=g_{rpm}p_n
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 p_s\leftarrow p_s+\alpha_p(\tilde p_n-p_s),\qquad
 \Delta p=p_s-p_{s,prev}
-$$
+\]
+```
 
 Pulse envelope:
 
-$$
+```{=latex}
+\[
 env\leftarrow
 \mathrm{clamp}\left(
 d_{env}\,env+k_{env,\Delta p}\max(\Delta p,0),
 env_{min},env_{max}
 \right)
-$$
+\]
+```
 
 At zero RPM, `g_{rpm}=0`, so the synthesized output is driven to silence.
 
@@ -1439,163 +1775,213 @@ At zero RPM, `g_{rpm}=0`, so the synthesized output is driven to silence.
 
 For a 4-stroke engine, the aggregate firing frequency is:
 
-$$
+```{=latex}
+\[
 f_{fire}=\frac{\mathrm{rpm}\,N_{cyl}}{120}
-$$
+\]
+```
 
 The phase state is advanced directly from this firing frequency:
 
-$$
+```{=latex}
+\[
 \phi\leftarrow \left(\phi+\frac{f_{fire}}{f_s}\right)\bmod 1
-$$
+\]
+```
 
 This is the core reason the sound rises in pitch with RPM. For example, a 4-cylinder engine gives
 $f_{fire}=33.3\ \mathrm{Hz}$ at `1000 rpm` and $100\ \mathrm{Hz}$ at `3000 rpm`.
 
 The per-event deterministic pulse shape is:
 
-$$
+```{=latex}
+\[
 p_{train}=\max\left(e^{-a_f\phi}-e^{-a_s\phi},0\right)
-$$
+\]
+```
 
 #### 11.3 Exhaust-pipe resonance from gas temperature
 
 The model uses ideal-gas sound speed in the hot exhaust stream:
 
-$$
+```{=latex}
+\[
 c_{exh}=\sqrt{\gamma_{air}R_{air}T_{exh}}
-$$
+\]
+```
 
 with clamped temperature state:
 
-$$
+```{=latex}
+\[
 T_{exh}\leftarrow
 \mathrm{clamp}(T_{exh},T_{exh,min},T_{exh,max})
-$$
+\]
+```
 
 Quarter-wave exhaust-pipe base frequency:
 
-$$
+```{=latex}
+\[
 f_q=\frac{c_{exh}}{4L_{pipe}}
-$$
+\]
+```
 
 Three resonator targets are placed at configurable odd-like modes:
 
-$$
+```{=latex}
+\[
 f_{1,target}=m_1f_q,\qquad
 f_{2,target}=m_2f_q,\qquad
 f_{3,target}=m_3f_q
-$$
+\]
+```
 
 Every `audio.model.resonator_retarget_interval` samples, each target is mapped to the realizable
 digital band-pass frequency:
 
-$$
+```{=latex}
+\[
 f_i=\mathrm{clamp}\left(f_{i,target},f_{min},\rho_{Nyq}f_s\right)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 Q_i=\max(Q_{i,target},Q_{min})
-$$
+\]
+```
 
 #### 11.4 Excitation, resonators, and output
 
 Pressure-rise click term:
 
-$$
+```{=latex}
+\[
 pulse_{\Delta p}=\mathrm{clamp}(k_{\Delta p}\Delta p,pulse_{min},pulse_{max})
-$$
+\]
+```
 
 Exhaust-pulse term:
 
-$$
+```{=latex}
+\[
 pulse_{exh}=p_{train}(b_{exh}+k_{exh}p_s)g_{rpm}
-$$
+\]
+```
 
 Sinusoidal support term:
 
-$$
+```{=latex}
+\[
 pulse_{sin}=k_{sin}\,env\,g_{rpm}\sin(2\pi\phi)
-$$
+\]
+```
 
 Total excitation:
 
-$$
+```{=latex}
+\[
 x=pulse_{\Delta p}+pulse_{exh}+pulse_{sin}
-$$
+\]
+```
 
 Three-resonator weighted sum:
 
-$$
+```{=latex}
+\[
 y_{res}=w_1y_1+w_2y_2+w_3y_3
-$$
+\]
+```
 
 Direct pulse and low rumble additions:
 
-$$
+```{=latex}
+\[
 y_{dir}=w_{dir}x
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 y_{rum}=k_{rum}\,env\,\sin(2\pi h_{rum}\phi)
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 raw=y_{res}+y_{dir}+y_{rum}
-$$
+\]
+```
 
 DC removal:
 
-$$
+```{=latex}
+\[
 dc\leftarrow d_{dc}\,dc+k_{dc}\,raw,\qquad raw\leftarrow raw-dc
-$$
+\]
+```
 
 Loudness model:
 
-$$
+```{=latex}
+\[
 G=
 \left(
 g_0+g_p p_s+g_{env}\min(env,1)
 \right)
 \max(G_{out},G_{out,min})g_{rpm}
-$$
+\]
+```
 
 Final output:
 
-$$
+```{=latex}
+\[
 audio=g_{lim}\tanh(G\,raw)
-$$
+\]
+```
 
 #### 11.5 Per-resonator digital filter equations
 
 For each resonator, the implemented RBJ-style band-pass coefficients are:
 
-$$
+```{=latex}
+\[
 \omega_0=\frac{2\pi f_i}{f_s},\qquad
 \alpha=\frac{\sin\omega_0}{2Q_i}
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 b_0=\alpha,\quad b_1=0,\quad b_2=-\alpha
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 a_0=1+\alpha,\quad a_1=-2\cos\omega_0,\quad a_2=1-\alpha
-$$
+\]
+```
 
-$$
+```{=latex}
+\[
 \tilde b_k=\frac{b_k}{a_0},\qquad
 \tilde a_1=\frac{a_1}{a_0},\qquad
 \tilde a_2=\frac{a_2}{a_0}
-$$
+\]
+```
 
 Difference equation:
 
-$$
+```{=latex}
+\[
 y_i[n]=
 \tilde b_0x[n]+\tilde b_1x[n-1]+\tilde b_2x[n-2]
 -\tilde a_1y_i[n-1]-\tilde a_2y_i[n-2]
-$$
+\]
+```
 
 ## Thermal Efficiency Metrics (as shown in GUI)
 
@@ -1624,9 +2010,11 @@ For the calibration-heavy sections, symbols are omitted where they would hurt re
 
 Total displacement is not tuned independently in YAML. It is derived from geometry as
 
-$$
+```{=latex}
+\[
 V_d = N_{cyl}\frac{\pi}{4}B^2S
-$$
+\]
+```
 
 | YAML key | Symbol | Unit | Sample value | Description |
 |---|---:|---:|---:|---|

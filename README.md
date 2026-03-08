@@ -20,39 +20,31 @@ The engine layout is fixed to 4 cylinders throughout the simulator. Any `history
 
 ## Windows 11 Binary Download
 
-Prebuilt portable Windows x64 binaries are intended to be distributed from the GitHub Releases page of this repository.
+Prebuilt portable Windows x64 binaries are intended to be distributed from the GitHub Releases page of this repository as individual assets rather than as a zip archive.
 
-Download the latest asset named like:
-
-```text
-es_sim-windows-x64-v0.1.0.zip
-```
-
-Then:
-
-1. Extract the zip to any writable folder on your Windows 11 machine.
-2. Keep the extracted folder structure intact.
-3. Run `es_sim.exe`.
-
-The release zip contains:
+Download these release assets:
 
 - `es_sim.exe`
-- `config/sim.yaml`
-- `README.md`
-- `README.ja.md`
+- `sim.yaml`
+- `es_sim-readme-en.pdf`
+- `es_sim-readme-ja.pdf`
+
+Optional supporting assets:
+
 - `LICENSE`
 
-Each release also publishes a matching SHA-256 file:
+To run on Windows 11:
+
+1. Create or choose any writable folder.
+2. Put `es_sim.exe` and `sim.yaml` in the same folder.
+3. Run `es_sim.exe`.
+
+The binary still accepts the historical `config/sim.yaml` path if you prefer the old subfolder layout.
+
+Each release also publishes a matching SHA-256 manifest for the Windows runtime assets:
 
 ```text
 es_sim-windows-x64-v0.1.0.sha256
-```
-
-Each release also publishes PDF documentation assets:
-
-```text
-es_sim-readme-en.pdf
-es_sim-readme-ja.pdf
 ```
 
 If you download from a successful CI run instead of a formal release, the Actions artifact names are:
@@ -66,23 +58,26 @@ If you download from a successful CI run instead of a formal release, the Action
 cargo run --release
 ```
 
-## Package A Local Windows Zip
+## Stage Local Windows Release Assets
 
-Build the release binary first, then package the same portable layout used by GitHub Actions:
+Build the release binary first, then stage the flat Windows runtime assets published to GitHub Releases:
 
 ```powershell
 cargo build --release
-powershell -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1 -Tag v0.1.0
+powershell -ExecutionPolicy Bypass -File .\scripts\prepare-release-assets.ps1 -Tag v0.1.0
 ```
 
-The generated files are written to `dist/`.
+The generated files are written to `dist/release-assets/`.
+README PDFs are still produced separately by `scripts/build-doc-pdfs.sh` or by the `release-windows` workflow.
+
+If you still want a local portable zip, `scripts/package-windows.ps1` remains available.
 
 ## GitHub Automation
 
 This repository includes two GitHub Actions workflows relevant to distribution:
 
 - `ci`: runs on push / pull request, builds/tests the release binary, uploads a portable Windows snapshot zip, and uploads English/Japanese README PDFs as Actions artifacts
-- `release-windows`: runs on tag push `v*` or manual dispatch, publishes the Windows zip, `.sha256`, and English/Japanese README PDFs to GitHub Releases
+- `release-windows`: runs on tag push `v*` or manual dispatch, publishes `es_sim.exe`, `sim.yaml`, `LICENSE`, a `.sha256` manifest, and English/Japanese README PDFs to GitHub Releases
 
 Maintainer release flow:
 
@@ -95,7 +90,7 @@ git push origin v0.1.0
 ```
 
 3. Wait for the `release-windows` workflow to finish.
-4. Download the generated zip from the GitHub Release page.
+4. Download the generated release assets from the GitHub Release page.
 
 If you prefer manual release creation from the Actions tab, run `release-windows` with a `tag_name` input. The workflow will create the GitHub release if it does not already exist.
 
@@ -114,6 +109,7 @@ If you prefer manual release creation from the Actions tab, run `release-windows
 ## Configuration (YAML)
 
 Configuration is loaded from `config/sim.yaml`.
+The release binary also falls back to `sim.yaml` placed beside `es_sim.exe` so flat GitHub Release downloads work without creating a `config/` subfolder.
 
 Tuning constants that were previously hard-coded are now centralized in YAML sections:
 

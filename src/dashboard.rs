@@ -101,6 +101,33 @@ struct BenchCurvePlotData {
     power_y_max: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GraphLayoutHeights {
+    standard_plot_px: f32,
+    pv_plot_px: f32,
+    bench_torque_plot_px: f32,
+    bench_power_plot_px: f32,
+    section_spacing_px: f32,
+}
+
+fn graph_layout_heights(ui_config: &UiConfig, bench_visible: bool) -> GraphLayoutHeights {
+    let scale = if bench_visible { 0.62 } else { 1.0 };
+    let standard_plot_px = (ui_config.plot_height_px * scale).max(72.0);
+    let pv_plot_px = (ui_config.pv_plot_height_px * scale).max(standard_plot_px * 1.75);
+    let bench_torque_multiplier = if bench_visible { 1.4 } else { 2.0 };
+    let bench_power_multiplier = if bench_visible { 1.05 } else { 1.35 };
+
+    GraphLayoutHeights {
+        standard_plot_px,
+        pv_plot_px,
+        bench_torque_plot_px: (ui_config.plot_height_px * bench_torque_multiplier * scale)
+            .max(standard_plot_px * 1.25),
+        bench_power_plot_px: (ui_config.plot_height_px * bench_power_multiplier * scale)
+            .max(standard_plot_px),
+        section_spacing_px: if bench_visible { 4.0 } else { 8.0 },
+    }
+}
+
 fn bench_curve_plot_data(
     bench_results: &[BenchSample],
     preview_results: &[BenchSample],
@@ -379,6 +406,64 @@ fn faded_cycle_color(base: egui::Color32, index: usize, total: usize) -> egui::C
     )
 }
 
+fn adaptive_plot_y_range(
+    min_max: Option<(f64, f64)>,
+    min_span: f64,
+    margin_ratio: f64,
+    clamp_min: Option<f64>,
+) -> (f64, f64) {
+    let min_span = min_span.max(f64::EPSILON);
+    let (data_min, data_max) = min_max.unwrap_or((0.0, 0.0));
+    let span = (data_max - data_min).max(min_span);
+    let pad = span * margin_ratio.max(0.0);
+    let center = 0.5 * (data_min + data_max);
+    let half_range = 0.5 * span + pad;
+
+    let mut y_min = center - half_range;
+    let mut y_max = center + half_range;
+
+    if let Some(lower_floor) = clamp_min {
+        if y_min < lower_floor {
+            let shift = lower_floor - y_min;
+            y_min = lower_floor;
+            y_max += shift;
+        }
+    }
+
+    if y_max - y_min < min_span {
+        let grow = 0.5 * (min_span - (y_max - y_min));
+        y_min -= grow;
+        y_max += grow;
+        if let Some(lower_floor) = clamp_min {
+            if y_min < lower_floor {
+                let shift = lower_floor - y_min;
+                y_min = lower_floor;
+                y_max += shift;
+            }
+        }
+    }
+
+    (y_min, y_max.max(y_min + min_span))
+}
+
+fn combine_min_max(a: Option<(f64, f64)>, b: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    match (a, b) {
+        (Some((a_min, a_max)), Some((b_min, b_max))) => Some((a_min.min(b_min), a_max.max(b_max))),
+        (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
+        (None, None) => None,
+    }
+}
+
+fn cylinder_trace_color(index: usize) -> egui::Color32 {
+    const COLORS: [egui::Color32; 4] = [
+        egui::Color32::from_rgb(255, 170, 40),
+        egui::Color32::from_rgb(90, 180, 255),
+        egui::Color32::from_rgb(110, 220, 150),
+        egui::Color32::from_rgb(255, 105, 125),
+    ];
+    COLORS[index % COLORS.len()]
+}
+
 // The dashboard owns real-time pacing, user controls, and fixed-range plots.
 struct DashboardApp {
     config: AppConfig,
@@ -566,7 +651,13 @@ impl DashboardApp {
         }
     }
 
-    fn render_bench_curve(&self, ui: &mut egui::Ui) {
+    fn bench_curve_visible(&self) -> bool {
+        !self.bench.results().is_empty()
+            || !self.bench.preview_results().is_empty()
+            || self.bench.live_sample().is_some()
+    }
+
+    fn render_bench_curve(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
         let bench_results = self.bench.results();
         let bench_preview = self.bench.preview_results();
         let live_bench = self.bench.live_sample();
@@ -585,7 +676,7 @@ impl DashboardApp {
             ui.label(&plot.summary);
 
             Plot::new("bench_torque_curve_plot")
-                .height(self.ui_config.plot_height_px * 2.0)
+                .height(graph_heights.bench_torque_plot_px)
                 .allow_scroll(false)
                 .allow_drag(false)
                 .allow_zoom(false)
@@ -664,7 +755,7 @@ impl DashboardApp {
                 });
 
             Plot::new("bench_power_curve_plot")
-                .height(self.ui_config.plot_height_px * 1.35)
+                .height(graph_heights.bench_power_plot_px)
                 .allow_scroll(false)
                 .allow_drag(false)
                 .allow_zoom(false)
@@ -734,10 +825,10 @@ impl DashboardApp {
                     }
                 });
         });
-        ui.add_space(8.0);
+        ui.add_space(graph_heights.section_spacing_px);
     }
 
-    fn render_pv_plot(&self, ui: &mut egui::Ui) {
+    fn render_pv_plot(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
         let pv_points: PlotPoints<'_> = self
             .latest
             .pv_points
@@ -761,7 +852,7 @@ impl DashboardApp {
 
         ui.group(|ui| {
             Plot::new("pv_plot")
-                .height(self.ui_config.pv_plot_height_px)
+                .height(graph_heights.pv_plot_px)
                 .allow_scroll(false)
                 .allow_drag(false)
                 .allow_zoom(false)
@@ -778,7 +869,58 @@ impl DashboardApp {
                     plot_ui.line(pv_line);
                 });
         });
-        ui.add_space(8.0);
+    }
+
+    fn render_ptheta_plot(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
+        let sample_count = (self.sim.model.pv_display_bins / FIXED_CYLINDER_COUNT).max(360);
+        let curves = self.sim.build_ptheta_display_curves(sample_count);
+        let ptheta_y_peak_kpa = curves
+            .iter()
+            .flat_map(|curve| curve.iter().map(|(_, p)| *p * 1e-3))
+            .fold(self.sim.plot.pv_y_min_kpa, f64::max);
+        let ptheta_y_max_plot = self.sim.plot.pv_y_max_kpa.max(
+            (ptheta_y_peak_kpa * self.ui_config.pv_headroom_ratio)
+                .max(self.sim.plot.pv_y_min_kpa + self.ui_config.pv_min_headroom_kpa),
+        );
+
+        ui.group(|ui| {
+            Plot::new("ptheta_plot")
+                .height(graph_heights.pv_plot_px)
+                .allow_scroll(false)
+                .allow_drag(false)
+                .allow_zoom(false)
+                .legend(Legend::default())
+                .x_axis_label("Crank angle [degCA]")
+                .y_axis_label("Pressure [kPa]")
+                .show(ui, |plot_ui| {
+                    plot_ui.set_auto_bounds(false);
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                        [0.0, self.sim.plot.pv_y_min_kpa],
+                        [720.0, ptheta_y_max_plot],
+                    ));
+                    for (cylinder_idx, curve) in curves.iter().enumerate() {
+                        if curve.is_empty() {
+                            continue;
+                        }
+                        let points: PlotPoints<'_> =
+                            curve.iter().map(|(theta, p)| [*theta, *p * 1e-3]).collect();
+                        plot_ui.line(
+                            Line::new(points)
+                                .name(format!("Cyl {}", cylinder_idx + 1))
+                                .color(cylinder_trace_color(cylinder_idx))
+                                .width(self.ui_config.line_width_px),
+                        );
+                    }
+                });
+        });
+    }
+
+    fn render_pressure_plots(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
+        ui.columns(2, |columns| {
+            self.render_pv_plot(&mut columns[0], graph_heights);
+            self.render_ptheta_plot(&mut columns[1], graph_heights);
+        });
+        ui.add_space(graph_heights.section_spacing_px);
     }
 }
 
@@ -786,7 +928,9 @@ impl DashboardApp {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::{bench_curve_plot_data, recent_cycle_plot_lines};
+    use super::{
+        adaptive_plot_y_range, bench_curve_plot_data, graph_layout_heights, recent_cycle_plot_lines,
+    };
     use crate::config::{AppConfig, BenchMixtureMode};
     use crate::simulator::{BenchSample, BenchSession, ControlInput, CycleHistorySample};
 
@@ -867,6 +1011,49 @@ mod tests {
         );
         assert!(plot.y_max >= cfg.ui.torque_floor_abs_nm);
         assert!(plot.x_max > plot.x_min);
+    }
+
+    #[test]
+    fn graph_layout_compacts_when_bench_is_visible() {
+        let cfg = AppConfig::default();
+
+        let normal = graph_layout_heights(&cfg.ui, false);
+        let compact = graph_layout_heights(&cfg.ui, true);
+
+        assert!(compact.standard_plot_px < normal.standard_plot_px);
+        assert!(compact.pv_plot_px < normal.pv_plot_px);
+        assert!(compact.bench_torque_plot_px < normal.bench_torque_plot_px);
+        assert!(compact.bench_power_plot_px < normal.bench_power_plot_px);
+        assert!(compact.section_spacing_px < normal.section_spacing_px);
+    }
+
+    #[test]
+    fn adaptive_plot_y_range_tracks_positive_operating_window() {
+        let (y_min, y_max) =
+            adaptive_plot_y_range(Some((1_990.0, 2_010.0)), 150.0, 0.15, Some(0.0));
+
+        assert!(
+            y_min > 1_800.0,
+            "lower bound should follow the operating point"
+        );
+        assert!(
+            y_max < 2_200.0,
+            "upper bound should stay near the operating point"
+        );
+    }
+
+    #[test]
+    fn adaptive_plot_y_range_keeps_signed_trace_centered() {
+        let (y_min, y_max) = adaptive_plot_y_range(Some((145.0, 150.0)), 10.0, 0.15, None);
+
+        assert!(
+            y_min > 130.0,
+            "signed plot should not be anchored near zero"
+        );
+        assert!(
+            y_max < 170.0,
+            "signed plot should keep a compact dynamic range"
+        );
     }
 
     #[test]
@@ -1135,8 +1322,10 @@ impl eframe::App for DashboardApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_pv_plot(ui);
-            self.render_bench_curve(ui);
+            let graph_heights = graph_layout_heights(&self.ui_config, self.bench_curve_visible());
+
+            self.render_pressure_plots(ui, graph_heights);
+            self.render_bench_curve(ui, graph_heights);
 
             ui.columns(2, |columns| {
                 columns[0].group(|ui| {
@@ -1238,10 +1427,16 @@ impl eframe::App for DashboardApp {
 
                 columns[1].group(|ui| {
                     let recent_cycles = self.sim.plot.history_recent_cycles.max(1);
-                    let rpm_lines =
-                        recent_cycle_plot_lines(&self.sim.history_rpm, recent_cycles);
+                    let rpm_lines = recent_cycle_plot_lines(&self.sim.history_rpm, recent_cycles);
+                    let rpm_min_span = (self.sim.params.max_rpm * 0.04).max(150.0);
+                    let (rpm_y_min, rpm_y_max) = adaptive_plot_y_range(
+                        recent_cycle_min_max(&self.sim.history_rpm, recent_cycles),
+                        rpm_min_span,
+                        self.ui_config.torque_margin_ratio,
+                        Some(0.0),
+                    );
                     Plot::new("rpm_plot")
-                        .height(self.ui_config.plot_height_px)
+                        .height(graph_heights.standard_plot_px)
                         .allow_scroll(false)
                         .allow_drag(false)
                         .allow_zoom(false)
@@ -1251,8 +1446,8 @@ impl eframe::App for DashboardApp {
                         .show(ui, |plot_ui| {
                             plot_ui.set_auto_bounds(false);
                             plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                [0.0, 0.0],
-                                [720.0, self.sim.params.max_rpm],
+                                [0.0, rpm_y_min],
+                                [720.0, rpm_y_max],
                             ));
                             let total = rpm_lines.len();
                             for (idx, points) in rpm_lines.into_iter().enumerate() {
@@ -1274,26 +1469,17 @@ impl eframe::App for DashboardApp {
                         recent_cycle_plot_lines(&self.sim.history_torque_net_nm, recent_cycles);
                     let load_lines =
                         recent_cycle_plot_lines(&self.sim.history_torque_load_nm, recent_cycles);
-                    let (torque_min, torque_max) = recent_cycle_min_max(
-                        &self.sim.history_torque_net_nm,
-                        recent_cycles,
-                    )
-                    .into_iter()
-                    .chain(recent_cycle_min_max(
-                        &self.sim.history_torque_load_nm,
-                        recent_cycles,
-                    ))
-                    .fold((0.0_f64, 0.0_f64), |(mn, mx), (local_min, local_max)| {
-                        (mn.min(local_min), mx.max(local_max))
-                    });
-                    let torque_span =
-                        (torque_max - torque_min).max(self.ui_config.torque_min_span_nm);
-                    let torque_y_min = (torque_min - self.ui_config.torque_margin_ratio * torque_span)
-                        .min(-self.ui_config.torque_floor_abs_nm);
-                    let torque_y_max = (torque_max + self.ui_config.torque_margin_ratio * torque_span)
-                        .max(self.ui_config.torque_floor_abs_nm);
+                    let (torque_y_min, torque_y_max) = adaptive_plot_y_range(
+                        combine_min_max(
+                            recent_cycle_min_max(&self.sim.history_torque_net_nm, recent_cycles),
+                            recent_cycle_min_max(&self.sim.history_torque_load_nm, recent_cycles),
+                        ),
+                        self.ui_config.torque_min_span_nm,
+                        self.ui_config.torque_margin_ratio,
+                        None,
+                    );
                     Plot::new("torque_plot")
-                        .height(self.ui_config.plot_height_px)
+                        .height(graph_heights.standard_plot_px)
                         .allow_scroll(false)
                         .allow_drag(false)
                         .allow_zoom(false)
@@ -1339,16 +1525,16 @@ impl eframe::App for DashboardApp {
 
                     let trapped_air_lines =
                         recent_cycle_plot_lines(&self.sim.history_trapped_air_mg, recent_cycles);
-                    let trapped_air_y_max = recent_cycle_min_max(
-                        &self.sim.history_trapped_air_mg,
-                        recent_cycles,
-                    )
-                        .map(|(_, ymax)| ymax)
-                        .unwrap_or(0.0)
-                        .max(self.ui_config.trapped_air_min_y_max_mg)
-                        * self.ui_config.trapped_air_headroom_ratio;
+                    let trapped_air_min_span =
+                        (self.ui_config.trapped_air_min_y_max_mg * 0.25).max(20.0);
+                    let (trapped_air_y_min, trapped_air_y_max) = adaptive_plot_y_range(
+                        recent_cycle_min_max(&self.sim.history_trapped_air_mg, recent_cycles),
+                        trapped_air_min_span,
+                        self.ui_config.torque_margin_ratio,
+                        Some(0.0),
+                    );
                     Plot::new("air_mass_plot")
-                        .height(self.ui_config.plot_height_px)
+                        .height(graph_heights.standard_plot_px)
                         .allow_scroll(false)
                         .allow_drag(false)
                         .allow_zoom(false)
@@ -1358,7 +1544,7 @@ impl eframe::App for DashboardApp {
                         .show(ui, |plot_ui| {
                             plot_ui.set_auto_bounds(false);
                             plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                [0.0, 0.0],
+                                [0.0, trapped_air_y_min],
                                 [720.0, trapped_air_y_max],
                             ));
                             let total = trapped_air_lines.len();
@@ -1392,7 +1578,7 @@ impl eframe::App for DashboardApp {
                         .color(egui::Color32::from_rgb(170, 170, 170))
                         .width(self.ui_config.crank_line_width_px);
                     Plot::new("cam_plot")
-                        .height(self.ui_config.plot_height_px)
+                        .height(graph_heights.standard_plot_px)
                         .allow_scroll(false)
                         .allow_drag(false)
                         .allow_zoom(false)

@@ -1567,6 +1567,78 @@ impl Simulator {
         averaged
     }
 
+    fn displayed_pv_peak_pressure_pa(
+        &self,
+        p_intake_pa: f64,
+        fuel_mass_cycle_cyl_kg: f64,
+        heat_loss_cycle_j: f64,
+        phase_eff: f64,
+    ) -> f64 {
+        let clearance_volume_cyl = self
+            .clearance_volume_per_cylinder_m3()
+            .max(self.model.clearance_volume_floor_m3);
+        let compression_peak = (p_intake_pa
+            * self
+                .params
+                .compression_ratio
+                .powf(self.model.compression_peak_gamma))
+        .clamp(p_intake_pa, self.model.compression_peak_max_pa);
+        let fuel_heat_cycle_j = fuel_mass_cycle_cyl_kg * FUEL_LHV_J_PER_KG;
+        let load = (p_intake_pa / self.env.ambient_pressure_pa)
+            .clamp(self.model.load_min, self.model.load_max);
+        let combustion_pressure_gain = self.model.combustion_pressure_gain
+            * load.powf(self.model.combustion_pressure_load_exponent);
+        let effective_fuel_heat_j = (fuel_heat_cycle_j - heat_loss_cycle_j).max(0.0);
+        let delta_p_comb =
+            combustion_pressure_gain * phase_eff * effective_fuel_heat_j / clearance_volume_cyl;
+        (compression_peak + delta_p_comb).clamp(compression_peak, self.model.peak_pressure_max_pa)
+    }
+
+    pub(crate) fn build_ptheta_display_curves(&self, samples: usize) -> Vec<Vec<(f64, f64)>> {
+        let rpm = rad_s_to_rpm(self.state.omega_rad_s.max(0.0));
+        if !self.pv_display_active(rpm, self.state) {
+            return Vec::new();
+        }
+
+        let count = samples.max(180);
+        let firing_interval = self.firing_interval_deg();
+        let mut global_curves = vec![Vec::with_capacity(count + 1); FIXED_CYLINDER_COUNT];
+
+        for i in 0..=count {
+            let global_theta_deg = 720.0 * i as f64 / count as f64;
+            let sample_state = EngineState {
+                theta_rad: global_theta_deg.to_radians(),
+                ..self.state
+            };
+            let eval = self.eval(sample_state);
+            let p_peak_pa = self.displayed_pv_peak_pressure_pa(
+                eval.p_intake_cyl_pa,
+                eval.fuel_mass_cycle_cyl_kg,
+                eval.heat_loss_cycle_j,
+                eval.phase_eff,
+            );
+
+            for cylinder_idx in 0..FIXED_CYLINDER_COUNT {
+                let offset_deg = cylinder_idx as f64 * firing_interval;
+                let local_theta_deg = (global_theta_deg - offset_deg).rem_euclid(720.0);
+                let (_, pressure_pa) = instantaneous_pv_sample(
+                    self.params.compression_ratio,
+                    local_theta_deg.to_radians(),
+                    eval.p_intake_cyl_pa,
+                    eval.p_exhaust_cyl_pa,
+                    p_peak_pa,
+                    eval.combustion_enabled,
+                    eval.burn_start_deg,
+                    eval.burn_start_deg + eval.burn_duration_deg,
+                    &self.model.pv_model,
+                );
+                global_curves[cylinder_idx].push((global_theta_deg, pressure_pa));
+            }
+        }
+
+        global_curves
+    }
+
     fn ignition_timing_deg(&self) -> f64 {
         self.control.ignition_timing_deg.clamp(
             self.model.ignition_timing_min_deg,
@@ -1999,9 +2071,6 @@ impl Simulator {
         }
 
         let subsamples = self.plot.pv_subsamples_per_step.max(1);
-        let clearance_volume_cyl = self
-            .clearance_volume_per_cylinder_m3()
-            .max(self.model.clearance_volume_floor_m3);
         let combustion_active = eval_prev.combustion_enabled || eval_next.combustion_enabled;
 
         // Reconstruct a dense recent-cycle p-V loop by interpolating step endpoints instead of
@@ -2033,24 +2102,14 @@ impl Simulator {
                 frac,
             )
             .max(1.0);
-            let compression_peak = (p_intake
-                * self
-                    .params
-                    .compression_ratio
-                    .powf(self.model.compression_peak_gamma))
-            .clamp(p_intake, self.model.compression_peak_max_pa);
-            let fuel_heat_cycle_j = fuel_mass_cycle_cyl * FUEL_LHV_J_PER_KG;
-            let load = (p_intake / self.env.ambient_pressure_pa)
-                .clamp(self.model.load_min, self.model.load_max);
-            let combustion_pressure_gain = self.model.combustion_pressure_gain
-                * load.powf(self.model.combustion_pressure_load_exponent);
-            let effective_fuel_heat_j = (fuel_heat_cycle_j - heat_loss_cycle_j).max(0.0);
-            let delta_p_comb =
-                combustion_pressure_gain * phase_eff * effective_fuel_heat_j / clearance_volume_cyl;
-            let p_peak = (compression_peak + delta_p_comb)
-                .clamp(compression_peak, self.model.peak_pressure_max_pa);
             let combustion_enabled = combustion_active
                 && fuel_mass_cycle_cyl > self.model.fuel_mass_presence_threshold_kg;
+            let p_peak = self.displayed_pv_peak_pressure_pa(
+                p_intake,
+                fuel_mass_cycle_cyl,
+                heat_loss_cycle_j,
+                phase_eff,
+            );
             let (volume_rel, pressure_pa) = instantaneous_pv_sample(
                 self.params.compression_ratio,
                 theta,
@@ -5325,6 +5384,39 @@ mod tests {
         assert!(
             peak_late > peak_early + 8.0,
             "retarded burn window should shift the pressure peak later, early peak={peak_early:.1} deg late peak={peak_late:.1} deg"
+        );
+    }
+
+    #[test]
+    fn ptheta_curves_show_staggered_cylinder_peaks() {
+        let cfg = AppConfig::default();
+        let mut sim = Simulator::new(&cfg);
+        configure_high_rpm_operating_point(&mut sim, 4_500.0, 1.0);
+
+        let global_curves = sim.build_ptheta_display_curves(360);
+        assert_eq!(global_curves.len(), FIXED_CYLINDER_COUNT);
+
+        let mut global_peaks: Vec<f64> = global_curves
+            .iter()
+            .map(|curve| {
+                curve
+                    .iter()
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|point| point.0)
+                    .expect("global p-theta curve should not be empty")
+            })
+            .collect();
+        global_peaks.sort_by(|a, b| a.total_cmp(b));
+        let mut global_spacings: Vec<f64> = global_peaks
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect();
+        global_spacings.push(global_peaks[0] + 720.0 - global_peaks[FIXED_CYLINDER_COUNT - 1]);
+        assert!(
+            global_spacings
+                .iter()
+                .all(|spacing| (*spacing - 180.0).abs() < 50.0),
+            "global p-theta peaks should be staggered across the 720 deg cycle, peaks={global_peaks:?}"
         );
     }
 

@@ -45,8 +45,8 @@ jobs:
           "prerelease=$prerelease" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
-  build-windows-package:
-    name: Build Windows x64 portable release
+  build-windows-release-assets:
+    name: Build Windows x64 release assets
     runs-on: windows-2022
     needs: resolve-release-metadata
 
@@ -70,18 +70,17 @@ jobs:
         shell: pwsh
         run: cargo test --release -- --nocapture
 
-      - name: Package portable Windows zip
+      - name: Stage raw Windows release assets
         id: package
         shell: pwsh
-        run: pwsh -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1 -Tag "${{ needs.resolve-release-metadata.outputs.tag }}"
+        run: pwsh -ExecutionPolicy Bypass -File ./scripts/prepare-release-assets.ps1 -Tag "${{ needs.resolve-release-metadata.outputs.tag }}"
 
-      - name: Upload packaged release artifact
+      - name: Upload Windows release asset bundle
         uses: actions/upload-artifact@v4
         with:
-          name: es_sim-windows-x64-release
+          name: es_sim-windows-x64-release-assets
           path: |
-            dist/*.zip
-            dist/*.sha256
+            dist/release-assets/*
           if-no-files-found: error
           retention-days: 30
 
@@ -144,14 +143,14 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - resolve-release-metadata
-      - build-windows-package
+      - build-windows-release-assets
       - build-docs-pdf
 
     steps:
-      - name: Download Windows package artifact
+      - name: Download Windows release asset bundle
         uses: actions/download-artifact@v4
         with:
-          name: es_sim-windows-x64-release
+          name: es_sim-windows-x64-release-assets
           path: dist
 
       - name: Download README PDF artifact

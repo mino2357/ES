@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -1103,20 +1103,58 @@ impl AppConfig {
     }
 }
 
+fn push_config_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn config_candidate_paths(path: &Path, executable_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_config_candidate(&mut candidates, path.to_path_buf());
+
+    if path.is_absolute() {
+        return candidates;
+    }
+
+    if let Some(dir) = executable_dir {
+        push_config_candidate(&mut candidates, dir.join(path));
+    }
+
+    if let Some(file_name) = path.file_name() {
+        push_config_candidate(&mut candidates, PathBuf::from(file_name));
+        if let Some(dir) = executable_dir {
+            push_config_candidate(&mut candidates, dir.join(file_name));
+        }
+    }
+
+    candidates
+}
+
 pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
     // Fall back to defaults on missing or malformed YAML so the app remains runnable.
     let path = path.as_ref();
-    let text = match fs::read_to_string(path) {
-        Ok(v) => v,
-        Err(_) => return AppConfig::default(),
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|current_exe| current_exe.parent().map(Path::to_path_buf));
+
+    let Some((resolved_path, text)) = config_candidate_paths(path, executable_dir.as_deref())
+        .into_iter()
+        .find_map(|candidate| match fs::read_to_string(&candidate) {
+            Ok(text) => Some((candidate, text)),
+            Err(_) => None,
+        })
+    else {
+        return AppConfig::default();
     };
+
     match serde_yaml::from_str::<AppConfig>(&text) {
         Ok(mut cfg) => {
             cfg.sync_derived_fields();
             cfg
         }
         Err(e) => {
-            eprintln!("Failed to parse {}: {e}", path.display());
+            eprintln!("Failed to parse {}: {e}", resolved_path.display());
             AppConfig::default()
         }
     }
@@ -1124,9 +1162,9 @@ pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::{BenchMixtureMode, load_config};
+    use super::{BenchMixtureMode, config_candidate_paths, load_config};
 
     #[test]
     fn checked_in_yaml_with_comments_parses() {
@@ -1165,5 +1203,24 @@ mod tests {
         assert_eq!(cfg.bench.steps_per_frame, 8_000);
         assert!((cfg.bench.frame_time_budget_ms - 18.0).abs() < 1.0e-12);
         assert_eq!(cfg.bench.default_mode, BenchMixtureMode::RichChargeCooling);
+    }
+
+    #[test]
+    fn flat_release_layout_is_checked_after_nested_config_path() {
+        let executable_dir = Path::new("dist").join("release-assets");
+        let candidates = config_candidate_paths(
+            Path::new("config").join("sim.yaml").as_path(),
+            Some(&executable_dir),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("config").join("sim.yaml"),
+                executable_dir.join("config").join("sim.yaml"),
+                PathBuf::from("sim.yaml"),
+                executable_dir.join("sim.yaml"),
+            ]
+        );
     }
 }

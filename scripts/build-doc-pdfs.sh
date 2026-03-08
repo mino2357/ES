@@ -27,8 +27,10 @@ python3 "$repo_root/scripts/prepare_markdown_for_pdf.py" \
 
 common_args=(
   --from
-  gfm+tex_math_dollars
+  gfm+tex_math_dollars+raw_attribute
   --pdf-engine=xelatex
+  --include-in-header
+  "$repo_root/scripts/pandoc-pdf-header.tex"
   --toc
   -V
   geometry:margin=20mm
