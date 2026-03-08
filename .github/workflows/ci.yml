@@ -63,6 +63,11 @@ jobs:
       - name: Set up Pandoc
         uses: r-lib/actions/setup-pandoc@v2
 
+      - name: Show PDF toolchain versions
+        run: |
+          pandoc --version | head -n 2
+          xelatex --version | head -n 2 || true
+
       - name: Install XeLaTeX and Japanese fonts
         run: |
           sudo apt-get update
@@ -74,8 +79,23 @@ jobs:
             fonts-noto-cjk \
             fonts-dejavu-core
 
+      - name: Verify required Japanese fonts are available
+        run: |
+          fc-list : family | grep -F "Noto Serif CJK JP" >/dev/null
+          fc-list : family | grep -F "Noto Serif" >/dev/null
+          fc-list : family | grep -F "Noto Sans" >/dev/null
+
       - name: Build README PDFs
         run: bash ./scripts/build-doc-pdfs.sh
+
+      - name: Upload prepared markdown (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: es_sim-docs-pdf-debug-markdown
+          path: dist/docs/*.pdf.md
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload README PDF artifact
         uses: actions/upload-artifact@v4
