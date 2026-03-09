@@ -13,9 +13,11 @@ pub(crate) struct AudioParams {
     pub(crate) exhaust_pressure_kpa: f32,
     pub(crate) exhaust_runner_pressure_kpa: f32,
     pub(crate) intake_runner_pressure_kpa: f32,
+    pub(crate) exhaust_wave_kpa: f32,
     pub(crate) exhaust_runner_flow_gps: f32,
     pub(crate) engine_speed_rpm: f32,
     pub(crate) exhaust_temp_k: f32,
+    pub(crate) cycle_deg: f32,
     pub(crate) output_gain: f32,
 }
 
@@ -25,9 +27,11 @@ impl Default for AudioParams {
             exhaust_pressure_kpa: 101.325,
             exhaust_runner_pressure_kpa: 101.325,
             intake_runner_pressure_kpa: 101.325,
+            exhaust_wave_kpa: 0.0,
             exhaust_runner_flow_gps: 0.0,
             engine_speed_rpm: 0.0,
             exhaust_temp_k: 880.0,
+            cycle_deg: 0.0,
             output_gain: 1.0,
         }
     }
@@ -128,18 +132,29 @@ struct EngineSoundCore {
     runner_pressure_smooth: f32,
     prev_runner_pressure_smooth: f32,
     intake_pressure_smooth: f32,
+    wave_pressure_smooth: f32,
     flow_smooth: f32,
     pulse_env: f32,
     pulse_phase: f32,
     dc_state: f32,
     loudness_env_state: f32,
     loudness_gain_state: f32,
+    jet_noise_lp_state: f32,
+    turbulence_state: u32,
+    reflection_line: Vec<f32>,
+    reflection_write_idx: usize,
     res_1: Resonator,
     res_2: Resonator,
     res_3: Resonator,
 }
 
 impl EngineSoundCore {
+    const PHASE_LOCK_GAIN: f32 = 0.045;
+    const PIPE_REFLECTION_FEEDBACK: f32 = 0.34;
+    const PIPE_REFLECTION_MIX: f32 = 0.46;
+    const JET_NOISE_GAIN: f32 = 0.18;
+    const JET_NOISE_COLOR_ALPHA: f32 = 0.08;
+
     fn new(sample_rate: u32, model: AudioModelConfig) -> Self {
         let sr = sample_rate as f32;
         let initial_params = AudioParams::default();
@@ -158,6 +173,7 @@ impl EngineSoundCore {
         let res_freq_min = model.resonator_freq_min_hz;
         let res_freq_max_ratio = model.resonator_freq_max_nyquist_ratio;
         let res_q_min = model.resonator_q_min;
+        let max_delay_samples = Self::max_reflection_delay_samples(sample_rate, &model);
         Self {
             sample_rate,
             model,
@@ -167,12 +183,17 @@ impl EngineSoundCore {
             runner_pressure_smooth: 0.0,
             prev_runner_pressure_smooth: 0.0,
             intake_pressure_smooth: 0.0,
+            wave_pressure_smooth: 0.0,
             flow_smooth: 0.0,
             pulse_env: 0.0,
             pulse_phase: 0.0,
             dc_state: 0.0,
             loudness_env_state: 0.0,
             loudness_gain_state: 1.0,
+            jet_noise_lp_state: 0.0,
+            turbulence_state: 0x1234_5678,
+            reflection_line: vec![0.0; max_delay_samples],
+            reflection_write_idx: 0,
             res_1: Resonator::new(
                 sr,
                 res_1_freq,
@@ -204,6 +225,46 @@ impl EngineSoundCore {
         self.params = params;
     }
 
+    fn max_reflection_delay_samples(sample_rate: u32, model: &AudioModelConfig) -> usize {
+        let sound_speed_min =
+            (GAMMA_AIR as f32 * R_AIR as f32 * model.exhaust_temp_min_k.max(1.0)).sqrt();
+        let round_trip_s = 2.0 * model.exhaust_pipe_length_m.max(0.1) / sound_speed_min.max(1.0);
+        ((round_trip_s * sample_rate as f32).ceil() as usize + 8).max(32)
+    }
+
+    fn wrap_unit_phase_error(target: f32, current: f32) -> f32 {
+        let mut error = (target - current).rem_euclid(1.0);
+        if error > 0.5 {
+            error -= 1.0;
+        }
+        error
+    }
+
+    fn next_turbulence_sample(&mut self) -> f32 {
+        // Deterministic wideband seed used as a turbulence surrogate; this avoids asset playback.
+        let mut x = self.turbulence_state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.turbulence_state = x;
+        let white = (x as f32 / u32::MAX as f32) * 2.0 - 1.0;
+        self.jet_noise_lp_state += Self::JET_NOISE_COLOR_ALPHA * (white - self.jet_noise_lp_state);
+        white - self.jet_noise_lp_state
+    }
+
+    fn reflection_step(&mut self, input: f32, delay_samples: usize) -> f32 {
+        let len = self.reflection_line.len();
+        let delay = delay_samples.clamp(1, len.saturating_sub(1));
+        let read_idx = (self.reflection_write_idx + len - delay) % len;
+        let delayed = self.reflection_line[read_idx];
+        // A simple round-trip comb captures the sign-inverted tailpipe reflection without
+        // building a full 1D waveguide solver.
+        self.reflection_line[self.reflection_write_idx] =
+            input - Self::PIPE_REFLECTION_FEEDBACK * delayed;
+        self.reflection_write_idx = (self.reflection_write_idx + 1) % len;
+        delayed
+    }
+
     fn next_sample(&mut self) -> f32 {
         // Convert the slowly updated engine state into one deterministic exhaust-audio sample.
         let sr = self.sample_rate as f32;
@@ -218,6 +279,7 @@ impl EngineSoundCore {
             .params
             .exhaust_temp_k
             .clamp(self.model.exhaust_temp_min_k, self.model.exhaust_temp_max_k);
+        let sound_speed_mps = (GAMMA_AIR as f32 * R_AIR as f32 * exhaust_temp_k).sqrt();
         let target_collector_norm = ((self.params.exhaust_pressure_kpa
             - self.model.ambient_pressure_kpa)
             / self.model.pressure_span_kpa)
@@ -233,6 +295,9 @@ impl EngineSoundCore {
             / self.model.pressure_span_kpa)
             .clamp(0.0, 1.0)
             * rpm_gate;
+        let target_wave_norm = (self.params.exhaust_wave_kpa.abs() / self.model.pressure_span_kpa)
+            .clamp(0.0, 1.0)
+            * rpm_gate;
         let target_flow_norm = (self.params.exhaust_runner_flow_gps.abs()
             / self.model.flow_span_gps.max(1.0e-3))
         .clamp(0.0, 1.0)
@@ -243,6 +308,8 @@ impl EngineSoundCore {
             * (target_runner_norm - self.runner_pressure_smooth);
         self.intake_pressure_smooth += self.model.pressure_smoothing_alpha
             * (target_intake_norm - self.intake_pressure_smooth);
+        self.wave_pressure_smooth +=
+            self.model.pressure_smoothing_alpha * (target_wave_norm - self.wave_pressure_smooth);
         self.flow_smooth +=
             self.model.pressure_smoothing_alpha * (target_flow_norm - self.flow_smooth);
         let dp_runner = self.runner_pressure_smooth - self.prev_runner_pressure_smooth;
@@ -253,7 +320,6 @@ impl EngineSoundCore {
             .is_multiple_of(self.model.resonator_retarget_interval.max(1) as u64)
         {
             // Retune the resonators lazily; exhaust temperature evolves far slower than audio rate.
-            let sound_speed_mps = (GAMMA_AIR as f32 * R_AIR as f32 * exhaust_temp_k).sqrt();
             let quarter_wave_hz =
                 sound_speed_mps / (4.0 * self.model.exhaust_pipe_length_m.max(0.1));
             self.res_1.set_band_pass(
@@ -282,12 +348,18 @@ impl EngineSoundCore {
             );
         }
 
-        // Pressure rise excites the pulse envelope, while firing frequency drives the periodic train.
+        // Pressure rise excites the pulse envelope, while the real simulated cycle angle keeps
+        // the event train phase-locked to the crank instead of free-running from RPM alone.
         self.pulse_env = (self.pulse_env * self.model.pulse_env_decay
             + (dp_runner.max(0.0) * self.model.pulse_env_dp_gain)
             + self.model.flow_pulse_gain * self.flow_smooth)
             .clamp(self.model.pulse_env_min, self.model.pulse_env_max);
         self.pulse_phase = (self.pulse_phase + firing_hz / sr).fract();
+        let observed_phase = (self.params.cycle_deg / 180.0).rem_euclid(1.0);
+        self.pulse_phase = (self.pulse_phase
+            + Self::PHASE_LOCK_GAIN
+                * Self::wrap_unit_phase_error(observed_phase, self.pulse_phase))
+        .fract();
         let x = self.pulse_phase;
         // Deterministic pulse-train from a decaying exhaust-event shape.
         let pulse_train = ((-self.model.pulse_shape_decay_fast * x).exp()
@@ -299,21 +371,35 @@ impl EngineSoundCore {
             + self.flow_smooth;
         let pressure_pulse = (dp_runner * self.model.pressure_pulse_gain)
             .clamp(self.model.pressure_pulse_min, self.model.pressure_pulse_max);
+        let wave_gain = 1.0 + 0.55 * self.wave_pressure_smooth;
         let exhaust_pulse = pulse_train
             * (self.model.exhaust_pulse_base + self.model.exhaust_pulse_gain * pressure_drive)
+            * wave_gain
             * rpm_gate;
         let excitation = pressure_pulse
             + exhaust_pulse
             + self.model.pulse_sine_gain * self.pulse_env * rpm_gate * (TAU_F32 * x).sin();
+        let reflection_delay = ((2.0 * self.model.exhaust_pipe_length_m.max(0.1) / sound_speed_mps)
+            * sr)
+            .round()
+            .clamp(1.0, self.reflection_line.len().saturating_sub(1) as f32)
+            as usize;
+        let reflected = self.reflection_step(excitation, reflection_delay);
+        let pipe_excitation = excitation - Self::PIPE_REFLECTION_MIX * reflected;
+        let turbulence_drive = (self.flow_smooth.powf(1.15)
+            * (0.30 + 0.55 * self.runner_pressure_smooth + 0.35 * self.wave_pressure_smooth)
+            * (0.35 + 0.65 * pulse_train))
+            .clamp(0.0, 1.6);
+        let turbulence = Self::JET_NOISE_GAIN * turbulence_drive * self.next_turbulence_sample();
 
-        let resonated = self.model.resonator_mix_1 * self.res_1.process(excitation)
-            + self.model.resonator_mix_2 * self.res_2.process(excitation)
-            + self.model.resonator_mix_3 * self.res_3.process(excitation);
-        let direct_pulse = self.model.direct_pulse_mix * excitation;
+        let resonated = self.model.resonator_mix_1 * self.res_1.process(pipe_excitation)
+            + self.model.resonator_mix_2 * self.res_2.process(pipe_excitation)
+            + self.model.resonator_mix_3 * self.res_3.process(pipe_excitation);
+        let direct_pulse = self.model.direct_pulse_mix * pipe_excitation;
         let rumble = self.model.rumble_gain
             * self.pulse_env
             * (TAU_F32 * self.model.rumble_harmonic * x).sin();
-        let mut raw = resonated + direct_pulse + rumble;
+        let mut raw = resonated + direct_pulse + 0.55 * turbulence + rumble;
 
         // Remove slowly varying bias before the final soft limiter.
         self.dc_state =
@@ -451,6 +537,15 @@ pub(crate) fn render_engine_audio(params: AudioParams, seconds: f32, sample_rate
     // Test helper that renders offline without touching the host audio device.
     let frames = (seconds * sample_rate as f32).round() as usize;
     let mut core = EngineSoundCore::new(sample_rate, AudioModelConfig::default());
-    core.set_params(params);
-    (0..frames).map(|_| core.next_sample()).collect()
+    let mut live_params = params;
+    (0..frames)
+        .map(|_| {
+            core.set_params(live_params);
+            let sample = core.next_sample();
+            live_params.cycle_deg = (live_params.cycle_deg
+                + live_params.engine_speed_rpm * 6.0 / sample_rate as f32)
+                .rem_euclid(720.0);
+            sample
+        })
+        .collect()
 }

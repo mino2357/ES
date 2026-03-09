@@ -1,106 +1,318 @@
-# ES
+﻿# ES
 
-Language: [English](README.md) | 譌･譛ｬ隱・
-Rust + egui 縺ｧ螳溯｣・＠縺・4 繧ｹ繝医Ο繝ｼ繧ｯ繧ｨ繝ｳ繧ｸ繝ｳ迚ｩ逅・す繝溘Η繝ｬ繝ｼ繧ｿ縺ｧ縺吶・
-縺薙・譌･譛ｬ隱樒沿 README 縺ｯ縲∝茜逕ｨ譁ｹ豕輔；itHub 縺九ｉ縺ｮ驟榊ｸ・ｰ守ｷ壹∵焚逅・Δ繝・Ν縺ｮ隕∫せ縲∽ｻ｣陦ｨ逧・↑讀懆ｨｼ邨先棡繧呈律譛ｬ隱槭〒縺ｾ縺ｨ繧√◆陬懷勧繝峨く繝･繝｡繝ｳ繝医〒縺吶・
-螳溯｣・↓蟇ｾ縺吶ｋ荳谺｡雉・侭縺ｯ縲∬恭隱樒沿縺ｮ [README.md](README.md) 縺ｨ `config/sim.yaml` 縺ｮ繧ｳ繝｡繝ｳ繝医〒縺吶・
-## 讎りｦ・
-譛ｬ繧ｷ繝溘Η繝ｬ繝ｼ繧ｿ縺ｯ 0 谺｡蜈・・蟷ｳ蝮・､繧ｨ繝ｳ繧ｸ繝ｳ繝｢繝・Ν繧・RK2・・idpoint・峨〒遨榊・縺励∵ｬ｡繧貞庄隕門喧縺励∪縺吶・
-- 蝗櫁ｻ｢謨ｰ縺ｮ縲檎峩霑代↓螳御ｺ・＠縺・`N` 繧ｵ繧､繧ｯ繝ｫ + 迴ｾ蝨ｨ騾ｲ陦御ｸｭ縺ｮ繧ｵ繧､繧ｯ繝ｫ縲阪・驥阪・謠上″・・0..720 degCA`・・- 繝阪ャ繝医ヨ繝ｫ繧ｯ螻･豁ｴ縺ｨ螟夜Κ雋闕ｷ繝医Ν繧ｯ螻･豁ｴ縺ｮ縲檎峩霑代↓螳御ｺ・＠縺・`N` 繧ｵ繧､繧ｯ繝ｫ + 迴ｾ蝨ｨ騾ｲ陦御ｸｭ縺ｮ繧ｵ繧､繧ｯ繝ｫ縲阪・驥阪・謠上″・・0..720 degCA`・・- 辯・┥邱丞・蜉帙→豁｣蜻ｳ繝悶Ξ繝ｼ繧ｭ蜃ｺ蜉幢ｼ・kW`, `HP`・・- 蜷ｸ蜈･遨ｺ豌苓ｳｪ驥上・縲檎峩霑代↓螳御ｺ・＠縺・`N` 繧ｵ繧､繧ｯ繝ｫ + 迴ｾ蝨ｨ騾ｲ陦御ｸｭ縺ｮ繧ｵ繧､繧ｯ繝ｫ縲阪・驥阪・謠上″・・mg/cyl`, `0..720 degCA`・・- 逶ｴ霑第焚繧ｵ繧､繧ｯ繝ｫ縺ｮ `p-V` 邱壼峙
-- 繧ｫ繝繝ｪ繝輔ヨ繝励Ο繝輔ぃ繧､繝ｫ
-- 辭ｱ蜉ｹ邇・欠讓・
-髻ｳ縺ｯ螳滄鹸髻ｳ繧｢繧ｻ繝・ヨ縺ｧ縺ｯ縺ｪ縺上∫捩轣ｫ蜻ｨ豕｢謨ｰ縲∵賜豌怜悸蜉幄ц蜍輔∵賜豌礼ｳｻ蜈ｱ魑ｴ縺九ｉ蜷域・縺励∪縺吶・
-## Windows 11 繝舌う繝翫Μ縺ｨ PDF 縺ｮ蜿門ｾ・
-GitHub Releases 縺九ｉ縲仝indows x64 縺ｮ繝舌う繝翫Μ縺ｨ PDF 繧・zip 縺ｧ縺ｯ縺ｪ縺丞句挨繧｢繧ｻ繝・ヨ縺ｨ縺励※蜿門ｾ励〒縺阪∪縺吶・
-荳ｻ縺ｪ繧｢繧ｻ繝・ヨ縺ｯ谺｡縺ｧ縺吶・
+Language: [English](README.md) | 日本語
+
+Rust で実装した固定 4 気筒・4 ストロークのエンジンシミュレータです。  
+このリポジトリには、目的の異なる 2 つの実行経路があります。
+
+| 実行経路 | 目的 | 入力 | 出力 | 実装 |
+| --- | --- | --- | --- | --- |
+| `es_sim` | リアルタイム GUI 可視化 | `config/sim.yaml` | 画面表示、合成音、ベンチ曲線 | `src/main.rs`, `src/dashboard.rs`, `src/simulator.rs`, `src/audio.rs` |
+| `es_cli` / `es_hp` | 依存ゼロの headless / offline 高精度 CLI | `config/high_precision.yaml` | `torque_curve.csv`, `torque_summary.csv`, `pv_<rpm>rpm.csv`, report text | `src/bin/es_cli.rs`, `src/bin/es_hp.rs`, `src/hp/*` |
+
+英語版 README は詳細な長文版です。  
+日本語版では、実装と直接対応づけながら「何が動くか」「何を仮定しているか」「どこまで物理と言えるか」を追いやすい形にまとめます。
+
+## 用語と表記
+
+この README は、この文書だけで読めるように書きます。  
+日本語で定着した訳語がないか、訳すと意味が狭まる語は English のまま使い、直後で意味を定義します。
+
+- `realtime GUI path`
+  `es_sim` の実行経路です。リアルタイム表示と音声合成を伴う対話的な経路を指します。
+- `GUI`
+  graphical user interface です。
+- `headless CLI path`
+  `es_cli` / `es_hp` の実行経路です。GUI や音声依存を持たず、CSV や text report を出力する非対話的な経路を指します。
+- `CLI`
+  command-line interface です。
+- `compatibility alias`
+  主バイナリ名とは別に残している互換名です。このリポジトリでは `es_hp` が `es_cli` と同じ実装を呼びます。
+- `offline`
+  wall-clock のリアルタイム制約を持たない実行形態を指します。headless path は headless であると同時に offline です。
+- `plausibility audit`
+  設定ファイル読込後に行う range / sanity check です。値が parse できても、実機として不自然なら reject します。
+- `reduced-order mean-value model`
+  状態数を抑えた集約モデルです。吸排気系、燃焼、トルクの平均的・代表的な挙動を保持しますが、CFD や full 1D gas dynamics code そのものではありません。
+- `single-zone`
+  気筒内を空間的に複数領域へ分けず、1 つの代表熱力学状態で扱う cylinder model を指します。
+- `ODE`
+  ordinary differential equation です。常微分方程式を指します。
+- `RK3` / `RK4`
+  explicit 3 次 / 4 次 Runge-Kutta 積分公式です。
+- `PI controller`
+  proportional-integral controller です。
+- `bench`
+  GUI 内の自動トルクカーブ計測機能です。物理的な試験設備そのものではなく、software 上の test-bench mode を意味します。
+- `dyno`
+  `bench` 中で回転数保持と brake torque 計測を担う absorber / load-holding surrogate を指します。
+- `sweep`
+  throttle や mixture 条件を固定したまま、RPM を掃引して torque / power curve を取る一連の operating point 列です。
+- `lambda`
+  空燃比を stoichiometric air-fuel ratio で正規化した air-fuel equivalence ratio です。`lambda < 1` は rich、`lambda = 1` は stoichiometric、`lambda > 1` は lean です。
+- `YAML`
+  設定入力に使う human-readable text format です。
+- `CSV`
+  計算結果出力に使う comma-separated values format です。
+- `VVT`
+  variable valve timing です。
+- `EGR`
+  exhaust gas recirculation です。このリポジトリで `internal EGR` と書く場合は、外部 EGR ループではなく overlap と backflow によって残る residual gas を指します。
+- `SI`
+  spark ignition です。
+- `WOT`
+  wide-open throttle です。
+- `NA`
+  naturally aspirated です。過給のないエンジンを指します。
+- `OEM`
+  original equipment manufacturer です。この README では、較正比較に使うメーカー公表スペックを指します。
+- `plenum`
+  intake runner の上流にある共通吸気容積です。
+- `runner`
+  共通容積と cylinder-side boundary を結ぶ intake / exhaust duct です。
+- `collector`
+  exhaust runner / header primary の下流にある共通排気容積です。
+- `degCA`
+  crank-angle degree です。4 ストローク 1 cycle を `0 .. 720` で表します。
+- `TDC` / `BDC`
+  top dead center / bottom dead center です。
+- `BTDC`
+  before top dead center です。
+- `VE`
+  volumetric efficiency です。
+- `IMEP` / `BMEP`
+  indicated / brake mean effective pressure です。
+- `BSFC`
+  brake-specific fuel consumption です。
+- `APK`
+  Android application package です。
+
+以下の節で略語を再展開しない場合は、この節の定義を優先します。
+
+## 概要
+
+### `es_sim` が行うこと
+
+`es_sim` は、0 次元の reduced-order mean-value エンジンモデルをリアルタイム積分し、次を可視化します。
+
+- 回転数履歴
+- 正味トルク / 外部負荷トルク
+- 吸入空気量
+- 燃焼出力 / 正味出力
+- `p-V` 線図
+- `p-theta` 線図（4 気筒重ね描き、`0..720 degCA`）
+- カムリフト
+- ベンチのトルク / 出力曲線
+
+音は実録音ではなく、クランク同期の排気イベント、排気圧力 / 流量、簡易な管反射、排気共鳴を使った合成音です。
+
+### `es_cli` が行うこと
+
+`es_cli` は、GUI や音声依存を持たない headless / offline solver です。`es_hp` は同じ実装を呼ぶ互換 alias です。  
+入力は YAML、出力は CSV に限定し、リアルタイム性よりも crank-angle 基準の解析を優先します。
+
+- `torque_curve.csv`
+- `pv_<rpm>rpm.csv`
+
+headless 高精度経路の詳細は [HIGH_PRECISION_HEADLESS_MODEL.md](HIGH_PRECISION_HEADLESS_MODEL.md) に、YAML 監査結果は [HIGH_PRECISION_PARAMETER_AUDIT.md](HIGH_PRECISION_PARAMETER_AUDIT.md) にまとめています。
+公開スペックに対する較正ターゲットと現在の一致度は [ENGINE_REFERENCE_TARGETS.md](ENGINE_REFERENCE_TARGETS.md) にまとめています。
+
+### 固定 4 気筒について
+
+このリポジトリの GUI / headless ともに、現在の実装は固定 4 気筒です。  
+README 中の「サイクル」は履歴表示しているエンジンサイクルを指し、気筒数を指しません。
+
+`config/sim.yaml` は [src/config/audit.rs](src/config/audit.rs) で physical / practical range audit を通します。  
+物理量は実機としてありうる範囲、audio / UI / numerics は runtime 上の実用範囲で検証します。
+
+## ビルドと実行
+
+### GUI 版
+
+`Cargo.toml` では `gui` feature が default です。  
+そのため通常の `cargo run` は GUI バイナリ `es_sim` を起動します。
+
+```bash
+cargo run --release
+```
+
+対応箇所:
+
+- バイナリ定義: [Cargo.toml](Cargo.toml)
+- エントリポイント: [src/main.rs](src/main.rs)
+- 設定ロード: [src/config.rs](src/config.rs)
+- GUI 描画: [src/dashboard.rs](src/dashboard.rs)
+- エンジン状態更新: [src/simulator.rs](src/simulator.rs)
+- 音声合成: [src/audio.rs](src/audio.rs)
+
+### Android 実行
+
+Android でも `es_sim` を動かせるように、GUI 側に `cdylib` と `android_main` を追加しています。  
+実装の入口は [src/lib.rs](src/lib.rs) で、`eframe` の Android 起動は [src/dashboard.rs](src/dashboard.rs) にあります。
+
+現状の方針:
+
+- 画面と数理モデルは desktop GUI 版と同じ
+- `config/sim.yaml` は APK に埋め込んで使う
+- 端末ストレージ上の外部 YAML 読み込みはまだ未実装
+
+手順は [ANDROID.md](ANDROID.md) にまとめています。  
+最短実行コマンドは次です。
+
+```bash
+cargo apk run --lib --release --target aarch64-linux-android
+```
+
+### headless 高精度 CLI
+
+headless solver `es_cli` は、`eframe`、`rodio`、`serde_yaml` などの GUI 依存を使わない別バイナリです。`es_hp` は互換 alias として残しています。
+
+```bash
+cargo run --no-default-features --bin es_cli -- validate config/high_precision.yaml
+cargo run --no-default-features --bin es_cli -- sweep config/high_precision.yaml
+cargo run --no-default-features --bin es_cli -- point config/high_precision.yaml --rpm 3500 --write-pv
+```
+
+対応箇所:
+
+- feature 分離: [Cargo.toml](Cargo.toml)
+- エントリポイント: [src/bin/es_cli.rs](src/bin/es_cli.rs), [src/bin/es_hp.rs](src/bin/es_hp.rs)
+- YAML parser / validator: [src/hp/config.rs](src/hp/config.rs), [src/hp/yaml.rs](src/hp/yaml.rs)
+- solver: [src/hp/model.rs](src/hp/model.rs)
+- CLI / report: [src/hp/cli.rs](src/hp/cli.rs), [src/hp/report.rs](src/hp/report.rs)
+- CSV 出力: [src/hp/csv.rs](src/hp/csv.rs)
+
+## Windows 11 バイナリと Release 配布
+
+GitHub Releases では zip ではなく、個別の release asset として配布する前提です。
+
+主要アセット:
+
 - `es_sim.exe`
 - `sim.yaml`
 - `es_sim-readme-en.pdf`
 - `es_sim-readme-ja.pdf`
 
-陬懷勧繧｢繧ｻ繝・ヨ:
+補助アセット:
 
 - `LICENSE`
+- `es_sim-windows-x64-vX.Y.Z.sha256`
 
-Windows 11 縺ｧ縺ｮ螳溯｡梧焔鬆・
+実行手順:
 
-1. 譖ｸ縺崎ｾｼ縺ｿ蜿ｯ閭ｽ縺ｪ繝輔か繝ｫ繝繧堤畑諢上☆繧・2. `es_sim.exe` 縺ｨ `sim.yaml` 繧貞酔縺倥ヵ繧ｩ繝ｫ繝縺ｫ鄂ｮ縺・3. `es_sim.exe` 繧定ｵｷ蜍輔☆繧・
-蠕捺擂縺ｩ縺翫ｊ `config/sim.yaml` 驟咲ｽｮ縺ｧ繧ょ虚菴懊＠縺ｾ縺吶・
-蜷後§ release 縺ｫ縺ｯ Windows 螳溯｡檎畑繧｢繧ｻ繝・ヨ縺ｮ謨ｴ蜷育｢ｺ隱咲畑 SHA-256 繝槭ル繝輔ぉ繧ｹ繝医ｂ蜷ｫ繧√∪縺吶・
-```text
-es_sim-windows-x64-v0.1.0.sha256
-```
+1. 書き込み可能なフォルダを用意します。
+2. `es_sim.exe` と `sim.yaml` を同じフォルダに置きます。
+3. `es_sim.exe` を実行します。
 
-GitHub Actions 縺ｮ謌仙粥 run 縺九ｉ蜿門ｾ励☆繧句ｴ蜷医√い繝ｼ繝・ぅ繝輔ぃ繧ｯ繝亥錐縺ｯ谺｡縺ｧ縺吶・
-- `es_sim-windows-x64-snapshot`
-- `es_sim-docs-pdf-snapshot`
+設定探索の実装は [src/config.rs](src/config.rs) にあり、従来の `config/sim.yaml` に加え、`es_sim.exe` の横の `sim.yaml` も読みます。  
+これは flat な release asset 配布をそのまま動かすためです。
 
-## 繧ｽ繝ｼ繧ｹ縺九ｉ螳溯｡・
-```bash
-cargo run --release
-```
+## GitHub Actions
 
-## 繝ｭ繝ｼ繧ｫ繝ｫ縺ｧ Windows release 逕ｨ繧｢繧ｻ繝・ヨ繧剃ｽ懊ｋ
+このリポジトリには、配布に関係する workflow が 2 本あります。
+
+- [ci.yml](.github/workflows/ci.yml)
+  Windows の build/test と snapshot artifact、README PDF artifact を生成します。
+- [release-windows.yml](.github/workflows/release-windows.yml)
+  `v*` タグまたは manual dispatch で Windows release asset と README PDF を GitHub Releases に公開します。
+
+ローカルで release asset を揃える場合:
 
 ```powershell
 cargo build --release
 powershell -ExecutionPolicy Bypass -File .\scripts\prepare-release-assets.ps1 -Tag v0.1.0
 ```
 
-逕滓・迚ｩ縺ｯ `dist/release-assets/` 縺ｫ蜃ｺ蜉帙＆繧後∪縺吶・
-README PDF 縺ｯ `scripts/build-doc-pdfs.sh` 縺ｾ縺溘・ `release-windows` 繝ｯ繝ｼ繧ｯ繝輔Ο繝ｼ縺悟挨騾皮函謌舌＠縺ｾ縺吶・
-繝ｭ繝ｼ繧ｫ繝ｫ遒ｺ隱咲畑縺ｫ zip 縺悟ｿ・ｦ√↑繧・`scripts/package-windows.ps1` 繧ょｼ輔″邯壹″菴ｿ縺医∪縺吶・
-## GitHub Automation
+生成物は `dist/release-assets/` に出力されます。
 
-縺薙・繝ｪ繝昴ず繝医Μ縺ｧ縺ｯ縲・・蟶・↓髢｢菫ゅ☆繧九Ρ繝ｼ繧ｯ繝輔Ο繝ｼ繧・2 譛ｬ逕ｨ諢上＠縺ｦ縺・∪縺吶・
-- `ci`
-  push / pull request 縺斐→縺ｫ release build 縺ｨ繝・せ繝医ｒ螳溯｡後＠縲仝indows 繧ｹ繝翫ャ繝励す繝ｧ繝・ヨ zip 縺ｨ闍ｱ譌･ README PDF 繧偵い繝ｼ繝・ぅ繝輔ぃ繧ｯ繝医→縺励※繧｢繝・・繝ｭ繝ｼ繝峨＠縺ｾ縺吶・- `release-windows`
-  `v*` tag push 縺ｾ縺溘・ manual dispatch 縺ｧ縲～es_sim.exe`縲～sim.yaml`縲～LICENSE`縲～.sha256` 繝槭ル繝輔ぉ繧ｹ繝医∬恭譌･ README PDF 繧・GitHub Releases 縺ｫ蜈ｬ髢九＠縺ｾ縺吶・
-菫晏ｮ郁・髄縺代・蝓ｺ譛ｬ繝輔Ο繝ｼ縺ｯ谺｡縺ｧ縺吶・
-1. 蠢・ｦ√↑繧・`Cargo.toml` 縺ｮ version 繧呈峩譁ｰ縺吶ｋ
-2. `v0.1.0` 縺ｮ繧医≧縺ｪ tag 繧・push 縺吶ｋ
-3. `release-windows` 縺ｮ螳御ｺ・ｒ蠕・▽
-4. GitHub Releases 縺九ｉ蠢・ｦ√↑繧｢繧ｻ繝・ヨ繧貞叙蠕励☆繧・
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
+## キーボードショートカット
 
-## 繧ｭ繝ｼ繝懊・繝峨す繝ｧ繝ｼ繝医き繝・ヨ
+- `A`: Auto Start + Idle の ON/OFF
+- `O`: Auto WOT Efficiency Search の ON/OFF
+- `B`: 選択中の自動ベンチを開始 / 停止
+- `L`: `lambda=1` ベンチを開始 / 停止
+- `S`: Starter の ON/OFF
+- `I`: Spark の ON/OFF
+- `F`: Fuel の ON/OFF
+- `W` / `X`: Throttle の増減
+- `Q`: 終了
 
-- `A`: Auto Start + Idle 縺ｮ ON/OFF
-- `O`: Auto WOT Efficiency Search 縺ｮ ON/OFF
-- `B`: 驕ｸ謚樔ｸｭ縺ｮ閾ｪ蜍輔・繝ｳ繝√せ繧､繝ｼ繝励・髢句ｧ・/ 蛛懈ｭ｢
-- `L`: `lambda=1` 繝吶Φ繝√・髢句ｧ・/ 蛛懈ｭ｢
-- `S`: Starter 縺ｮ ON/OFF
-- `I`: Spark 縺ｮ ON/OFF
-- `F`: Fuel 縺ｮ ON/OFF
-- `W` / `X`: Throttle 縺ｮ蠅玲ｸ・- `Q`: 邨ゆｺ・
-## YAML 險ｭ螳・
-險ｭ螳壹ヵ繧｡繧､繝ｫ縺ｯ `config/sim.yaml` 縺ｧ縺吶・
-Release 縺ｮ蜊倅ｽ薙い繧ｻ繝・ヨ驟榊ｸ・〒縺ｯ縲～es_sim.exe` 縺ｨ蜷後§繝輔か繝ｫ繝縺ｫ鄂ｮ縺・◆ `sim.yaml` 繧り・蜍墓､懷・縺励∪縺吶・
-迴ｾ蝨ｨ縺ｯ繝槭ず繝・け繝翫Φ繝舌・縺ｮ螟ｧ蜊翫ｒ YAML 縺ｫ蟇・○縺ｦ縺・∪縺吶・
-荳ｻ隕√そ繧ｯ繧ｷ繝ｧ繝ｳ:
+ショートカット処理は [src/dashboard.rs](src/dashboard.rs) にあります。
 
-- `environment.*`: 蜻ｨ蝗ｲ蝨ｧ蜉帙∝精豌玲ｸｩ蠎ｦ縲∵賜豌玲ｸｩ蠎ｦ縲∝渕貅匁凾髢灘綾縺ｿ
-- `engine.*`: 蟷ｾ菴輔∵・諤ｧ縲∵束謫ｦ縲∝推蛻ｶ蠕｡菴鍋ｩ阪・擇遨阪∫岼讓吶い繧､繝峨Ν蝗櫁ｻ｢謨ｰ縲∵怙螟ｧ蝗櫁ｻ｢謨ｰ
-- `cam.*`: 繧ｻ繝ｳ繧ｿ繝ｼ繝ｩ繧､繝ｳ縲∽ｽ懷虚隗偵∵怙螟ｧ繝ｪ繝輔ヨ
-- `auto_control.*`: auto idle / auto WOT 縺ｮ縺励″縺・､縲￣I繧ｲ繧､繝ｳ縲∵爾邏｢譚｡莉ｶ
-- `model.*`: 辯・┥縲∵ｵ・㍼縲〃E縲∫・謳榊､ｱ縲∬ц蜍輔～p-V` 蜀肴ｧ区・縲√ヨ繝ｫ繧ｯ蟷ｳ貊大喧縺ｪ縺ｩ縺ｮ菴取ｬ｡蜈・Δ繝・Ν菫よ焚
-- `numerics.*`: RPM 騾｣蜍墓凾髢灘綾縺ｿ縺ｨ隱､蟾ｮ豁｣隕丞喧
-- `bench.*`: 閾ｪ蜍輔・繝ｳ繝√・繧ｹ繧､繝ｼ繝玲擅莉ｶ縲∵ｷｷ蜷域ｰ励Δ繝ｼ繝峨∫ｩ榊・險ｭ螳・- `plot.*`: 螻･豁ｴ髟ｷ縺ｨ霆ｸ遽・峇
-- `ui.*`: GUI 譖ｴ譁ｰ蜻ｨ譛溘→蜷・ｨｮ謠冗判蟇ｸ豕・- `audio.model.*`: 逹轣ｫ蜻ｨ豕｢謨ｰ繝吶・繧ｹ髻ｳ貅舌・菫よ焚
+## YAML 設定
 
-蜈ｨ鬆・岼縺ｮ隱ｬ譏弱・ `config/sim.yaml` 縺ｮ繧ｳ繝｡繝ｳ繝医ｒ蜿ら・縺励※縺上□縺輔＞縲り恭隱樒沿 README 縺ｫ縺ｯ縲∝ｮ溯｣・°繧芽ｪｭ縺ｿ蜃ｺ縺輔ｌ繧九ヱ繝ｩ繝｡繝ｼ繧ｿ荳隕ｧ繧ゅ≠繧翫∪縺吶・
-## 蜿ｯ隕門喧縺ｮ隕区婿
+### GUI 用 `config/sim.yaml`
 
-迴ｾ蝨ｨ縺ｮ繝繝・す繝･繝懊・繝峨・縲∫㏍辟ｼ隗｣譫仙ｰら畑險域ｸｬ蝎ｨ縺ｨ縺・≧繧医ｊ縲∝ｹｳ蝮・､繧ｨ繝ｳ繧ｸ繝ｳ繝｢繝・Ν縲√ラ繝ｩ繧､繝舌ン繝ｪ繝・ぅ縲∝宛蠕｡縺ｮ隕ｳ轤ｹ縺九ｉ隱ｭ繧陦ｨ遉ｺ縺ｨ閠・∴繧九・縺碁←蛻・〒縺吶・
-- 蝗櫁ｻ｢謨ｰ縲√ヨ繝ｫ繧ｯ縲∫ｩｺ豌鈴㍼螻･豁ｴ縺ｮ讓ｪ霆ｸ縺ｯ繧ｵ繝ｳ繝励Ν逡ｪ蜿ｷ縺ｧ縺・- 螳滓凾髢・`s` 繧・け繝ｩ繝ｳ繧ｯ隗偵・霆ｸ縺ｧ縺ｯ縺ゅｊ縺ｾ縺帙ｓ
-- `p-V` 邱壼峙縺ｯ蜿ｯ隕門喧逕ｨ縺ｮ蜀肴ｧ区・繝｢繝・Ν縺ｧ縲∝宍蟇・↑遲貞・蝨ｧ ODE 縺ｮ逶ｴ謗･隗｣縺ｧ縺ｯ縺ゅｊ縺ｾ縺帙ｓ
-- 縺溘□縺励∫㏍譁呎兜蜈･驥上∫㏍辟ｼ菴咲嶌縲∫・謳榊､ｱ縺ｮ蜈･蜉帙・譛ｬ菴薙Δ繝・Ν縺ｨ荳閾ｴ縺輔○縺ｦ縺・∪縺・- 繧ｫ繝蝗ｳ縺ｯ繝舌Ν繝悶う繝吶Φ繝域凾譛溘→繝ｪ繝輔ヨ縺ｮ蜿ｯ隕門喧縺ｧ縺・- 繝吶Φ繝√・騾｣邯・WOT 繧ｹ繧､繝ｼ繝励〒縲・幕蟋狗峩蠕後↓邊励＞ locked-cycle 霑台ｼｼ縺九ｉ蜊ｳ譎・preview 譖ｲ邱壹ｒ謠上″縲√◎縺ｮ蠕後↓ GUI 縺ｮ繝ｪ繧｢繝ｫ繧ｿ繧､繝蛻ｶ邏・°繧牙・繧企屬縺励◆遨榊・縺ｧ繝医Ν繧ｯ / 蜃ｺ蜉帶峇邱壹ｒ霑ｽ縺・ｾｼ縺ｿ縺ｾ縺・
-## 螳溯｣・→蟇ｾ蠢懊☆繧区焚逅・Δ繝・Ν
+リアルタイム GUI 経路の設定は [config/sim.yaml](config/sim.yaml) です。  
+`src/config.rs` の struct は基本的にこの YAML の section と対応しています。
 
-### 迥ｶ諷九・繧ｯ繝医Ν
+主要セクション:
+
+- `environment.*`: 周囲圧、吸排気温度、基準 `dt`
+- `engine.*`: ボア / ストローク、圧縮比、慣性、容積、スロットル面積
+- `cam.*`: 吸排気カム中心角、作用角、最大リフト
+- `control_defaults.*`: 起動直後の操作入力
+- `auto_control.*`: auto idle / auto WOT の制御係数
+- `model.*`: 燃焼、流量、VE、波動、熱損失、`p-V` 表示モデル
+- `numerics.*`: リアルタイム経路とベンチ経路の数値積分設定
+- `bench.*`: ベンチ sweep、locked-RPM、dyno 速度保持 / 吸収器、混合気条件
+- `plot.*`: 履歴長、表示レンジ
+- `ui.*`: GUI の更新周期、スライダ範囲、表示寸法
+- `audio.*`: 合成音の係数
+
+### headless 用 `config/high_precision.yaml`
+
+headless 高精度経路は [config/high_precision.yaml](config/high_precision.yaml) を使います。  
+こちらは GUI 用 config と別物で、目的をかなり絞っています。
+
+- `engine.*`: 幾何、境界条件、runner / tailpipe / valve の物理量
+- `combustion.*`: 燃料、点火、燃焼期間、壁面熱伝達
+- `sweep.*`: throttle、トルクカーブ用 RPM 点、`p-V` を出す RPM 点
+- `numerics.*`: crank-angle 刻み、runner cell 数、warmup / sample cycle 数
+
+headless YAML は [src/hp/config.rs](src/hp/config.rs) で strict schema を取っています。
+
+- unknown key はエラー
+- すべての項目に sanity range を適用
+- `engine.cylinders` のような旧キーは受け付けない
+- `wiebe_a` / `wiebe_m` のような trace-shaping 用の自由パラメータは YAML から外し、内部固定
+
+この判断の根拠は [HIGH_PRECISION_PARAMETER_AUDIT.md](HIGH_PRECISION_PARAMETER_AUDIT.md) にあります。
+
+## 可視化と解釈
+
+### GUI で見えているもの
+
+- 回転数、トルク、吸気量の履歴は `0..720 degCA` の固定 x 軸で表示します。
+- `p-V` は表示用に再構成した cylinder pressure model です。
+- `p-theta` は 4 気筒分を `0..720 degCA` 上に重ね描きします。
+- ベンチは「即時プレビュー」と「予算付き sweep」の 2 層です。
+- 実測 sweep 側は、角速度を直接固定するのではなく、bench 専用の dyno controller が吸収負荷を自動で増減して target RPM を保持します。
+- そのためベンチ表示のトルクは残差の `net torque` ではなく、dyno が受けた `brake torque` として読むのが正しいです。
+- ベンチ完了時には結果を `dist/bench/bench-rich_charge_cooling-latest.csv` か `dist/bench/bench-lambda_one-latest.csv` に自動出力します。
+
+対応箇所:
+
+- 履歴 plot / `p-V` / `p-theta`: [src/dashboard.rs](src/dashboard.rs)
+- `p-theta` データ生成: [src/simulator.rs](src/simulator.rs)
+- ベンチ即時プレビュー: [src/simulator.rs](src/simulator.rs)
+- ベンチ進行表示: [src/dashboard.rs](src/dashboard.rs)
+
+### 読み方の注意
+
+- このモデルは、燃焼解析専用の multi-zone solver ではありません。
+- `p-V` / `p-theta` は表示用の再構成であり、実測筒内圧そのものではありません。
+- VVT、オーバーラップ、吸排気波動の効果は、現時点では主に定性的な指標として解釈すべきです。
+- 実機のノック限界、排気音評価、CA10/50/90、apparent heat release を直接置き換えるものではありません。
+
+## 数理モデルの要約
+
+### 1. GUI リアルタイム経路
+
+GUI の主モデルは、多気筒 1D gas dynamics や CFD ではなく、吸気 / 排気を plenum-runner の 2 容積 + runner 流量状態で表した reduced-order mean-value model です。  
+`p-V` と `p-theta` は、同じ燃料量と燃焼位相入力から再構成した表示モデルであり、筒内状態 ODE を直接解いているわけではありません。
+
+#### 状態ベクトル
 
 ```math
 \mathbf{x}
@@ -110,212 +322,339 @@ Release 縺ｮ蜊倅ｽ薙い繧ｻ繝・ヨ驟榊ｸ・〒縺ｯ縲～es_sim.ex
 \end{bmatrix}^{\mathsf T}
 ```
 
-- $\omega$: 繧ｯ繝ｩ繝ｳ繧ｯ隗帝溷ｺｦ `rad/s`
-- $\theta$: 繧ｯ繝ｩ繝ｳ繧ｯ隗・`rad`
-- $p_{im}$: 蜷ｸ豌励・繝ｬ繝翫Β蝨ｧ `Pa`
-- $p_{ir}$: 蜷ｸ豌励Λ繝ｳ繝翫・ / 繝昴・繝亥悸 `Pa`
-- $p_{em}$: 謗呈ｰ励さ繝ｬ繧ｯ繧ｿ蝨ｧ `Pa`
-- $p_{er}$: 謗呈ｰ励Λ繝ｳ繝翫・ / 繝励Λ繧､繝槭Μ蝨ｧ `Pa`
-- $\dot m_{ir}$: 蜷ｸ豌励Λ繝ｳ繝翫・豬・㍼迥ｶ諷・`kg/s`
-- $\dot m_{er}$: 謗呈ｰ励Λ繝ｳ繝翫・豬・㍼迥ｶ諷・`kg/s`
-- $\alpha_{th}$: 螳溷柑繧ｹ繝ｭ繝・ヨ繝ｫ髢句ｺｦ `-`
+- $\omega$: クランク角速度
+- $\theta$: クランク角
+- $p_{im}$: 吸気 plenum 圧
+- $p_{ir}$: 吸気 runner / port 圧
+- $p_{em}$: 排気 collector 圧
+- $p_{er}$: 排気 runner / primary 圧
+- $\dot m_{ir}$: 吸気 runner 流量状態
+- $\dot m_{er}$: 排気 runner 流量状態
+- $\alpha_{th}$: 実効スロットル開度
 
-### 蜈･蜉・
+#### 制御入力
+
 ```math
 \mathbf{u}
 =
 \begin{bmatrix}
-\alpha_{cmd} & u_{load} & u_{st} & u_{spk} & u_f & \Delta\theta_{ign} & \Delta\theta_{VVT,I} & \Delta\theta_{VVT,E}
+\alpha_{cmd} & u_{load} & u_{st} & u_{spk} & u_f & \Delta \theta_{ign} & \Delta \theta_{VVT,I} & \Delta \theta_{VVT,E}
 \end{bmatrix}^{\mathsf T}
 ```
 
-### 騾｣邯壽凾髢・ODE
+#### 連続時間 ODE
+
+クランク系:
 
 ```math
-\dot \omega = \frac{\tau_{comb}+\tau_{start}-\tau_{fric}-\tau_{pump}-\tau_{load}}{J}
+\dot \omega
+=
+\frac{
+\tau_{comb}
++ \tau_{start}
+- \tau_{fric}
+- \tau_{pump}
+- \tau_{load}
+}{J}
 ```
 
 ```math
 \dot \theta = \omega
 ```
 
-```math
-\dot p_{im} = \frac{R_{air}T_{im}}{V_{im}}\left(\dot m_{th}-\dot m_{ir}\right)
-```
+吸排気容積:
 
 ```math
-\dot p_{ir} = \frac{R_{air}T_{im}}{V_{ir}}\left(\dot m_{ir}-\dot m_{cyl}\right)
-```
-
-```math
-\dot p_{em} = \frac{R_{air}T_{exh,eff}}{V_{em}}\left(\dot m_{er}-\dot m_{tail}\right)
-```
-
-```math
-\dot p_{er} = \frac{R_{air}T_{exh,eff}}{V_{er}}\left(\dot m_{exh,in}-\dot m_{er}\right)
-```
-
-```math
-\frac{d\dot m_{ir}}{dt} = \frac{p_{im}-p_{ir}}{L_{ir}} - d_{ir}\dot m_{ir}
-```
-
-```math
-\frac{d\dot m_{er}}{dt} = \frac{p_{er}-p_{em}}{L_{er}} - d_{er}\dot m_{er}
-```
-
-```math
-\dot \alpha_{th} = \frac{\alpha_{cmd}-\alpha_{th}}{\tau_{th}}
-```
-
-### 襍ｰ陦御ｸｭ縺ｮ螳壼ｸｸ迥ｶ諷九・隗｣驥・
-驕玖ｻ｢荳ｭ縺ｮ繧ｨ繝ｳ繧ｸ繝ｳ縺ｯ縲・壼ｸｸ縺ｮ諢丞袖縺ｧ縺ｯ full-state 縺ｮ髱咏噪蟷ｳ陦｡轤ｹ縺ｧ縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・
-逅・罰縺ｯ
-
-```math
-\dot \theta = \omega
-```
-
-縺ｧ縺ゅｊ縲√＆繧峨↓蜷ｸ謗呈ｰ励・辯・┥縺ｮ髢｢菫ょｼ上′繧ｯ繝ｩ繝ｳ繧ｯ隗偵↓蟇ｾ縺吶ｋ蜻ｨ譛滄未謨ｰ縺縺九ｉ縺ｧ縺吶・
-縺励◆縺後▲縺ｦ譛ｬ繝｢繝・Ν縺ｧ縺ｮ縲悟ｮ壼ｸｸ驕玖ｻ｢縲阪・縲∝崋螳壻ｽ咲嶌譁ｭ髱｢荳翫・蜻ｨ譛溷ｮ壼ｸｸ縺ｨ縺励※螳夂ｾｩ縺励∪縺吶・
-菴咲嶌蠎ｧ讓吶ｒ髯､縺・◆邵ｮ邏・憾諷・
-```math
-\mathbf{x}_r
+\dot p_{im}
 =
-\begin{bmatrix}
-\omega & p_{im} & p_{ir} & p_{em} & p_{er} & \dot m_{ir} & \dot m_{er} & \alpha_{th}
-\end{bmatrix}^{\mathsf T}
+\frac{R_{air} T_{im}}{V_{im}}
+\left(
+\dot m_{th} - \dot m_{ir}
+\right)
 ```
 
-縺ｫ蟇ｾ縺励∝酔縺・$\theta=\theta_s$ 縺ｧ 720 degCA 縺斐→縺ｫ繧ｵ繝ｳ繝励Μ繝ｳ繧ｰ縺励◆蜀吝ワ
-
 ```math
-\mathbf{x}_{r,k+1} = \mathcal{P}\!\left(\mathbf{x}_{r,k}\right)
-```
-
-縺・
-```math
-\mathbf{x}_r^* = \mathcal{P}\!\left(\mathbf{x}_r^*\right)
-```
-
-繧呈ｺ縺溘☆縺ｨ縺阪∝捉譛溷ｮ壼ｸｸ縺ｨ縺ｿ縺ｪ縺励∪縺吶・
-蜷悟､縺ｪ cycle-average 縺ｮ陦ｨ迴ｾ縺ｯ
-
-```math
-\frac{\mathbf{x}_r(t+T_c)-\mathbf{x}_r(t)}{T_c}
+\dot p_{ir}
 =
-\frac{1}{T_c}\int_t^{t+T_c}\dot{\mathbf{x}}_r(\tau)\,d\tau
+\frac{R_{air} T_{im}}{V_{ir}}
+\left(
+\dot m_{ir} - \dot m_{cyl}
+\right)
+```
+
+```math
+\dot p_{em}
 =
-\mathbf{0}
-```
-
-縺ｧ縺吶・
-### 莉｣陦ｨ驕玖ｻ｢轤ｹ縺ｧ縺ｮ蜻ｨ譛溷ｮ壼ｸｸ繝√ぉ繝・け
-
-螳溯｣・↓縺ｯ `representative_operating_points_are_periodic_steady_states` 縺ｨ縺・≧蝗槫ｸｰ繝・せ繝医′縺ゅｊ縲∝宛蠕｡蜈･蜉帙ｒ蝗ｺ螳壹＠縺溘∪縺ｾ蜊∝・縺ｫ蜿取據縺輔○縺溷ｾ後∝酔縺・`360 degCA` 譁ｭ髱｢縺ｫ謌ｻ繧狗ｸｮ邏・憾諷九・繝峨Μ繝輔ヨ繧定ｦ九※縺・∪縺吶・
-| 驕玖ｻ｢轤ｹ | Throttle [-] | Load cmd [-] | Mean RPM [rpm] | 蜷御ｽ咲嶌譁ｭ髱｢隱､蟾ｮ繝弱Ν繝 [-] | `ﾎ排pm` [rpm/cycle] | 譛螟ｧ `ﾎ廃` [kPa/cycle] | 譛螟ｧ `ﾎ芭_runner` [g/s/cycle] |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Light throttle | 0.10 | 0.80 | 2075 | 0.135 | 0.170 | 0.159 | 0.022 |
-| Mid throttle | 0.34 | 0.80 | 5060 | 0.709 | 2.488 | 0.852 | 0.380 |
-| WOT | 1.00 | 0.80 | 6976 | 2.524 | 0.091 | 3.222 | 3.812 |
-
-WOT 縺ｧ繧ょ酔菴咲嶌縺ｧ縺ｮ `ﾎ排pm` 縺ｯ蟷ｳ蝮・屓霆｢謨ｰ縺ｮ `0.1%` 譛ｪ貅縺ｫ蜿弱∪縺｣縺ｦ縺翫ｊ縲√％縺ｮ菴取ｬ｡蜈・ODE 縺ｫ蟇ｾ縺励※蜻ｨ譛溷ｮ壼ｸｸ縺ｨ縺励※謇ｱ縺医ｋ縺薙→繧堤｢ｺ隱阪＠縺ｦ縺・∪縺吶ょ悸蜉帙ラ繝ｪ繝輔ヨ繧ゅ♀縺翫・縺ｭ `3.3 kPa/cycle` 莉･荳九〒縺吶・
-### 蝨ｧ邵ｮ諤ｧ豬・㍼縺ｨ VE
-
-繧ｹ繝ｭ繝・ヨ繝ｫ縺ｨ繝・・繝ｫ繝代う繝励・縲∵ｺ・1 谺｡蜈・・蝨ｧ邵ｮ諤ｧ繧ｪ繝ｪ繝輔ぅ繧ｹ豬・㍼蠑上ｒ菴ｿ縺・∪縺吶・
-```math
-\Pi=\mathrm{clamp}\!\left(\frac{p_d}{p_u},0,1\right),\quad
-\Pi_*=\left(\frac{2}{\gamma+1}\right)^{\frac{\gamma}{\gamma-1}}
+\frac{R_{air} T_{exh,eff}}{V_{em}}
+\left(
+\dot m_{er} - \dot m_{tail}
+\right)
 ```
 
 ```math
-\dot m=
-\begin{cases}
-C_dA\frac{p_u}{\sqrt{T_u}}
-\left(\frac{\gamma}{R}\right)^{1/2}
-\left(\frac{2}{\gamma+1}\right)^{\frac{\gamma+1}{2(\gamma-1)}},
-& \Pi\le \Pi_*\\[6pt]
-C_dA\frac{p_u}{\sqrt{T_u}}
-\left[
-\frac{2\gamma}{R(\gamma-1)}
-\left(\Pi^{2/\gamma}-\Pi^{(\gamma+1)/\gamma}\right)
-\right]^{1/2},
-& \Pi>\Pi_*
-\end{cases}
+\dot p_{er}
+=
+\frac{R_{air} T_{exh,eff}}{V_{er}}
+\left(
+\dot m_{exh,in} - \dot m_{er}
+\right)
 ```
 
-VE 縺ｯ縲∝屓霆｢謨ｰ萓晏ｭ倥・蝓ｺ譛ｬ鬆・〃VT 陬懈ｭ｣縲√せ繝ｭ繝・ヨ繝ｫ陬懈ｭ｣縲√が繝ｼ繝舌・繝ｩ繝・・陬懈ｭ｣縲『ave-action 陬懈ｭ｣繧呈寺縺大粋繧上○縺滉ｽ取ｬ｡蜈・Δ繝・Ν縺ｧ縺吶・
-```math
-\eta_v=\mathrm{clamp}\left(\eta_{rpm}\eta_{vvt}\eta_{th}g_{ov}g_{wave},\ \eta_{v,min},\eta_{v,max}\right)
-```
-
-### 辯・┥縲√ヨ繝ｫ繧ｯ縲∫・謳榊､ｱ
-
-辯・┥縺ｮ邱丞峙遉ｺ繝医Ν繧ｯ縺ｯ縲∵ｰ礼ｭ偵≠縺溘ｊ辯・侭雉ｪ驥上´HV縲＾tto 蜉ｹ邇・・繝ｼ繧ｹ縲∫せ轣ｫ菴咲嶌謳榊､ｱ繧剃ｽｿ縺｣縺ｦ邨・∩遶九※縺ｦ縺・∪縺吶・
-螢・擇辭ｱ謳榊､ｱ縺ｯ Woschni 蝙九・蜊倅ｸ鬆伜沺繝｢繝・Ν縺ｧ `heat_loss_cycle_j` 縺ｨ縺励※謇ｱ縺・∬｡ｨ遉ｺ逕ｨ `p-V` 縺ｨ譛牙柑謗呈ｰ玲ｸｩ蠎ｦ縺ｮ蜿梧婿縺ｫ蜿肴丐縺励∪縺吶・
-陦ｨ遉ｺ縺輔ｌ繧区ｭ｣蜻ｳ繝医Ν繧ｯ縺ｯ讎ゅ・
+runner 流量状態:
 
 ```math
-\tau_{net}=\tau_{comb}+\tau_{start}-\tau_{fric}-\tau_{pump}-\tau_{load}
+\frac{d \dot m_{ir}}{dt}
+=
+\frac{
+\left(p_{im} - p_{ir}\right) - \Delta p_{loss,ir}
+}{L_{ir}}
+- d_{ir}\dot m_{ir}
 ```
-
-縺ｧ縺吶・
-### `p-V` 邱壼峙
-
-GUI 縺ｮ `p-V` 邱壼峙縺ｯ縲∝酔縺倡㏍譁呎兜蜈･驥上∫㏍辟ｼ髢句ｧ玖ｧ偵∫㏍辟ｼ譛滄俣縲∽ｽ咲嶌蜉ｹ邇・∫・謳榊､ｱ繧剃ｽｿ縺｣縺ｦ蜀肴ｧ区・縺励◆陦ｨ遉ｺ逕ｨ繝｢繝・Ν縺ｧ縺吶・
-螳壽ｧ逧・↑繧ｵ繧､繧ｯ繝ｫ蠖｢迥ｶ遒ｺ隱阪→蝗ｳ遉ｺ莉穂ｺ区耳螳壹ｒ逶ｮ逧・→縺励※縺翫ｊ縲∫峩謗･險域ｸｬ縺ｮ遲貞・蝨ｧ豕｢蠖｢繧貞ｮ悟・縺ｫ莉｣譖ｿ縺吶ｋ繧ゅ・縺ｧ縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・
-### 髻ｳ髻ｿ繝｢繝・Ν
-
-髻ｳ貅舌・骭ｲ髻ｳ縺ｧ縺ｯ縺ｪ縺上・ 繧ｹ繝医Ο繝ｼ繧ｯ縺ｮ逹轣ｫ蜻ｨ豕｢謨ｰ
 
 ```math
-f_{fire}=\frac{\mathrm{rpm}\,N_{cyl}}{120}
+\frac{d \dot m_{er}}{dt}
+=
+\frac{
+\left(p_{er} - p_{em}\right) - \Delta p_{loss,er}
+}{L_{er}}
+- d_{er}\dot m_{er}
 ```
 
-繧貞渕譛ｬ髻ｳ鬮倥↓縺励∵賜豌怜悸縲∵賜豌玲ｸｩ蠎ｦ縲∫ｮ｡髟ｷ縺九ｉ繝代Ν繧ｹ貅舌→蜈ｱ魑ｴ蝎ｨ繧帝ｧ・虚縺吶ｋ蠖｢縺ｧ縺吶・
-蝗櫁ｻ｢謨ｰ 0 縺ｧ縺ｯ繧ｲ繝ｼ繝医↓繧医ｊ螳溯ｳｪ辟｡髻ｳ縺ｫ縺ｪ繧翫∪縺吶・
-## 辭ｱ蜉ｹ邇・欠讓・
-GUI 縺ｫ縺ｯ谺｡繧定｡ｨ遉ｺ縺励∪縺吶・
-- 逅・ｫ・Otto 蜉ｹ邇・- `p-V` 縺九ｉ遨榊・縺励◆蝗ｳ遉ｺ辭ｱ蜉ｹ邇・- IMEP
-- 辯・┥邱丞・蜉・- 豁｣蜻ｳ繝悶Ξ繝ｼ繧ｭ蜃ｺ蜉・- 繝悶Ξ繝ｼ繧ｭ BMEP
+スロットル遅れ:
 
-迴ｾ蝨ｨ縺ｮ譌｢螳夊ｨｭ螳壹〒縺ｯ縲∫せ轣ｫ譎よ悄蝗ｺ螳壹・螳壼ｸｸ繧ｹ繧､繝ｼ繝励′ `eta_indicated_max = 0.44` 縺ｫ蠑ｵ繧贋ｻ倥￥鬆伜沺縺後≠繧翫∪縺吶・
-譛ｬ繧ｷ繝溘Η繝ｬ繝ｼ繧ｿ縺ｯ 4 豌礼ｭ貞崋螳壹〒縺吶Ａhistory_recent_cycles` 縺ｯ豌礼ｭ呈焚縺ｧ縺ｯ縺ｪ縺上√け繝ｩ繝ｳ繧ｯ隗偵・繝ｭ繝・ヨ縺ｫ谿九☆螻･豁ｴ繧ｵ繧､繧ｯ繝ｫ謨ｰ繧呈э蜻ｳ縺励∪縺吶・縺昴・縺溘ａ縲∬恭隱樒沿 README 縺ｮ螳壼ｸｸ蜉ｹ邇・｡ｨ縺ｯ縲檎樟陦悟ｮ溯｣・・蝗槫ｸｰ繝・せ繝育畑蝓ｺ貅門､縲阪→縺励※謇ｱ縺｣縺ｦ縺・∪縺吶・
-## 螳滓ｩ溘→縺ｮ辣ｧ蜷・
-譌｢螳夊ｼ・ｭ｣縺ｯ縲∫樟陦後・ `2.0 L` 邏夊・辟ｶ蜷ｸ豌励ぎ繧ｽ繝ｪ繝ｳ驥冗肇讖溘・縺・■縲∫音縺ｫ Toyota Dynamic Force 縺ｨ Mazda SKYACTIV-G 縺ｮ蟶ｯ蝓溘↓蜷医ｏ縺帙※縺・∪縺吶・
-| 蝓ｺ貅悶お繝ｳ繧ｸ繝ｳ | 蜈ｬ遘ｰ繝医Ν繧ｯ | 蜈ｬ遘ｰ蜃ｺ蜉・| 菴咲ｽｮ縺･縺・|
-|---|---:|---:|---|
-| Toyota Corolla Hatchback 2.0 Dynamic Force | `205 Nm @ 4800 rpm` | `126 kW @ 6600 rpm` | 荳ｻ蝓ｺ貅・|
-| Mazda SKYACTIV-G 2.0 | `194 Nm @ 4100 rpm` | `113 kW @ 6000 rpm` | 蜑ｯ蝓ｺ貅・|
-| Toyota 86 2.0 | `205 Nm @ 6600 rpm` | `147 kW @ 7000 rpm` | 繧ｹ繝昴・繝・ｯ・ｊ荳企剞 |
+```math
+\dot \alpha_{th}
+=
+\frac{
+\alpha_{cmd} - \alpha_{th}
+}{\tau_{th}}
+```
 
-迴ｾ蝨ｨ縺ｮ譌｢螳・bench 譖ｲ邱壹・ `198.9 Nm @ 4500 rpm`, `129.0 kW @ 6500 rpm` 縺ｧ縲・㍼逕｣ 2.0L NA 縺ｮ蟶ｯ蝓溘↓縺ｯ蜈･繧翫▽縺､縲ゝoyota 86 縺ｮ繧医≧縺ｪ繧ｹ繝昴・繝・ｯ・ｊ鬮伜・蜉帛・縺ｸ縺ｯ陦後″驕弱℃縺ｪ縺・ｈ縺・↓縺励※縺・∪縺吶・Toyota / Mazda 繧剃ｸｻ蝓ｺ貅悶？onda Civic 2.0 縺ｨ Ford EcoSport 2.0 繧貞ｺ・＞驥冗肇蟶ｯ縺ｮ遒ｺ隱咲畑縲ゝoyota 86 繧剃ｸ企剞遒ｺ隱咲畑縺ｨ縺励※謇ｱ縺・婿驥昴〒縺吶・
-## 繝代Λ繝｡繝ｼ繧ｿ蜿ら・
+runner 損失は `f L / D + K` 形のダクト損失で近似します。
 
-隧ｳ邏ｰ縺ｪ蜈ｨ繝代Λ繝｡繝ｼ繧ｿ陦ｨ縺ｯ谺｡繧貞盾辣ｧ縺励※縺上□縺輔＞縲・
-- 闍ｱ隱樒沿 [README.md](README.md) 縺ｮ `Parameter List (Exhaustive, with Units)`
-- `config/sim.yaml` 縺ｮ蜷・・岼繧ｳ繝｡繝ｳ繝・
-迚ｹ縺ｫ螳滓ｩ滓─縺ｫ蜉ｹ縺丈ｸｻ隕∬ｨｭ螳壹・谺｡縺ｧ縺吶・
-| YAML key | 蜊倅ｽ・| 萓・| 蠖ｹ蜑ｲ |
-|---|---:|---:|---|
-| `engine.bore_m` | m | 0.0805 | 繝懊い |
-| `engine.stroke_m` | m | 0.0976 | 繧ｹ繝医Ο繝ｼ繧ｯ |
-| `engine.compression_ratio` | - | 13.0 | 蝨ｧ邵ｮ豈・|
-| `engine.intake_volume_m3` | m^3 | 0.0032 | 蜷ｸ豌励・繝ｬ繝翫Β菴鍋ｩ・|
-| `engine.exhaust_volume_m3` | m^3 | 0.0050 | 謗呈ｰ励さ繝ｬ繧ｯ繧ｿ菴鍋ｩ・|
-| `model.gas_path.*` | mixed | - | 2 螳ｹ遨阪ぎ繧ｹ繝代せ縺ｨ繧ｪ繝ｼ繝舌・繝ｩ繝・・ / 繝ｩ繝ｳ繝翫・蜍慕音諤ｧ |
-| `model.wave_action.*` | mixed | - | 蜷ｸ謗呈ｰ励ヱ繝ｫ繧ｹ鄒､蛹悶→繝ｩ繝蜉ｹ譫・/ 謗・ｰ苓｣懈ｭ｣ |
-| `model.heat_transfer.*` | mixed | - | 蜊倅ｸ鬆伜沺辭ｱ謳榊､ｱ繝｢繝・Ν |
-| `bench.*` | mixed | - | WOT 騾｣邯壹せ繧､繝ｼ繝励→豺ｷ蜷域ｰ励Δ繝ｼ繝・|
-| `audio.model.*` | mixed | - | 逹轣ｫ蜻ｨ豕｢謨ｰ繝吶・繧ｹ髻ｳ貅・|
+```math
+\Delta p_{loss}
+=
+\operatorname{sgn}(\dot m)
+\left(
+f \frac{L}{D} + K
+\right)
+\frac{\dot m^2}{2 \rho A_{eff}^2}
+```
 
-## 荳ｻ縺ｪ繝・せ繝・
-螳溯｣・↓縺ｯ谺｡縺ｮ遞ｮ鬘槭・繝・せ繝医ｒ蜈･繧後※縺・∪縺吶・
-- 蜴ｳ蟇・ｧ｣縺後≠繧狗ｷ壼ｽ｢驛ｨ蛻・↓蟇ｾ縺吶ｋ RK2 邊ｾ蠎ｦ遒ｺ隱・- 鬮伜屓霆｢蝓溘〒縺ｮ譎る俣蛻ｻ縺ｿ邏ｰ蛻・喧縺ｫ蟇ｾ縺吶ｋ蜿取據遒ｺ隱・- `p-V` 邱壼峙縺ｮ逶ｴ霑代し繧､繧ｯ繝ｫ蜀肴ｧ区・遒ｺ隱・- 蝗櫁ｻ｢謨ｰ縺ｨ逹轣ｫ蜻ｨ豕｢謨ｰ縺ｮ蟇ｾ蠢懃｢ｺ隱・- 辭ｱ謳榊､ｱ / 繧ｪ繝ｼ繝舌・繝ｩ繝・・ / wave-action 縺ｮ隨ｦ蜿ｷ縺ｨ譛臥阜諤ｧ遒ｺ隱・- WOT 繝吶Φ繝∵峇邱壹′ 2.0L 邏・NA 縺ｮ蠖｢縺ｫ縺翫♀繧縺ｭ莨ｼ繧九°縺ｮ遒ｺ隱・- 譌｢螳・geometry 縺・Dynamic Force / SKYACTIV-G 邉ｻ縺ｮ `2.0 L` 蟶ｯ縺ｫ蜈･繧九°縺ｮ遒ｺ隱・- rich WOT 繝吶Φ繝√′ Corolla / Mazda 縺ｮ驥冗肇蟶ｯ縺ｫ蜿弱∪繧翫ゝoyota 86 縺ｮ荳企剞繧定ｶ・∴縺ｪ縺・％縺ｨ縺ｮ遒ｺ隱・- 莉｣陦ｨ驕玖ｻ｢轤ｹ縺悟捉譛溷ｮ壼ｸｸ迥ｶ諷九→縺励※謖ｯ繧玖・縺・°縺ｮ遒ｺ隱・
-## 蜃ｺ蜈ｸ
+圧力状態に入る流量 closure は、実装では次の形です。
 
-荳ｻ縺ｪ蜃ｺ蜈ｸ縺ｯ闍ｱ隱樒沿 README 縺ｨ蜷後§縺ｧ縺吶・
-- DTU Orbit, Hendricks, *A Generic Mean Value Engine Model for Spark Ignition Engines*
-- NASA Glenn, *Mass Flow Choking*
-- NASA Glenn, *Ideal Otto Cycle*
-- Toyota Dynamic Force / Mazda SKYACTIV-G / Toyota 86 縺ｮ蜈ｬ蠑上ヨ繝ｫ繧ｯ繝ｻ蜃ｺ蜉帙・荳ｻ隕∬ｫｸ蜈・- GitHub Docs 縺ｮ謨ｰ蠑上Ξ繝ｳ繝繝ｪ繝ｳ繧ｰ莉墓ｧ・
-隧ｳ邏ｰ縺ｪ URL 縺ｯ闍ｱ隱樒沿 [README.md](README.md) 縺ｮ `Sources and Reference Anchors` 繧貞盾辣ｧ縺励※縺上□縺輔＞縲・
+```math
+\dot m_{cyl}
+=
+\dot m_{cyl,mean}\,
+\phi_I(\theta)\,
+\psi_{I,wave}(\theta)
+```
+
+```math
+\dot m_{exh,in}
+=
+\left(\dot m_{cyl,mean}+\dot m_f\right)\,
+\phi_E(\theta)\,
+\psi_{E,wave}(\theta)
+```
+
+ここで `\phi_I,\phi_E` はバルブイベント由来の pulse factor、`\psi_{I,wave},\psi_{E,wave}` は瞬時の wave-action multiplier です。
+
+燃焼・熱損失・排気温度へ渡す charge state は、internal EGR を含めて次で近似します。
+
+```math
+x_{egr}
+=
+\operatorname{clamp}\!\left[
+\chi_{ov}
+\left(
+x_0
++k_p\Delta p_{back}^{+}
++k_w s_{scav}^{-}
++k_r \dot m_{rev}^{+}
+\right)
+\right]
+```
+
+```math
+c_{p,burn}
+=
+\operatorname{clamp}\!\left(
+c_{p,ref}
++k_T\left(T_{res}-T_{ref}\right)
++k_{egr}x_{egr}
+\right)
+```
+
+```math
+\gamma_{mix}
+=
+\frac{c_{p,mix}}{c_{p,mix}-R_{air}}
+```
+
+```math
+T_{charge}
+=
+\frac{m_{fresh} c_{p,f}T_f + m_r c_{p,burn}T_{res}}
+{m_{fresh} c_{p,f}+m_r c_{p,burn}}
+```
+
+`x_{egr}` は overlap lift `\chi_{ov}`、排気側優勢の pressure head `\Delta p_{back}^{+}`、負の scavenging head `s_{scav}^{-}`、逆向き排気 runner 流量 `\dot m_{rev}^{+}` から作っています。
+
+#### 補助モデル
+
+- スロットル / テールパイプ流量は準 1 次元 compressible orifice 近似
+- VE は baseline 回転依存項に、VVT、overlap、grouped wave / resonance 補正を乗算
+- 燃料蒸発冷却、燃焼後ガスの `c_p / \gamma` 変化、overlap backflow 由来の internal EGR を charge state に反映
+- 燃焼トルク、摩擦、ポンピング、スタータ、外部負荷は reduced-order closure
+- 図示熱効率表示は再構成 `p-V` ループ面積から算出
+
+#### 数値積分
+
+通常のリアルタイム経路では、3 段 3 次の classical Kutta RK3 を使います。  
+対応実装は [src/simulator.rs](src/simulator.rs) の `advance_state_rk3*` です。
+
+```math
+\mathbf{k}_1 = f(\mathbf{x}_n)
+```
+
+```math
+\mathbf{k}_2 = f\!\left(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_1\right)
+```
+
+```math
+\mathbf{k}_3 = f\!\left(\mathbf{x}_n + \Delta t\left(-\mathbf{k}_1 + 2\mathbf{k}_2\right)\right)
+```
+
+```math
+\mathbf{x}_{n+1}
+=
+\mathbf{x}_n
++
+\frac{\Delta t}{6}
+\left(
+\mathbf{k}_1 + 4\mathbf{k}_2 + \mathbf{k}_3
+\right)
+```
+
+リアルタイム GUI は起動時に 1 step あたりの wall-clock 時間を見積もり、余裕がある場合は固定 `dt` を優先し、余裕が不足する場合だけ RPM 連動 `dt` に落とします。  
+この判定は [src/simulator.rs](src/simulator.rs) の `estimate_realtime_performance` にあります。
+
+ベンチ経路では、trial step と 2 回の half step の差を見て step-doubling を行います。  
+対応実装は [src/simulator.rs](src/simulator.rs) の `bench_adaptive_step_with_deg_per_step` です。
+
+```math
+\varepsilon_{bench}
+=
+\left\lVert
+\mathbf{x}_{RK3}(\Delta t)
+- \mathbf{x}_{RK3}\!\left(\frac{\Delta t}{2}\right)^{(2)}
+\right\rVert_{norm}
+```
+
+### 2. headless 高精度経路
+
+`es_cli` は、GUI の reduced-order path とは別に、single-zone cylinder と segmented runner line を持つ offline solver です。`es_hp` でも同じ solver を起動できます。
+
+- 固定 4 気筒、180 deg 位相差
+- slider-crank 幾何
+- 吸気 plenum / 排気 collector
+- intake / exhaust runner の pressure cell + face mass-flow state
+- Wiebe 燃焼
+- 壁面熱損失
+- fixed-step RK4
+
+対応実装:
+
+- solver 本体: [src/hp/model.rs](src/hp/model.rs)
+- 数学補助: [src/hp/math.rs](src/hp/math.rs)
+- 設定検証: [src/hp/config.rs](src/hp/config.rs)
+
+headless 側の式展開と前提は [HIGH_PRECISION_HEADLESS_MODEL.md](HIGH_PRECISION_HEADLESS_MODEL.md) に分離しています。  
+GUI README にすべて重複させず、役割ごとに文書を分けています。
+
+## テストと検証
+
+### GUI / realtime 側
+
+```bash
+cargo test --release -- --nocapture
+```
+
+主な検証対象:
+
+- YAML 読み込みと `sim.yaml` 探索
+- RK3 の解析解一致テスト
+- ベンチ積分の安定性と step refinement
+- burned-gas 比熱と internal EGR の backflow 回帰
+- `p-theta` のピーク位相が 4 気筒でずれること
+- トルク / 出力の broad envelope が破綻していないこと
+
+主な実装箇所:
+
+- [src/config.rs](src/config.rs)
+- [src/simulator.rs](src/simulator.rs)
+- [src/dashboard.rs](src/dashboard.rs)
+
+### headless / offline 側
+
+```bash
+cargo test --no-default-features --bin es_cli -- --nocapture
+```
+
+主な検証対象:
+
+- YAML subset parser
+- strict schema validation
+- RK4 の解析解一致
+- bidirectional orifice flow の符号
+- equilibrium 近傍での有限導関数
+- short sweep で正の brake torque が得られること
+
+実装箇所:
+
+- [src/hp/yaml.rs](src/hp/yaml.rs)
+- [src/hp/config.rs](src/hp/config.rs)
+- [src/hp/math.rs](src/hp/math.rs)
+- [src/hp/model.rs](src/hp/model.rs)
+
+## 実装対応表
+
+README と実装の対応を追いやすくするため、主要責務をファイル単位で明示します。
+
+- GUI エントリポイント: [src/main.rs](src/main.rs)
+- GUI config 読み込みと `sim.yaml` 探索 / plausibility audit: [src/config.rs](src/config.rs), [src/config/audit.rs](src/config/audit.rs)
+- GUI レイアウト、`p-V` / `p-theta` / ベンチ描画: [src/dashboard.rs](src/dashboard.rs)
+- GUI エンジン状態方程式、RK3、bench step-doubling、preview curve: [src/simulator.rs](src/simulator.rs)
+- 音声合成: [src/audio.rs](src/audio.rs)
+- headless エントリポイント: [src/bin/es_cli.rs](src/bin/es_cli.rs), [src/bin/es_hp.rs](src/bin/es_hp.rs)
+- headless YAML parser / validator: [src/hp/yaml.rs](src/hp/yaml.rs), [src/hp/config.rs](src/hp/config.rs)
+- headless solver / CLI / CSV / report: [src/hp/model.rs](src/hp/model.rs), [src/hp/cli.rs](src/hp/cli.rs), [src/hp/csv.rs](src/hp/csv.rs), [src/hp/report.rs](src/hp/report.rs)
+- headless 数理モデル文書: [HIGH_PRECISION_HEADLESS_MODEL.md](HIGH_PRECISION_HEADLESS_MODEL.md)
+- headless パラメータ監査: [HIGH_PRECISION_PARAMETER_AUDIT.md](HIGH_PRECISION_PARAMETER_AUDIT.md)
+- 作業ログ: [ENGINE_MODEL_WORKLOG.md](ENGINE_MODEL_WORKLOG.md)
+
+## 解釈上の注意
+
+- このリポジトリの主眼は「リアルタイム性をある程度保った reduced-order 物理モデル」と「依存ゼロの offline solver」の両立です。
+- GUI 経路は、実機燃焼解析装置の代替ではありません。
+- headless 経路は GUI より物理状態が細かい一方で、まだ full 1D gas dynamics code ではありません。
+- 実機比較は calibration anchor として扱っており、モデル骨格の根拠は基本的に論文です。
+
+## 参考論文と資料
+
+モデルの骨格は、SI エンジン向け mean value engine model と manifold filling dynamics の文献を主な根拠にしています。
+
+- E. Hendricks, S. C. Sorenson, "Mean Value Modelling of Spark Ignition Engines," SAE Technical Paper 900616, 1990. DOI: `10.4271/900616`
+- E. Hendricks, S. C. Sorenson, "SI Engine Controls and Mean Value Engine Modelling," SAE Technical Paper 910258, 1991. DOI: `10.4271/910258`
+- E. Hendricks, T. Vesterholm, "The Analysis of Mean Value SI Engine Models," SAE Technical Paper 920682, 1992. DOI: `10.4271/920682`
+- E. Hendricks, A. Chevalier, M. Jensen, S. C. Sorenson, D. Trumpy, J. Asik, "Modelling of the Intake Manifold Filling Dynamics," SAE Technical Paper 960037, 1996. DOI: `10.4271/960037`
+- O. Vogel, K. Roussopoulos, L. Guzzella, J. Czekaj, "Variable Valve Timing Implemented with a Secondary Valve on a Four Cylinder SI Engine," SAE Technical Paper 970335, 1997. DOI: `10.4271/970335`
+
+補足:
+
+- GUI 側の吸排気波動と VVT は、上記論文を踏まえた reduced-order 近似です。
+- headless 側の cylinder / runner solver も、single-zone + finite-volume 的な offline path であり、完全な 1D commercial code の置き換えではありません。
+- 実トルク / 実出力は、モデルの妥当性確認用アンカーとして別に扱っています。

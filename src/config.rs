@@ -6,6 +6,13 @@ use serde::Deserialize;
 
 use crate::constants::FIXED_CYLINDER_COUNT;
 
+#[path = "config/audit.rs"]
+mod audit;
+pub(crate) use audit::validate_app_config;
+
+#[cfg(target_os = "android")]
+const EMBEDDED_SIM_CONFIG_YAML: &str = include_str!("../config/sim.yaml");
+
 // These structs intentionally mirror config/sim.yaml section-for-section so serde can
 // deserialize the checked-in tuning file directly into runtime configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -210,7 +217,7 @@ impl Default for AudioModelConfig {
             pressure_pulse_max: 2.2,
             exhaust_pulse_base: 0.10,
             exhaust_pulse_gain: 1.15,
-            pulse_sine_gain: 0.04,
+            pulse_sine_gain: 0.018,
             direct_pulse_mix: 0.18,
             resonator_mix_1: 0.95,
             resonator_mix_2: 0.55,
@@ -222,7 +229,7 @@ impl Default for AudioModelConfig {
             loudness_base: 0.22,
             loudness_pressure_gain: 0.90,
             loudness_env_gain: 0.08,
-            loudness_normalize_mix: 1.0,
+            loudness_normalize_mix: 0.80,
             loudness_target_level: 0.16,
             loudness_level_floor: 0.01,
             loudness_env_attack: 0.020,
@@ -436,6 +443,14 @@ pub(crate) struct GasPathConfig {
     pub(crate) exhaust_runner_inertance_pa_s2_per_kg: f64,
     pub(crate) intake_runner_damping_per_s: f64,
     pub(crate) exhaust_runner_damping_per_s: f64,
+    pub(crate) intake_runner_length_m: f64,
+    pub(crate) exhaust_runner_length_m: f64,
+    pub(crate) intake_runner_diameter_m: f64,
+    pub(crate) exhaust_runner_diameter_m: f64,
+    pub(crate) intake_runner_friction_factor: f64,
+    pub(crate) exhaust_runner_friction_factor: f64,
+    pub(crate) intake_runner_local_loss_coeff: f64,
+    pub(crate) exhaust_runner_local_loss_coeff: f64,
     pub(crate) intake_pulse_blend: f64,
     pub(crate) exhaust_pulse_blend: f64,
     pub(crate) intake_boundary_runner_weight: f64,
@@ -457,6 +472,14 @@ impl Default for GasPathConfig {
             exhaust_runner_inertance_pa_s2_per_kg: 1.4e4,
             intake_runner_damping_per_s: 6.0,
             exhaust_runner_damping_per_s: 6.0,
+            intake_runner_length_m: 0.36,
+            exhaust_runner_length_m: 0.74,
+            intake_runner_diameter_m: 0.034,
+            exhaust_runner_diameter_m: 0.036,
+            intake_runner_friction_factor: 0.028,
+            exhaust_runner_friction_factor: 0.030,
+            intake_runner_local_loss_coeff: 1.6,
+            exhaust_runner_local_loss_coeff: 1.9,
             intake_pulse_blend: 0.32,
             exhaust_pulse_blend: 0.40,
             intake_boundary_runner_weight: 0.35,
@@ -491,6 +514,12 @@ pub(crate) struct WaveActionConfig {
     pub(crate) exhaust_pressure_limit_pa: f64,
     pub(crate) intake_flow_reference_kg_s: f64,
     pub(crate) exhaust_flow_reference_kg_s: f64,
+    pub(crate) intake_resonance_damping_ratio: f64,
+    pub(crate) exhaust_resonance_damping_ratio: f64,
+    pub(crate) intake_resonance_gain_blend: f64,
+    pub(crate) exhaust_resonance_gain_blend: f64,
+    pub(crate) resonance_gain_min: f64,
+    pub(crate) resonance_gain_max: f64,
     pub(crate) intake_flow_wave_gain: f64,
     pub(crate) exhaust_flow_wave_gain: f64,
     pub(crate) intake_ram_gain: f64,
@@ -517,6 +546,12 @@ impl Default for WaveActionConfig {
             exhaust_pressure_limit_pa: 9_000.0,
             intake_flow_reference_kg_s: 0.055,
             exhaust_flow_reference_kg_s: 0.075,
+            intake_resonance_damping_ratio: 0.24,
+            exhaust_resonance_damping_ratio: 0.28,
+            intake_resonance_gain_blend: 0.35,
+            exhaust_resonance_gain_blend: 0.45,
+            resonance_gain_min: 0.85,
+            resonance_gain_max: 1.65,
             intake_flow_wave_gain: 0.0,
             exhaust_flow_wave_gain: 0.0,
             intake_ram_gain: 0.22,
@@ -581,6 +616,64 @@ impl Default for FuelEvaporationConfig {
             latent_heat_j_per_kg: 350_000.0,
             charge_cooling_effectiveness: 0.72,
             intake_charge_temp_min_k: 255.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub(crate) struct GasThermoConfig {
+    pub(crate) fresh_cp_j_per_kgk: f64,
+    pub(crate) burned_cp_ref_j_per_kgk: f64,
+    pub(crate) burned_cp_reference_temp_k: f64,
+    pub(crate) burned_cp_temp_coeff_j_per_kgk2: f64,
+    pub(crate) burned_cp_egr_coeff_j_per_kgk: f64,
+    pub(crate) cp_min_j_per_kgk: f64,
+    pub(crate) cp_max_j_per_kgk: f64,
+}
+
+impl Default for GasThermoConfig {
+    fn default() -> Self {
+        Self {
+            fresh_cp_j_per_kgk: 1_005.0,
+            burned_cp_ref_j_per_kgk: 1_150.0,
+            burned_cp_reference_temp_k: 900.0,
+            burned_cp_temp_coeff_j_per_kgk2: 0.12,
+            burned_cp_egr_coeff_j_per_kgk: 120.0,
+            cp_min_j_per_kgk: 950.0,
+            cp_max_j_per_kgk: 1_450.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub(crate) struct InternalEgrConfig {
+    pub(crate) overlap_base_fraction: f64,
+    pub(crate) pressure_backflow_gain: f64,
+    pub(crate) wave_backflow_gain: f64,
+    pub(crate) reverse_flow_gain: f64,
+    pub(crate) reverse_flow_reference_kg_s: f64,
+    pub(crate) fraction_min: f64,
+    pub(crate) fraction_max: f64,
+    pub(crate) burn_duration_gain_deg_per_fraction: f64,
+    pub(crate) phase_dilution_gain: f64,
+    pub(crate) phase_dilution_min: f64,
+}
+
+impl Default for InternalEgrConfig {
+    fn default() -> Self {
+        Self {
+            overlap_base_fraction: 0.010,
+            pressure_backflow_gain: 0.12,
+            wave_backflow_gain: 0.10,
+            reverse_flow_gain: 0.16,
+            reverse_flow_reference_kg_s: 0.06,
+            fraction_min: 0.0,
+            fraction_max: 0.18,
+            burn_duration_gain_deg_per_fraction: 22.0,
+            phase_dilution_gain: 0.30,
+            phase_dilution_min: 0.86,
         }
     }
 }
@@ -710,6 +803,8 @@ pub(crate) struct ModelConfig {
     pub(crate) wave_action: WaveActionConfig,
     pub(crate) heat_transfer: HeatTransferConfig,
     pub(crate) fuel_evaporation: FuelEvaporationConfig,
+    pub(crate) gas_thermo: GasThermoConfig,
+    pub(crate) internal_egr: InternalEgrConfig,
     pub(crate) external_load: ExternalLoadConfig,
 }
 
@@ -814,6 +909,8 @@ impl Default for ModelConfig {
             wave_action: WaveActionConfig::default(),
             heat_transfer: HeatTransferConfig::default(),
             fuel_evaporation: FuelEvaporationConfig::default(),
+            gas_thermo: GasThermoConfig::default(),
+            internal_egr: InternalEgrConfig::default(),
             external_load: ExternalLoadConfig::default(),
         }
     }
@@ -850,6 +947,8 @@ pub(crate) struct NumericsConfig {
     pub(crate) realtime_margin_factor: f64,
     pub(crate) realtime_floor_min_s: f64,
     pub(crate) realtime_floor_probe_factor_max: f64,
+    pub(crate) realtime_fixed_dt_headroom_ratio: f64,
+    pub(crate) realtime_fixed_dt_max_deg_per_step: f64,
 }
 
 impl Default for NumericsConfig {
@@ -883,6 +982,8 @@ impl Default for NumericsConfig {
             realtime_margin_factor: 1.25,
             realtime_floor_min_s: 1.0e-5,
             realtime_floor_probe_factor_max: 6.0,
+            realtime_fixed_dt_headroom_ratio: 2.5,
+            realtime_fixed_dt_max_deg_per_step: 12.0,
         }
     }
 }
@@ -946,7 +1047,7 @@ impl Default for UiConfig {
             pv_headroom_ratio: 1.08,
             pv_min_headroom_kpa: 100.0,
             repaint_hz: 20,
-            window_width_px: 1400.0,
+            window_width_px: 1600.0,
             window_height_px: 1000.0,
             audio_gain_floor: 0.1,
         }
@@ -1005,6 +1106,37 @@ impl Default for BenchMixtureMode {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub(crate) struct BenchDynoConfig {
+    pub(crate) initial_load_cmd: f64,
+    pub(crate) speed_hold_kp: f64,
+    pub(crate) speed_hold_ki: f64,
+    pub(crate) integral_min: f64,
+    pub(crate) integral_max: f64,
+    pub(crate) absorber_model: ExternalLoadConfig,
+}
+
+impl Default for BenchDynoConfig {
+    fn default() -> Self {
+        Self {
+            initial_load_cmd: 0.55,
+            speed_hold_kp: 0.0035,
+            speed_hold_ki: 0.0025,
+            integral_min: -220.0,
+            integral_max: 220.0,
+            absorber_model: ExternalLoadConfig {
+                command_exponent: 1.0,
+                base_torque_nm: 220.0,
+                speed_linear_nms: 0.040,
+                speed_quadratic_nms2: 0.00015,
+                torque_min_nm: 0.0,
+                torque_max_nm: 360.0,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub(crate) struct BenchConfig {
     pub(crate) default_mode: BenchMixtureMode,
     pub(crate) display_rpm_min: f64,
@@ -1030,6 +1162,7 @@ pub(crate) struct BenchConfig {
     pub(crate) integration_refine_limit: usize,
     pub(crate) steps_per_frame: usize,
     pub(crate) frame_time_budget_ms: f64,
+    pub(crate) dyno: BenchDynoConfig,
 }
 
 impl Default for BenchConfig {
@@ -1059,6 +1192,7 @@ impl Default for BenchConfig {
             integration_refine_limit: 8,
             steps_per_frame: 8_000,
             frame_time_budget_ms: 18.0,
+            dyno: BenchDynoConfig::default(),
         }
     }
 }
@@ -1132,6 +1266,13 @@ fn config_candidate_paths(path: &Path, executable_dir: Option<&Path>) -> Vec<Pat
 }
 
 pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
+    #[cfg(target_os = "android")]
+    {
+        // The mobile path currently ships the checked-in sim.yaml inside the APK.
+        let _ = path.as_ref();
+        return parse_config_text(EMBEDDED_SIM_CONFIG_YAML, "embedded config/sim.yaml");
+    }
+
     // Fall back to defaults on missing or malformed YAML so the app remains runnable.
     let path = path.as_ref();
     let executable_dir = std::env::current_exe()
@@ -1148,13 +1289,34 @@ pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
         return AppConfig::default();
     };
 
-    match serde_yaml::from_str::<AppConfig>(&text) {
+    parse_config_text(&text, resolved_path.display().to_string())
+}
+
+fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> AppConfig {
+    match serde_yaml::from_str::<AppConfig>(text) {
         Ok(mut cfg) => {
             cfg.sync_derived_fields();
-            cfg
+            match validate_app_config(&cfg) {
+                Ok(report) => {
+                    for warning in report.warnings {
+                        eprintln!(
+                            "Config plausibility warning in {}: {warning}",
+                            source_name.as_ref()
+                        );
+                    }
+                    cfg
+                }
+                Err(report) => {
+                    eprintln!(
+                        "Config plausibility audit failed for {}:\n{report}\nFalling back to defaults.",
+                        source_name.as_ref()
+                    );
+                    AppConfig::default()
+                }
+            }
         }
         Err(e) => {
-            eprintln!("Failed to parse {}: {e}", resolved_path.display());
+            eprintln!("Failed to parse {}: {e}", source_name.as_ref());
             AppConfig::default()
         }
     }
@@ -1164,7 +1326,7 @@ pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{BenchMixtureMode, config_candidate_paths, load_config};
+    use super::{BenchMixtureMode, config_candidate_paths, load_config, validate_app_config};
 
     #[test]
     fn checked_in_yaml_with_comments_parses() {
@@ -1182,16 +1344,19 @@ mod tests {
             (cfg.engine.displacement_m3 - cfg.engine.derived_displacement_m3()).abs() < 1.0e-12
         );
         assert!((cfg.model.gas_path.overlap_pressure_coeff - 0.22).abs() < 1.0e-12);
+        assert!((cfg.model.gas_path.intake_runner_length_m - 0.36).abs() < 1.0e-12);
+        assert!((cfg.model.gas_path.exhaust_runner_diameter_m - 0.036).abs() < 1.0e-12);
         assert_eq!(cfg.model.wave_action.intake_group_count, 4);
         assert_eq!(cfg.model.wave_action.exhaust_group_count, 2);
         assert!((cfg.model.heat_transfer.base_h_w_m2k - 120.0).abs() < 1.0e-12);
         assert!((cfg.model.external_load.torque_max_nm - 220.0).abs() < 1.0e-12);
-        assert!((cfg.audio.model.loudness_normalize_mix - 1.0).abs() < 1.0e-6);
+        assert!((cfg.audio.model.loudness_normalize_mix - 0.80).abs() < 1.0e-6);
         assert!((cfg.model.fuel_evaporation.latent_heat_j_per_kg - 350_000.0).abs() < 1.0e-12);
         assert!((cfg.auto_control.wot_target_throttle - 1.0).abs() < 1.0e-12);
         assert_eq!(cfg.plot.history_recent_cycles, 1);
         assert_eq!(cfg.plot.pv_recent_cycles, 4);
         assert!((cfg.ui.pv_plot_height_px - 290.0).abs() < 1.0e-12);
+        assert!((cfg.ui.window_width_px - 1600.0).abs() < 1.0e-12);
         assert!((cfg.ui.window_height_px - 1000.0).abs() < 1.0e-12);
         assert_eq!(cfg.bench.locked_cycle_samples, 240);
         assert!((cfg.bench.display_rpm_min - 0.0).abs() < 1.0e-12);
@@ -1202,7 +1367,19 @@ mod tests {
         assert!((cfg.bench.integration_deg_per_step - 0.8).abs() < 1.0e-12);
         assert_eq!(cfg.bench.steps_per_frame, 8_000);
         assert!((cfg.bench.frame_time_budget_ms - 18.0).abs() < 1.0e-12);
+        assert!((cfg.bench.dyno.initial_load_cmd - 0.55).abs() < 1.0e-12);
+        assert!((cfg.bench.dyno.speed_hold_kp - 0.0035).abs() < 1.0e-12);
+        assert!((cfg.bench.dyno.absorber_model.torque_max_nm - 360.0).abs() < 1.0e-12);
         assert_eq!(cfg.bench.default_mode, BenchMixtureMode::RichChargeCooling);
+    }
+
+    #[test]
+    fn checked_in_yaml_passes_physical_plausibility_audit() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("config")
+            .join("sim.yaml");
+        let cfg = load_config(&path);
+        validate_app_config(&cfg).expect("checked-in sim.yaml should pass plausibility audit");
     }
 
     #[test]

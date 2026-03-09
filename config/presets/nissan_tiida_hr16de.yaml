@@ -1,0 +1,56 @@
+output_dir: "dist/calibration/nissan_tiida_hr16de"
+
+engine:
+  bore_m: 0.0780
+  stroke_m: 0.0836
+  conrod_m: 0.1410
+  compression_ratio: 9.4
+  ambient_pressure_pa: 101325.0
+  intake_temp_k: 303.0
+  exhaust_temp_k: 920.0
+  wall_temp_k: 410.0
+  plenum_volume_m3: 0.0025
+  collector_volume_m3: 0.0038
+  throttle_area_max_m2: 0.0012
+  throttle_discharge_coeff: 0.82
+  tailpipe_area_m2: 0.0019
+  tailpipe_discharge_coeff: 0.87
+  intake_runner_length_m: 0.15
+  intake_runner_diameter_m: 0.029
+  intake_runner_loss_coeff: 1.7
+  exhaust_runner_length_m: 0.34
+  exhaust_runner_diameter_m: 0.030
+  exhaust_runner_loss_coeff: 1.9
+  friction_c0_nm: 7.5
+  friction_c1_nms: 0.0058
+  friction_c2_nms2: 0.000010
+  intake_open_deg: 340.0
+  intake_close_deg: 620.0
+  exhaust_open_deg: 152.0
+  exhaust_close_deg: 360.0
+  intake_valve_diameter_m: 0.0300
+  exhaust_valve_diameter_m: 0.0260
+  intake_valve_cd: 0.72
+  exhaust_valve_cd: 0.73
+  intake_max_lift_m: 0.0088
+  exhaust_max_lift_m: 0.0080
+
+combustion:
+  stoich_afr: 14.7
+  lambda_target: 1.02
+  fuel_lhv_j_per_kg: 43000000.0
+  ignition_advance_deg: 16.0
+  burn_duration_deg: 58.0
+  wall_htc_w_m2k: 250.0
+
+sweep:
+  throttle: 1.0
+  rpm_points: [2500, 3500, 4400, 5000, 6000]
+  pv_rpm_points: [4400]
+
+numerics:
+  dt_deg: 0.25
+  intake_runner_cells: 6
+  exhaust_runner_cells: 6
+  warmup_cycles: 6
+  sample_cycles: 4

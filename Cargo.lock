@@ -1186,6 +1186,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_yaml",
+ "winit",
 ]
 
 [[package]]

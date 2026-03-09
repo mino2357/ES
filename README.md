@@ -1,10 +1,10 @@
 # ES
 
-Language: English | [日本語](README.ja.md)
+Language: English | [Japanese](README.ja.md)
 
 Fixed-4-cylinder 4-stroke engine physics simulator in Rust + egui.
 
-The simulator integrates a 0D dynamic model with RK2 (midpoint), and visualizes:
+The realtime path integrates a 0D dynamic model with 3-stage RK3, and visualizes:
 
 - RPM over the latest completed `N` cycles plus the currently accumulating cycle on a fixed `0..720 degCA` x-axis
 - Net/load torque over the latest completed `N` cycles plus the currently accumulating cycle (`Nm`, fixed `0..720 degCA` x-axis)
@@ -14,9 +14,52 @@ The simulator integrates a 0D dynamic model with RK2 (midpoint), and visualizes:
 - Cam lift profiles (intake/exhaust + crank cursor)
 - Thermal efficiency metrics
 
-Audio is synthesized from firing frequency, exhaust pressure pulses, and exhaust-pipe resonance only (no real engine audio assets).
+Audio is synthesized from crank-synchronous exhaust events, exhaust pressure / flow states, a simple tailpipe-reflection surrogate, and exhaust-pipe resonance (no real engine audio assets).
 
 The engine layout is fixed to 4 cylinders throughout the simulator. Any `history_recent_cycles` / "cycles" wording below refers to plotted engine-cycle history, not to cylinder count.
+
+`config/sim.yaml` is also checked by a dedicated plausibility audit in `src/config/audit.rs`. Physical or semi-physical quantities are validated against engine-plausible bands, while audio / UI / numerics are validated against runtime-practical bands.
+
+## Terminology And Notation
+
+This README is intended to be self-contained. The terms below are the local definitions used throughout the rest of the document.
+
+- `realtime GUI path`: the interactive `es_sim` binary. It solves a reduced-order mean-value model while drawing plots and optionally synthesizing audio.
+- `GUI`: graphical user interface.
+- `headless CLI path`: the non-GUI `es_cli` / `es_hp` binaries. They run without GUI / audio / `serde_yaml` dependencies and emit files such as CSV or text reports.
+- `CLI`: command-line interface.
+- `compatibility alias`: a secondary binary name that intentionally calls the same implementation as the primary binary.
+- `offline`: not constrained by interactive wall-clock timing. The headless solver is both headless and offline.
+- `plausibility audit`: a range and sanity check pass applied to parsed configuration before the simulator accepts it.
+- `reduced-order mean-value model`: a low-state-count surrogate that keeps aggregate manifold, runner, combustion, and torque behavior without claiming full CFD or full commercial 1D gas dynamics fidelity.
+- `single-zone cylinder model`: a cylinder model that tracks one thermodynamic gas zone per cylinder rather than separate burned / unburned spatial zones.
+- `ODE`: ordinary differential equation.
+- `RK3` / `RK4`: explicit third-order / fourth-order Runge-Kutta time integration formulas.
+- `PI controller`: proportional-integral controller.
+- `bench`: the automatic torque-curve measurement workflow inside the GUI. It is a software test-bench mode, not a claim that the program is attached to physical dyno hardware.
+- `dyno`: the absorber / load-holding surrogate used by the bench path to hold target RPM and report brake torque.
+- `sweep`: an ordered series of operating points, usually across RPM, used to produce a torque or power curve.
+- `lambda`: the air-fuel equivalence ratio relative to stoichiometric air-fuel ratio. `lambda < 1` is rich, `lambda = 1` is stoichiometric, and `lambda > 1` is lean.
+- `YAML`: the human-readable configuration-file format used for checked-in inputs.
+- `CSV`: comma-separated values output files written by the headless path and by bench export.
+- `VVT`: variable valve timing.
+- `EGR`: exhaust gas recirculation. `internal EGR` in this repo means residual gas retained by valve overlap and backflow rather than by an external recirculation loop.
+- `SI`: spark ignition.
+- `WOT`: wide-open throttle.
+- `NA`: naturally aspirated.
+- `OEM`: original equipment manufacturer. In this README it means manufacturer-published specifications used as external reference anchors.
+- `plenum`: the shared intake air volume upstream of the intake runners.
+- `runner`: an intake or exhaust duct between a common volume and the cylinder-side boundary.
+- `collector`: the shared exhaust volume downstream of the exhaust runners / header primaries.
+- `degCA`: crank-angle degrees over a `0 .. 720` four-stroke engine cycle.
+- `TDC` / `BDC`: top dead center / bottom dead center.
+- `BTDC`: before top dead center.
+- `VE`: volumetric efficiency.
+- `IMEP` / `BMEP`: indicated / brake mean effective pressure.
+- `BSFC`: brake-specific fuel consumption.
+- `APK`: Android application package.
+
+Whenever a later section uses one of these abbreviations without re-expanding it, this section is the authoritative definition for this file.
 
 ## Windows 11 Binary Download
 
@@ -58,6 +101,36 @@ If you download from a successful CI run instead of a formal release, the Action
 cargo run --release
 ```
 
+## Dependency-Free CLI
+
+The repository also ships a std-only headless CLI path. `es_cli` is the primary name and `es_hp` remains as a compatibility alias.
+
+```bash
+cargo run --no-default-features --bin es_cli -- validate config/high_precision.yaml
+cargo run --no-default-features --bin es_cli -- sweep config/high_precision.yaml
+cargo run --no-default-features --bin es_cli -- point config/high_precision.yaml --rpm 3500 --write-pv
+```
+
+Supported commands:
+
+- `validate`: parse YAML, run strict range validation, and print derived engine metrics
+- `sweep`: run the configured torque sweep, write `torque_curve.csv`, `torque_summary.csv`, optional `pv_<rpm>rpm.csv`, and `sweep_report.txt`
+- `point`: solve one operating point and optionally write `pv_<rpm>rpm.csv` plus `point_<rpm>rpm_summary.txt`
+- `list-presets`: list YAML presets under `config/` and `config/presets/`
+
+## Android (Experimental)
+
+The GUI path can now be built as an Android shared library and launched with `cargo apk`.
+The Android entry point lives in `src/lib.rs`, the mobile `eframe` launcher is in `src/dashboard.rs`, and Android currently boots from an embedded copy of `config/sim.yaml` instead of reading an external file from device storage.
+
+Quick start:
+
+```bash
+cargo apk run --lib --release --target aarch64-linux-android
+```
+
+See [ANDROID.md](ANDROID.md) for setup, current limitations, and the exact build flow.
+
 ## Stage Local Windows Release Assets
 
 Build the release binary first, then stage the flat Windows runtime assets published to GitHub Releases:
@@ -71,6 +144,8 @@ The generated files are written to `dist/release-assets/`.
 README PDFs are still produced separately by `scripts/build-doc-pdfs.sh` or by the `release-windows` workflow.
 
 If you still want a local portable zip, `scripts/package-windows.ps1` remains available.
+
+For documented headless calibration targets and their current fit quality against OEM specs, see [ENGINE_REFERENCE_TARGETS.md](ENGINE_REFERENCE_TARGETS.md).
 
 ## GitHub Automation
 
@@ -114,7 +189,7 @@ The release binary also falls back to `sim.yaml` placed beside `es_sim.exe` so f
 Tuning constants that were previously hard-coded are now centralized in YAML sections:
 
 - `auto_control.*`: auto start/idle PI gains and thresholds
-- `bench.*`: automatic continuous-sweep bench settings, point-sample bench settings, and bench mixture targets
+- `bench.*`: automatic continuous-sweep bench settings, point-sample bench settings, bench dyno speed-hold / absorber settings, and bench mixture targets
 - `model.*`: combustion, flow, p-V, torque smoothing, state-limit coefficients
 - `numerics.*`: RPM-linked timestep and realtime-floor estimator coefficients
 - `plot.*`: history-buffer length and fixed plot ranges
@@ -187,7 +262,8 @@ The current dashboard is best interpreted as a mean-value engine / drivability /
 - RPM, net-torque, external-load-torque, and trapped-air history plots use crank angle on the x-axis, fixed to `0..720 degCA`. The dashboard keeps the most recent completed `N` cycles plus the current in-progress cycle so a full trace remains visible when the crank angle wraps back to zero.
 - The `p-V` plot uses normalized cylinder volume and a reconstructed cylinder-pressure model driven by the same fueling and burn-phasing inputs as the torque model. It is intended for qualitative cycle-shape inspection and indicated-work estimation, not as a direct substitute for measured in-cylinder pressure traces.
 - The cam plot is a valve-lift / phasing visualization. It is not yet a curtain-area or event-timing analysis view.
-- The automatic bench view now has two layers: an instant preview curve computed from a coarse locked-cycle surrogate so a dyno-like torque/power envelope appears immediately, and the budgeted continuous WOT sweep that refines the same RPM bins afterward. The default bench mode is `rich_charge_cooling`, and a dedicated `lambda=1` bench is also available. Unlike the live dashboard path, the measured bench solver is not constrained by the realtime floor: it uses a bench-specific crank-angle target timestep plus step-doubling error checks before each accepted step.
+- The automatic bench view now has two layers: an instant preview curve computed from a coarse locked-cycle surrogate so a dyno-like torque/power envelope appears immediately, and the budgeted continuous WOT sweep that refines the same RPM bins afterward. The default bench mode is `rich_charge_cooling`, and a dedicated `lambda=1` bench is also available. The measured sweep now uses a bench-only speed-hold dyno controller that applies absorber load automatically instead of hard-clamping crank speed, so the displayed bench torque is the dyno brake output rather than the residual shaft-acceleration torque. Unlike the live dashboard path, the measured bench solver is not constrained by the realtime floor: it uses a bench-specific crank-angle target timestep plus step-doubling error checks before each accepted step.
+- Completed GUI bench runs are exported automatically to `dist/bench/bench-rich_charge_cooling-latest.csv` or `dist/bench/bench-lambda_one-latest.csv`.
 - The GUI shows gross combustion power, net brake power, brake BMEP, and commanded external load separately. At unloaded idle or free-rev steady states, net brake torque can settle near zero because combustion torque is mostly consumed by friction and pumping, so near-zero brake power there is expected.
 - The GUI already shows lambda target, charge temperature, displayed VE, power, and brake BMEP. Metrics still missing for a full combustion-analysis workflow include `p-theta`, `PCP`, `CA10/50/90`, apparent heat-release, and `BSFC`.
 - The Auto WOT Efficiency Search still uses a reduced-order model. Ignition is searched locally around the current best point, but intake and exhaust VVT are now scanned across the configured full range. Any high-RPM overlap trend should therefore be read as an indicator from the grouped-runner / grouped-exhaust model, not as a calibrated 1D gas-dynamics result.
@@ -201,6 +277,7 @@ Its physics split is:
 
 - first-principles states: crank dynamics and intake/exhaust manifold pressure dynamics
 - first-principles closures: ideal-gas relations, compressible throttle/tailpipe orifice flow, Otto-efficiency reference [S2, S3]
+- semi-physical thermochemistry: fresh-charge evaporative cooling, burned-gas `c_p / \gamma` variation, and overlap-backflow internal-EGR mixing
 - reduced empirical closures: volumetric efficiency, combustion phasing loss, friction, starter map
 - reconstructed visualization: the plotted `p-V` loop is a thermodynamically informed display model driven by the same fueling and burn-phasing inputs, but it is not itself a solved cylinder state ODE
 
@@ -308,16 +385,95 @@ Control input:
 ```
 
 ```math
-\frac{d\dot m_{ir}}{dt} = \frac{p_{im}-p_{ir}}{L_{ir}} - d_{ir}\dot m_{ir}
+\frac{d\dot m_{ir}}{dt}
+=
+\frac{\left(p_{im}-p_{ir}\right)-\Delta p_{loss,ir}}{L_{ir}}
+- d_{ir}\dot m_{ir}
 ```
 
 ```math
-\frac{d\dot m_{er}}{dt} = \frac{p_{er}-p_{em}}{L_{er}} - d_{er}\dot m_{er}
+\frac{d\dot m_{er}}{dt}
+=
+\frac{\left(p_{er}-p_{em}\right)-\Delta p_{loss,er}}{L_{er}}
+- d_{er}\dot m_{er}
 ```
 
 ```math
 \dot \alpha_{th} = \frac{\alpha_{cmd}-\alpha_{th}}{\tau_{th}},\quad \tau_{th}=0.060\ \mathrm{s}
 ```
+
+The runner-loss terms used in the solved ODE are
+
+```math
+\Delta p_{loss}
+=
+\operatorname{sgn}\!\left(\dot m\right)
+\left(f\frac{L}{D}+K\right)
+\frac{\dot m^2}{2\rho A_{eff}^2}
+```
+
+with density estimated from the mean upstream/downstream pressure and the corresponding gas temperature.
+
+The mass-flow closures inserted into the pressure states are
+
+```math
+\dot m_{cyl}
+=
+\dot m_{cyl,mean}\,
+\phi_I(\theta)\,
+\psi_{I,wave}(\theta)
+```
+
+```math
+\dot m_{exh,in}
+=
+\left(\dot m_{cyl,mean}+\dot m_f\right)\,
+\phi_E(\theta)\,
+\psi_{E,wave}(\theta)
+```
+
+where `\phi_I,\phi_E` are the normalized valve-event pulse factors and `\psi_{I,wave},\psi_{E,wave}` are the instantaneous wave-action multipliers.
+
+The fired-path charge-state closures that feed combustion, heat loss, and exhaust temperature are
+
+```math
+x_{egr}
+=
+\operatorname{clamp}\!\left[
+\chi_{ov}
+\left(
+x_{0}
++k_p\Delta p_{back}^{+}
++k_w s_{scav}^{-}
++k_r \dot m_{rev}^{+}
+\right)
+\right]
+```
+
+```math
+c_{p,burn}
+=
+\operatorname{clamp}\!\left(
+c_{p,ref}
++k_T\left(T_{res}-T_{ref}\right)
++k_{egr}x_{egr}
+\right)
+```
+
+```math
+\gamma_{mix}
+=
+\frac{c_{p,mix}}{c_{p,mix}-R_{air}}
+```
+
+```math
+T_{charge}
+=
+\frac{m_{fresh} c_{p,f}T_f + m_r c_{p,burn}T_{res}}
+{m_{fresh} c_{p,f}+m_r c_{p,burn}}
+```
+
+with `x_{egr}` derived from overlap lift `\chi_{ov}`, exhaust-over-intake backflow head `\Delta p_{back}^{+}`, negative scavenging head `s_{scav}^{-}`, and reverse exhaust-runner flow `\dot m_{rev}^{+}`.
 
 #### Running steady-state interpretation
 
@@ -1379,9 +1535,9 @@ L_{max}\left[\frac{1+\cos\left(\pi\,\mathrm{clamp}(\delta/h,-1,1)\right)}{2}\rig
 
 The implemented audio model does not use recorded assets. It uses:
 
-- engine firing frequency for the fundamental pitch
-- exhaust pressure for pulse strength
-- exhaust-gas temperature and pipe length for resonant coloring
+- simulated crank-angle phase to keep exhaust events synchronized
+- exhaust pressure and runner flow for pulse and turbulence strength
+- exhaust-gas temperature and pipe length for resonant coloring and round-trip reflection timing
 
 #### 11.1 Pressure normalization, RPM gate, and envelope states
 
@@ -1439,13 +1595,21 @@ For a 4-stroke engine, the aggregate firing frequency is:
 f_{fire}=\frac{\mathrm{rpm}\,N_{cyl}}{120}
 ```
 
-The phase state is advanced directly from this firing frequency:
+The phase state is advanced from firing frequency and then nudged toward the simulated crank phase:
 
 ```math
-\phi\leftarrow \left(\phi+\frac{f_{fire}}{f_s}\right)\bmod 1
+\phi_{obs}=\left(\frac{\theta_{cycle}}{180}\right)\bmod 1
 ```
 
-This is the core reason the sound rises in pitch with RPM. For example, a 4-cylinder engine gives
+```math
+\phi\leftarrow
+\left(
+\phi+\frac{f_{fire}}{f_s}+k_{\phi}\,\mathrm{wrap}(\phi_{obs}-\phi)
+\right)\bmod 1
+```
+
+This keeps the pulse train phase-locked to the simulated `0..720 degCA` state instead of letting
+the audio oscillator drift freely from RPM alone. A 4-cylinder engine gives
 $f_{fire}=33.3\ \mathrm{Hz}$ at `1000 rpm` and $100\ \mathrm{Hz}$ at `3000 rpm`.
 
 The per-event deterministic pulse shape is:
@@ -1494,7 +1658,7 @@ f_i=\mathrm{clamp}\left(f_{i,target},f_{min},\rho_{Nyq}f_s\right)
 Q_i=\max(Q_{i,target},Q_{min})
 ```
 
-#### 11.4 Excitation, resonators, and output
+#### 11.4 Excitation, pipe reflection, turbulence, and output
 
 Pressure-rise click term:
 
@@ -1520,6 +1684,28 @@ Total excitation:
 x=pulse_{\Delta p}+pulse_{exh}+pulse_{sin}
 ```
 
+Simple tailpipe round-trip reflection surrogate:
+
+```math
+N_{ref}\approx \mathrm{round}\left(\frac{2L_{pipe}}{c_{exh}}f_s\right)
+```
+
+```math
+x_{pipe}=x-k_{ref}x[n-N_{ref}]
+```
+
+This is not a full 1D waveguide, but it inserts the correct sign of open-end pressure reflection and
+ties the delay to pipe length and hot-gas sound speed.
+
+Flow-driven broadband term:
+
+```math
+x_{jet}\propto \dot m_{er,n}^{1.15}\,p_{drive,n}\,p_{train}
+```
+
+The implementation uses a deterministic high-passed wideband source so the sound picks up some
+jet-like edge as exhaust flow rises, without relying on sampled audio assets.
+
 Three-resonator weighted sum:
 
 ```math
@@ -1537,7 +1723,7 @@ y_{rum}=k_{rum}\,env\,\sin(2\pi h_{rum}\phi)
 ```
 
 ```math
-raw=y_{res}+y_{dir}+y_{rum}
+raw=y_{res}+y_{dir}+y_{jet}+y_{rum}
 ```
 
 DC removal:
@@ -1921,6 +2107,33 @@ The `model.*` section contains most reduced-order calibration coefficients, guar
 | `model.fuel_evaporation.charge_cooling_effectiveness` | - | 0.72 | Fraction of the ideal latent-heat cooling that is applied to the intake charge |
 | `model.fuel_evaporation.intake_charge_temp_min_k` | K | 255.0 | Lower clamp on charge temperature after evaporative cooling |
 
+#### Model.gas_thermo
+
+| YAML key | Unit | Sample value | Description |
+|---|---:|---:|---|
+| `model.gas_thermo.fresh_cp_j_per_kgk` | J/kg/K | 1005.0 | Representative constant-pressure specific heat of the inducted fresh charge |
+| `model.gas_thermo.burned_cp_ref_j_per_kgk` | J/kg/K | 1150.0 | Burned-gas `c_p` at the reference temperature before temperature / EGR corrections |
+| `model.gas_thermo.burned_cp_reference_temp_k` | K | 900.0 | Reference temperature used by the burned-gas `c_p` correlation |
+| `model.gas_thermo.burned_cp_temp_coeff_j_per_kgk2` | J/kg/K^2 | 0.12 | Slope from burned-gas temperature into `c_p` |
+| `model.gas_thermo.burned_cp_egr_coeff_j_per_kgk` | J/kg/K | 120.0 | Additional burned-gas `c_p` gain as internal EGR fraction rises |
+| `model.gas_thermo.cp_min_j_per_kgk` | J/kg/K | 950.0 | Lower clamp on any gas specific heat used by the realtime model |
+| `model.gas_thermo.cp_max_j_per_kgk` | J/kg/K | 1450.0 | Upper clamp on any gas specific heat used by the realtime model |
+
+#### Model.internal_egr
+
+| YAML key | Unit | Sample value | Description |
+|---|---:|---:|---|
+| `model.internal_egr.overlap_base_fraction` | - | 0.010 | Residual-gas fraction generated by overlap alone before backflow terms |
+| `model.internal_egr.pressure_backflow_gain` | - | 0.12 | Gain from exhaust-over-intake runner pressure head into internal EGR fraction |
+| `model.internal_egr.wave_backflow_gain` | - | 0.10 | Gain from negative overlap scavenging head into internal EGR fraction |
+| `model.internal_egr.reverse_flow_gain` | - | 0.16 | Gain from reverse exhaust-runner flow into internal EGR fraction |
+| `model.internal_egr.reverse_flow_reference_kg_s` | kg/s | 0.06 | Reverse-flow magnitude corresponding to unit internal-EGR backflow excitation |
+| `model.internal_egr.fraction_min` | - | 0.0 | Lower clamp on the modeled internal EGR fraction |
+| `model.internal_egr.fraction_max` | - | 0.18 | Upper clamp on the modeled internal EGR fraction |
+| `model.internal_egr.burn_duration_gain_deg_per_fraction` | degCA/fraction | 22.0 | Burn-duration increase applied per unit internal EGR fraction |
+| `model.internal_egr.phase_dilution_gain` | - | 0.30 | Gain reducing ignition-phase effectiveness as internal EGR rises |
+| `model.internal_egr.phase_dilution_min` | - | 0.86 | Lower clamp on the internal-EGR phase-dilution multiplier |
+
 #### Model.external_load
 
 | YAML key | Unit | Sample value | Description |
@@ -1973,7 +2186,7 @@ The `model.*` section contains most reduced-order calibration coefficients, guar
 | `audio.model.pressure_pulse_max` | $pulse_{max}$ | - | 2.2 | Upper clamp for pressure-rise click term |
 | `audio.model.exhaust_pulse_base` | $b_{exh}$ | - | 0.10 | Base exhaust pulse amplitude |
 | `audio.model.exhaust_pulse_gain` | $k_{exh}$ | - | 1.15 | Pressure-scaled exhaust pulse amplitude gain |
-| `audio.model.pulse_sine_gain` | $k_{sin}$ | - | 0.04 | Sinusoidal support mixed into the excitation |
+| `audio.model.pulse_sine_gain` | $k_{sin}$ | - | 0.018 | Sinusoidal support mixed into the excitation |
 | `audio.model.direct_pulse_mix` | $w_{dir}$ | - | 0.18 | Direct excitation mixed around the resonators |
 | `audio.model.resonator_mix_1` | $w_1$ | - | 0.95 | Weight of resonator 1 |
 | `audio.model.resonator_mix_2` | $w_2$ | - | 0.55 | Weight of resonator 2 |
@@ -1985,6 +2198,7 @@ The `model.*` section contains most reduced-order calibration coefficients, guar
 | `audio.model.loudness_base` | $g_0$ | - | 0.22 | Base loudness term |
 | `audio.model.loudness_pressure_gain` | $g_p$ | - | 0.90 | Loudness gain from normalized exhaust pressure |
 | `audio.model.loudness_env_gain` | $g_{env}$ | - | 0.08 | Loudness gain from pulse envelope |
+| `audio.model.loudness_normalize_mix` | - | - | 0.80 | Blend from raw loudness to automatic normalization |
 | `audio.model.output_gain_floor` | $G_{out,min}$ | - | 0.1 | Lower bound for top-level output gain |
 | `audio.model.limiter_out_gain` | $g_{lim}$ | - | 0.95 | Final limiter output scale |
 
@@ -2063,7 +2277,7 @@ The `model.*` section contains most reduced-order calibration coefficients, guar
 | `ui.pv_headroom_ratio` | - | 1.08 | Reserved p-V headroom ratio used by UI scaling logic |
 | `ui.pv_min_headroom_kpa` | kPa | 100.0 | Minimum extra pressure headroom for p-V display calculations |
 | `ui.repaint_hz` | Hz | 20 | Requested GUI repaint rate |
-| `ui.window_width_px` | px | 1400.0 | Initial application-window width |
+| `ui.window_width_px` | px | 1600.0 | Initial application-window width sized for the full dashboard on a typical FHD desktop |
 | `ui.window_height_px` | px | 1000.0 | Initial application-window height sized to fit the default graph layout |
 | `ui.audio_gain_floor` | - | 0.1 | Minimum audio gain forwarded from the GUI into the synthesizer |
 
