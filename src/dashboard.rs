@@ -29,14 +29,14 @@ struct GraphLayoutHeights {
 }
 
 fn graph_layout_heights(ui_config: &UiConfig) -> GraphLayoutHeights {
-    let scale = 0.92;
+    let scale = 0.84;
     let standard_plot_px = (ui_config.plot_height_px * scale).max(72.0);
     let pv_plot_px = (ui_config.pv_plot_height_px * scale).max(standard_plot_px * 1.55);
 
     GraphLayoutHeights {
         standard_plot_px,
         pv_plot_px,
-        section_spacing_px: 6.0,
+        section_spacing_px: 4.0,
     }
 }
 
@@ -633,7 +633,7 @@ impl DashboardApp {
 
     fn render_control_rack(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("controls")
-            .default_width(300.0)
+            .default_width(272.0)
             .resizable(true)
             .frame(self.theme.rack_frame())
             .show(ctx, |ui| {
@@ -869,7 +869,7 @@ impl DashboardApp {
                             "Status Bus",
                             "cell and runtime telemetry",
                             self.theme.green,
-                            false,
+                            true,
                             |ui| {
                                 let load_model = &self.sim.model.external_load;
                                 ui.label(format!(
@@ -963,12 +963,12 @@ impl DashboardApp {
         let absorber_torque_nm = self.latest.torque_load_nm.abs();
         let absorber_power_kw = shaft_power_kw(self.latest.rpm, absorber_torque_nm);
         let panel_width = ui.available_width().max(320.0);
-        let readout_columns = responsive_card_columns(panel_width, 190.0, 6);
-        let readout_width = responsive_card_width(panel_width, readout_columns).min(248.0);
-        let gauge_columns = responsive_card_columns(panel_width, 148.0, 6);
-        let gauge_width = responsive_card_width(panel_width, gauge_columns).min(188.0);
-        let meter_columns = responsive_card_columns(panel_width, 210.0, 3);
-        let meter_width = responsive_card_width(panel_width, meter_columns).min(282.0);
+        let readout_columns = responsive_card_columns(panel_width, 176.0, 6);
+        let readout_width = responsive_card_width(panel_width, readout_columns).min(228.0);
+        let gauge_columns = responsive_card_columns(panel_width, 136.0, 6);
+        let gauge_width = responsive_card_width(panel_width, gauge_columns).min(172.0);
+        let meter_columns = responsive_card_columns(panel_width, 188.0, 3);
+        let meter_width = responsive_card_width(panel_width, meter_columns).min(252.0);
         let intake_state = format!(
             "MAP {:.1} kPa / runner {:.1} kPa",
             self.latest.map_kpa, self.latest.intake_runner_kpa
@@ -1291,7 +1291,7 @@ impl DashboardApp {
             "Sensor / State Bus",
             "live reduced-order state and closures",
             self.theme.green,
-            false,
+            true,
             |ui| {
                 egui::Grid::new("state_bus_grid")
                     .num_columns(2)
@@ -1577,7 +1577,7 @@ impl DashboardApp {
             "Cycle Monitors",
             "recent histories and valve event trace",
             self.theme.cyan,
-            false,
+            true,
             |ui| {
                 let recent_cycles = self.sim.plot.history_recent_cycles.max(1);
 

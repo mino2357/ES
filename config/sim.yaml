@@ -655,9 +655,9 @@ ui:
   # Maximum ignition-timing slider value shown in the GUI [deg BTDC].
   ignition_slider_max_deg: 45.0
   # Standard height used for each plot widget [px].
-  plot_height_px: 145.0
+  plot_height_px: 126.0
   # Height of the main p-V plot placed at the top of the central panel [px].
-  pv_plot_height_px: 290.0
+  pv_plot_height_px: 244.0
   # Standard line width for plot traces [px].
   line_width_px: 2.0
   # Line width used for the cam-plot crank-angle cursor [px].
@@ -679,9 +679,9 @@ ui:
   # Requested GUI repaint rate [Hz].
   repaint_hz: 45
   # Initial application-window width [px]. Sized so the full dashboard fits on a typical FHD desktop.
-  window_width_px: 1536.0
+  window_width_px: 1440.0
   # Initial application-window height [px].
-  window_height_px: 900.0
+  window_height_px: 860.0
 
 # Fixed plot ranges and p-V-history sampling density.
 plot:

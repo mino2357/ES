@@ -898,8 +898,8 @@ impl Default for UiConfig {
             vvt_slider_max_deg: 40.0,
             ignition_slider_min_deg: -5.0,
             ignition_slider_max_deg: 45.0,
-            plot_height_px: 145.0,
-            pv_plot_height_px: 290.0,
+            plot_height_px: 126.0,
+            pv_plot_height_px: 244.0,
             line_width_px: 2.0,
             crank_line_width_px: 1.0,
             torque_min_span_nm: 10.0,
@@ -910,8 +910,8 @@ impl Default for UiConfig {
             pv_headroom_ratio: 1.08,
             pv_min_headroom_kpa: 100.0,
             repaint_hz: 45,
-            window_width_px: 1536.0,
-            window_height_px: 900.0,
+            window_width_px: 1440.0,
+            window_height_px: 860.0,
         }
     }
 }
@@ -1101,9 +1101,9 @@ mod tests {
         assert!(!cfg.ui.sync_to_wall_clock);
         assert!((cfg.ui.simulated_time_per_frame_s - 0.008).abs() < 1.0e-12);
         assert_eq!(cfg.ui.repaint_hz, 45);
-        assert!((cfg.ui.pv_plot_height_px - 290.0).abs() < 1.0e-12);
-        assert!((cfg.ui.window_width_px - 1536.0).abs() < 1.0e-12);
-        assert!((cfg.ui.window_height_px - 900.0).abs() < 1.0e-12);
+        assert!((cfg.ui.pv_plot_height_px - 244.0).abs() < 1.0e-12);
+        assert!((cfg.ui.window_width_px - 1440.0).abs() < 1.0e-12);
+        assert!((cfg.ui.window_height_px - 860.0).abs() < 1.0e-12);
     }
 
     #[test]

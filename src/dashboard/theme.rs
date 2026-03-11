@@ -62,21 +62,21 @@ impl DashboardTheme {
         ctx.set_visuals(visuals);
 
         let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 8.0);
-        style.spacing.indent = 18.0;
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(8.0, 6.0);
+        style.spacing.indent = 16.0;
         style
             .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(24.0));
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(22.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(14.0));
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
         style
             .text_styles
             .insert(egui::TextStyle::Small, egui::FontId::monospace(11.0));
@@ -86,14 +86,14 @@ impl DashboardTheme {
     pub(super) fn header_frame(self) -> egui::Frame {
         egui::Frame::new()
             .fill(self.panel_alt_bg)
-            .inner_margin(egui::Margin::symmetric(16, 12))
+            .inner_margin(egui::Margin::symmetric(14, 10))
             .stroke(egui::Stroke::new(1.0, self.bezel))
     }
 
     pub(super) fn rack_frame(self) -> egui::Frame {
         egui::Frame::new()
             .fill(self.panel_bg)
-            .inner_margin(egui::Margin::symmetric(14, 12))
+            .inner_margin(egui::Margin::symmetric(12, 10))
             .stroke(egui::Stroke::new(1.0, self.bezel))
             .corner_radius(10)
     }
@@ -101,7 +101,7 @@ impl DashboardTheme {
     pub(super) fn monitor_frame(self) -> egui::Frame {
         egui::Frame::new()
             .fill(self.panel_bg)
-            .inner_margin(egui::Margin::symmetric(12, 10))
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .stroke(egui::Stroke::new(1.0, self.chrome))
             .corner_radius(12)
     }
@@ -109,7 +109,7 @@ impl DashboardTheme {
     pub(super) fn instrument_frame(self, accent: egui::Color32) -> egui::Frame {
         egui::Frame::new()
             .fill(self.panel_alt_bg)
-            .inner_margin(egui::Margin::symmetric(10, 10))
+            .inner_margin(egui::Margin::symmetric(8, 8))
             .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.6)))
             .corner_radius(12)
     }
