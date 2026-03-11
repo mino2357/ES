@@ -175,6 +175,51 @@ fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
+fn tent_roof_y(
+    x: f32,
+    bore_left: f32,
+    bore_right: f32,
+    chamber_apex: egui::Pos2,
+    deck_y: f32,
+) -> f32 {
+    if x <= chamber_apex.x {
+        let t = ((x - bore_left) / (chamber_apex.x - bore_left).max(f32::EPSILON)).clamp(0.0, 1.0);
+        egui::lerp(deck_y..=chamber_apex.y, t)
+    } else {
+        let t = ((x - chamber_apex.x) / (bore_right - chamber_apex.x).max(f32::EPSILON))
+            .clamp(0.0, 1.0);
+        egui::lerp(chamber_apex.y..=deck_y, t)
+    }
+}
+
+fn flame_front_points(
+    spark_pos: egui::Pos2,
+    radius_x: f32,
+    radius_y: f32,
+    bore_left: f32,
+    bore_right: f32,
+    chamber_apex: egui::Pos2,
+    deck_y: f32,
+    piston_top_y: f32,
+) -> Vec<egui::Pos2> {
+    let mut points = Vec::with_capacity(49);
+    let x_min = bore_left + 6.0;
+    let x_max = bore_right - 6.0;
+    let y_bottom = (piston_top_y - 6.0).max(spark_pos.y + 8.0);
+    for step in 0..=48 {
+        let angle = std::f32::consts::TAU * step as f32 / 48.0;
+        let mut x = spark_pos.x + radius_x * angle.cos();
+        x = x.clamp(x_min, x_max);
+        let roof_y = tent_roof_y(x, bore_left, bore_right, chamber_apex, deck_y) + 5.0;
+        let local_y = radius_y * angle.sin();
+        let stretch = if local_y < 0.0 { 0.64 } else { 1.08 };
+        let mut y = spark_pos.y + local_y * stretch;
+        y = y.clamp(roof_y, y_bottom);
+        points.push(egui::pos2(x, y));
+    }
+    points
+}
+
 fn cylinder_trace_color(index: usize) -> egui::Color32 {
     const COLORS: [egui::Color32; 4] = [
         egui::Color32::from_rgb(255, 170, 40),
@@ -187,6 +232,24 @@ fn cylinder_trace_color(index: usize) -> egui::Color32 {
 
 fn wrap_cycle_deg(value: f64) -> f64 {
     value.rem_euclid(720.0)
+}
+
+fn shortest_cycle_delta_deg(from: f64, to: f64) -> f64 {
+    let wrapped = (to - from + 360.0).rem_euclid(720.0) - 360.0;
+    if wrapped <= -360.0 {
+        wrapped + 720.0
+    } else {
+        wrapped
+    }
+}
+
+fn current_stroke_label(cycle_deg: f64) -> &'static str {
+    match wrap_cycle_deg(cycle_deg) {
+        deg if deg < 180.0 => "intake stroke",
+        deg if deg < 360.0 => "compression stroke",
+        deg if deg < 540.0 => "expansion stroke",
+        _ => "exhaust stroke",
+    }
 }
 
 fn speed_hold_desired_net_torque_nm(error_rpm: f64, integral_state: f64) -> f64 {
@@ -379,15 +442,16 @@ impl DashboardApp {
     }
 
     fn update_schematic_phase(&mut self, wall_dt_s: f64) {
-        let wall_dt_s = wall_dt_s.max(1.0 / 240.0);
         let running = self.sim.state.running || self.latest.rpm > 120.0;
+        let target_phase = wrap_cycle_deg(self.latest.cycle_deg);
         if !running {
+            self.schematic_cycle_deg = target_phase;
             return;
         }
 
-        let slowmo_cycle_deg_per_s = 180.0;
-        self.schematic_cycle_deg =
-            wrap_cycle_deg(self.schematic_cycle_deg + slowmo_cycle_deg_per_s * wall_dt_s);
+        let align_alpha = 1.0 - (-7.5 * wall_dt_s.max(1.0 / 240.0)).exp();
+        let delta = shortest_cycle_delta_deg(self.schematic_cycle_deg, target_phase);
+        self.schematic_cycle_deg = wrap_cycle_deg(self.schematic_cycle_deg + delta * align_alpha);
     }
 
     fn apply_load_input(&mut self, dt: f64) {
@@ -1812,6 +1876,14 @@ impl DashboardApp {
                 &self.sim.model,
             )
             .max(0.0);
+            let intake_open_deg =
+                wrap_cycle_deg(intake_center_deg - 0.5 * self.sim.cam.intake_duration_deg);
+            let intake_close_deg =
+                wrap_cycle_deg(intake_center_deg + 0.5 * self.sim.cam.intake_duration_deg);
+            let exhaust_open_deg =
+                wrap_cycle_deg(exhaust_center_deg - 0.5 * self.sim.cam.exhaust_duration_deg);
+            let exhaust_close_deg =
+                wrap_cycle_deg(exhaust_center_deg + 0.5 * self.sim.cam.exhaust_duration_deg);
 
             let spark_event_deg = (360.0 - self.latest.ignition_timing_deg).rem_euclid(720.0);
             let spark_rel_deg = (local_cycle_deg - spark_event_deg).rem_euclid(720.0);
@@ -1824,8 +1896,17 @@ impl DashboardApp {
             let burn_active = self.sim.control.spark_cmd
                 && self.sim.control.fuel_cmd
                 && burn_rel_deg <= burn_duration_deg + 18.0;
-            let flame_progress = if burn_active {
-                (burn_rel_deg / burn_duration_deg).clamp(0.0, 1.0) as f32
+            let crank_deg_per_s = (self.latest.rpm.max(1.0) * 6.0) as f32;
+            let burn_elapsed_s = (burn_rel_deg as f32 / crank_deg_per_s).max(0.0);
+            let burn_total_s = (burn_duration_deg as f32 / crank_deg_per_s).max(1.0e-4);
+            let characteristic_travel_m = (0.48 * self.sim.params.bore_m.max(1.0e-4)) as f32;
+            let combustion_rate_gain = (0.60
+                + 0.40 * self.latest.combustion_rate_norm.clamp(0.0, 1.4) as f32)
+                .clamp(0.55, 1.20);
+            let flame_speed_mps =
+                (characteristic_travel_m / burn_total_s).max(0.1) * combustion_rate_gain;
+            let flame_radius_norm = if burn_active {
+                (burn_elapsed_s * flame_speed_mps / characteristic_travel_m).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -1836,7 +1917,7 @@ impl DashboardApp {
             };
             let chamber_hot = self.theme.red.gamma_multiply(0.34);
             let chamber_fill = if burn_active || ignition_flash {
-                lerp_color(chamber_base, chamber_hot, flame_progress.max(0.25))
+                lerp_color(chamber_base, chamber_hot, flame_radius_norm.max(0.22))
             } else {
                 chamber_base
             };
@@ -2099,22 +2180,69 @@ impl DashboardApp {
                     }
                 }
                 if burn_active {
-                    let max_radius = bore_px * 0.58;
-                    let radius = egui::lerp(12.0..=max_radius, flame_progress);
+                    let max_radius_x = (bore_px * 0.44).max(18.0);
+                    let max_radius_y =
+                        ((piston_rect.top() - spark_plug_pos.y - 10.0).max(18.0)).min(stroke_px * 0.62);
+                    let radius_x = egui::lerp(10.0..=max_radius_x, flame_radius_norm.powf(0.88));
+                    let radius_y = egui::lerp(12.0..=max_radius_y, flame_radius_norm.powf(0.80));
+                    let outer_front = flame_front_points(
+                        spark_plug_pos,
+                        radius_x,
+                        radius_y,
+                        bore_left,
+                        bore_right,
+                        chamber_apex,
+                        deck_y,
+                        piston_rect.top(),
+                    );
+                    let mid_front = flame_front_points(
+                        spark_plug_pos,
+                        radius_x * 0.68,
+                        radius_y * 0.66,
+                        bore_left,
+                        bore_right,
+                        chamber_apex,
+                        deck_y,
+                        piston_rect.top(),
+                    );
+                    let inner_front = flame_front_points(
+                        spark_plug_pos,
+                        radius_x * 0.36,
+                        radius_y * 0.34,
+                        bore_left,
+                        bore_right,
+                        chamber_apex,
+                        deck_y,
+                        piston_rect.top(),
+                    );
+
+                    chamber_painter.add(egui::Shape::convex_polygon(
+                        outer_front.clone(),
+                        self.theme.red.gamma_multiply(0.08 + 0.10 * (1.0 - flame_radius_norm)),
+                        egui::Stroke::NONE,
+                    ));
+                    chamber_painter.add(egui::Shape::convex_polygon(
+                        mid_front.clone(),
+                        self.theme.amber.gamma_multiply(0.11 + 0.10 * (1.0 - flame_radius_norm)),
+                        egui::Stroke::NONE,
+                    ));
+                    chamber_painter.add(egui::Shape::convex_polygon(
+                        inner_front.clone(),
+                        self.theme.red.gamma_multiply(0.18 + 0.10 * (1.0 - flame_radius_norm)),
+                        egui::Stroke::NONE,
+                    ));
+                    chamber_painter.add(egui::Shape::closed_line(
+                        outer_front,
+                        egui::Stroke::new(2.0, self.theme.amber.gamma_multiply(0.95)),
+                    ));
+                    chamber_painter.add(egui::Shape::closed_line(
+                        mid_front,
+                        egui::Stroke::new(1.2, self.theme.red.gamma_multiply(0.78)),
+                    ));
                     chamber_painter.circle_filled(
                         spark_plug_pos,
-                        radius,
-                        self.theme.red.gamma_multiply(0.10 + 0.18 * (1.0 - flame_progress)),
-                    );
-                    chamber_painter.circle_stroke(
-                        spark_plug_pos,
-                        radius,
-                        egui::Stroke::new(2.0, self.theme.amber.gamma_multiply(0.95)),
-                    );
-                    chamber_painter.circle_stroke(
-                        spark_plug_pos,
-                        radius * 0.62,
-                        egui::Stroke::new(1.2, self.theme.red.gamma_multiply(0.75)),
+                        (8.0 + 8.0 * (1.0 - flame_radius_norm)).max(5.0),
+                        self.theme.amber.gamma_multiply(0.82),
                     );
                 }
 
@@ -2169,6 +2297,12 @@ impl DashboardApp {
                     metric_row(
                         ui,
                         self.theme,
+                        "Current stroke",
+                        current_stroke_label(local_cycle_deg).to_owned(),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
                         "Bore / Stroke",
                         format!(
                             "{:.1} mm / {:.1} mm",
@@ -2195,20 +2329,39 @@ impl DashboardApp {
                         ui,
                         self.theme,
                         "Spark / Burn start",
-                        format!("{:.0} / {:.0} degCA", spark_event_deg, self.latest.burn_start_deg),
+                        format!(
+                            "{:.0} / {:.0} degCA",
+                            spark_event_deg, self.latest.burn_start_deg
+                        ),
                     );
                     metric_row(
                         ui,
                         self.theme,
-                        "Animation / RPM",
-                        format!("180 degCA/s / {:.0}", self.latest.rpm),
+                        "IVO / IVC",
+                        format!("{:.0} / {:.0} degCA", intake_open_deg, intake_close_deg),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "EVO / EVC",
+                        format!("{:.0} / {:.0} degCA", exhaust_open_deg, exhaust_close_deg),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Actual / display phase",
+                        format!("{:.0} / {:.0} degCA", self.latest.cycle_deg, local_cycle_deg),
                     );
                     metric_row(
                         ui,
                         self.theme,
                         "Combustion",
                         if burn_active {
-                            format!("flame front {:.0} %", flame_progress * 100.0)
+                            format!(
+                                "flame {:.0} % / {:.1} m/s",
+                                flame_radius_norm * 100.0,
+                                flame_speed_mps
+                            )
                         } else if ignition_flash {
                             "spark discharge".to_owned()
                         } else if self.sim.control.fuel_cmd {
@@ -2228,7 +2381,7 @@ mod tests {
 
     use super::{
         adaptive_plot_y_range, graph_layout_heights, recent_cycle_plot_lines,
-        speed_hold_desired_net_torque_nm, wrap_cycle_deg,
+        shortest_cycle_delta_deg, speed_hold_desired_net_torque_nm, wrap_cycle_deg,
     };
     use crate::config::AppConfig;
     use crate::simulator::CycleHistorySample;
@@ -2333,6 +2486,8 @@ mod tests {
     #[test]
     fn cycle_wrap_helpers_follow_shortest_direction() {
         assert!((wrap_cycle_deg(725.0) - 5.0).abs() < 1.0e-12);
+        assert!((shortest_cycle_delta_deg(710.0, 8.0) - 18.0).abs() < 1.0e-12);
+        assert!((shortest_cycle_delta_deg(8.0, 710.0) + 18.0).abs() < 1.0e-12);
     }
 
     #[test]
