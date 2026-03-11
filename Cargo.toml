@@ -8,12 +8,11 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe", "dep:egui_plot", "dep:rodio", "dep:serde", "dep:serde_yaml"]
+gui = ["dep:eframe", "dep:egui_plot", "dep:serde", "dep:serde_yaml"]
 
 [dependencies]
 eframe = { version = "0.31", optional = true, features = ["android-native-activity"] }
 egui_plot = { version = "0.31", optional = true }
-rodio = { version = "0.20", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_yaml = { version = "0.9", optional = true }
 
@@ -36,11 +35,3 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 name = "es_sim"
 path = "src/main.rs"
 required-features = ["gui"]
-
-[[bin]]
-name = "es_hp"
-path = "src/bin/es_hp.rs"
-
-[[bin]]
-name = "es_cli"
-path = "src/bin/es_cli.rs"

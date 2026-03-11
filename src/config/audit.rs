@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use crate::constants::FIXED_CYLINDER_COUNT;
 
-use super::{AppConfig, AudioModelConfig, ExternalLoadConfig};
+use super::{AppConfig, ExternalLoadConfig};
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ConfigAuditReport {
@@ -35,12 +35,6 @@ pub(crate) fn audit_app_config(cfg: &AppConfig) -> ConfigAuditReport {
     audit_environment(cfg, &mut report);
     audit_engine(cfg, &mut report);
     audit_cam(cfg, &mut report);
-    audit_audio(
-        &cfg.audio.model,
-        cfg.audio.output_gain as f64,
-        cfg.audio.sample_rate_hz,
-        &mut report,
-    );
     audit_controls(cfg, &mut report);
     audit_model(cfg, &mut report);
     audit_numerics(cfg, &mut report);
@@ -310,404 +304,6 @@ fn audit_cam(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         cam.display_y_max_mm,
         "cam.exhaust_max_lift_mm",
         "cam.display_y_max_mm",
-    );
-}
-
-fn audit_audio(
-    model: &AudioModelConfig,
-    output_gain: f64,
-    sample_rate_hz: u32,
-    report: &mut ConfigAuditReport,
-) {
-    require_range(report, output_gain, "audio.output_gain", 0.0, 4.0);
-    require_u32_range(
-        report,
-        sample_rate_hz,
-        "audio.sample_rate_hz",
-        8_000,
-        192_000,
-    );
-    for (value, path, min, max) in [
-        (
-            model.resonator_freq_min_hz as f64,
-            "audio.model.resonator_freq_min_hz",
-            10.0,
-            200.0,
-        ),
-        (
-            model.resonator_freq_max_nyquist_ratio as f64,
-            "audio.model.resonator_freq_max_nyquist_ratio",
-            0.05,
-            0.95,
-        ),
-        (
-            model.resonator_q_min as f64,
-            "audio.model.resonator_q_min",
-            0.05,
-            20.0,
-        ),
-        (
-            model.rpm_gate_floor_rpm as f64,
-            "audio.model.rpm_gate_floor_rpm",
-            0.0,
-            2_000.0,
-        ),
-        (
-            model.rpm_gate_full_rpm as f64,
-            "audio.model.rpm_gate_full_rpm",
-            50.0,
-            4_000.0,
-        ),
-        (
-            model.rpm_gate_exponent as f64,
-            "audio.model.rpm_gate_exponent",
-            0.2,
-            4.0,
-        ),
-        (
-            model.exhaust_temp_min_k as f64,
-            "audio.model.exhaust_temp_min_k",
-            250.0,
-            1_000.0,
-        ),
-        (
-            model.exhaust_temp_max_k as f64,
-            "audio.model.exhaust_temp_max_k",
-            600.0,
-            2_000.0,
-        ),
-        (
-            model.exhaust_pipe_length_m as f64,
-            "audio.model.exhaust_pipe_length_m",
-            0.4,
-            4.0,
-        ),
-        (
-            model.resonator_mode_1 as f64,
-            "audio.model.resonator_mode_1",
-            0.5,
-            8.0,
-        ),
-        (
-            model.resonator_mode_2 as f64,
-            "audio.model.resonator_mode_2",
-            0.5,
-            12.0,
-        ),
-        (
-            model.resonator_mode_3 as f64,
-            "audio.model.resonator_mode_3",
-            0.5,
-            16.0,
-        ),
-        (
-            model.ambient_pressure_kpa as f64,
-            "audio.model.ambient_pressure_kpa",
-            60.0,
-            110.0,
-        ),
-        (
-            model.pressure_span_kpa as f64,
-            "audio.model.pressure_span_kpa",
-            5.0,
-            250.0,
-        ),
-        (
-            model.pressure_smoothing_alpha as f64,
-            "audio.model.pressure_smoothing_alpha",
-            0.0,
-            1.0,
-        ),
-        (
-            model.runner_pressure_mix as f64,
-            "audio.model.runner_pressure_mix",
-            0.0,
-            2.0,
-        ),
-        (
-            model.collector_pressure_mix as f64,
-            "audio.model.collector_pressure_mix",
-            0.0,
-            1.0,
-        ),
-        (
-            model.intake_pressure_mix as f64,
-            "audio.model.intake_pressure_mix",
-            0.0,
-            1.0,
-        ),
-        (
-            model.flow_span_gps as f64,
-            "audio.model.flow_span_gps",
-            1.0,
-            500.0,
-        ),
-        (
-            model.flow_pulse_gain as f64,
-            "audio.model.flow_pulse_gain",
-            0.0,
-            10.0,
-        ),
-        (
-            model.resonator_1_q as f64,
-            "audio.model.resonator_1_q",
-            0.1,
-            40.0,
-        ),
-        (
-            model.resonator_2_q as f64,
-            "audio.model.resonator_2_q",
-            0.1,
-            40.0,
-        ),
-        (
-            model.resonator_3_q as f64,
-            "audio.model.resonator_3_q",
-            0.1,
-            40.0,
-        ),
-        (
-            model.pulse_env_decay as f64,
-            "audio.model.pulse_env_decay",
-            0.0,
-            1.0,
-        ),
-        (
-            model.pulse_env_dp_gain as f64,
-            "audio.model.pulse_env_dp_gain",
-            0.0,
-            100.0,
-        ),
-        (
-            model.pulse_env_min as f64,
-            "audio.model.pulse_env_min",
-            0.0,
-            5.0,
-        ),
-        (
-            model.pulse_env_max as f64,
-            "audio.model.pulse_env_max",
-            0.0,
-            20.0,
-        ),
-        (
-            model.pulse_shape_decay_fast as f64,
-            "audio.model.pulse_shape_decay_fast",
-            0.0,
-            500.0,
-        ),
-        (
-            model.pulse_shape_decay_slow as f64,
-            "audio.model.pulse_shape_decay_slow",
-            0.0,
-            500.0,
-        ),
-        (
-            model.pressure_pulse_gain as f64,
-            "audio.model.pressure_pulse_gain",
-            0.0,
-            200.0,
-        ),
-        (
-            model.pressure_pulse_min as f64,
-            "audio.model.pressure_pulse_min",
-            -20.0,
-            20.0,
-        ),
-        (
-            model.pressure_pulse_max as f64,
-            "audio.model.pressure_pulse_max",
-            -20.0,
-            200.0,
-        ),
-        (
-            model.exhaust_pulse_base as f64,
-            "audio.model.exhaust_pulse_base",
-            0.0,
-            5.0,
-        ),
-        (
-            model.exhaust_pulse_gain as f64,
-            "audio.model.exhaust_pulse_gain",
-            0.0,
-            20.0,
-        ),
-        (
-            model.pulse_sine_gain as f64,
-            "audio.model.pulse_sine_gain",
-            0.0,
-            2.0,
-        ),
-        (
-            model.direct_pulse_mix as f64,
-            "audio.model.direct_pulse_mix",
-            0.0,
-            1.0,
-        ),
-        (
-            model.resonator_mix_1 as f64,
-            "audio.model.resonator_mix_1",
-            0.0,
-            2.0,
-        ),
-        (
-            model.resonator_mix_2 as f64,
-            "audio.model.resonator_mix_2",
-            0.0,
-            2.0,
-        ),
-        (
-            model.resonator_mix_3 as f64,
-            "audio.model.resonator_mix_3",
-            0.0,
-            2.0,
-        ),
-        (
-            model.rumble_gain as f64,
-            "audio.model.rumble_gain",
-            0.0,
-            5.0,
-        ),
-        (
-            model.rumble_harmonic as f64,
-            "audio.model.rumble_harmonic",
-            0.2,
-            8.0,
-        ),
-        (
-            model.dc_filter_decay as f64,
-            "audio.model.dc_filter_decay",
-            0.0,
-            1.0,
-        ),
-        (
-            model.dc_filter_input_gain as f64,
-            "audio.model.dc_filter_input_gain",
-            0.0,
-            4.0,
-        ),
-        (
-            model.loudness_base as f64,
-            "audio.model.loudness_base",
-            0.0,
-            5.0,
-        ),
-        (
-            model.loudness_pressure_gain as f64,
-            "audio.model.loudness_pressure_gain",
-            0.0,
-            10.0,
-        ),
-        (
-            model.loudness_env_gain as f64,
-            "audio.model.loudness_env_gain",
-            0.0,
-            10.0,
-        ),
-        (
-            model.loudness_normalize_mix as f64,
-            "audio.model.loudness_normalize_mix",
-            0.0,
-            1.0,
-        ),
-        (
-            model.loudness_target_level as f64,
-            "audio.model.loudness_target_level",
-            0.01,
-            2.0,
-        ),
-        (
-            model.loudness_level_floor as f64,
-            "audio.model.loudness_level_floor",
-            0.0,
-            1.0,
-        ),
-        (
-            model.loudness_env_attack as f64,
-            "audio.model.loudness_env_attack",
-            0.0,
-            1.0,
-        ),
-        (
-            model.loudness_env_release as f64,
-            "audio.model.loudness_env_release",
-            0.0,
-            1.0,
-        ),
-        (
-            model.loudness_gain_smoothing as f64,
-            "audio.model.loudness_gain_smoothing",
-            0.0,
-            1.0,
-        ),
-        (
-            model.loudness_normalize_gain_min as f64,
-            "audio.model.loudness_normalize_gain_min",
-            0.0,
-            10.0,
-        ),
-        (
-            model.loudness_normalize_gain_max as f64,
-            "audio.model.loudness_normalize_gain_max",
-            0.1,
-            20.0,
-        ),
-        (
-            model.output_gain_floor as f64,
-            "audio.model.output_gain_floor",
-            0.0,
-            2.0,
-        ),
-        (
-            model.limiter_out_gain as f64,
-            "audio.model.limiter_out_gain",
-            0.0,
-            2.0,
-        ),
-    ] {
-        require_range(report, value, path, min, max);
-    }
-    require_u32_range(
-        report,
-        model.resonator_retarget_interval,
-        "audio.model.resonator_retarget_interval",
-        1,
-        8_192,
-    );
-    require_lt(
-        report,
-        model.rpm_gate_floor_rpm as f64,
-        model.rpm_gate_full_rpm as f64,
-        "audio.model.rpm_gate_floor_rpm",
-        "audio.model.rpm_gate_full_rpm",
-    );
-    require_lt(
-        report,
-        model.exhaust_temp_min_k as f64,
-        model.exhaust_temp_max_k as f64,
-        "audio.model.exhaust_temp_min_k",
-        "audio.model.exhaust_temp_max_k",
-    );
-    require_lt(
-        report,
-        model.pulse_env_min as f64,
-        model.pulse_env_max as f64,
-        "audio.model.pulse_env_min",
-        "audio.model.pulse_env_max",
-    );
-    require_lt(
-        report,
-        model.pressure_pulse_min as f64,
-        model.pressure_pulse_max as f64,
-        "audio.model.pressure_pulse_min",
-        "audio.model.pressure_pulse_max",
-    );
-    require_lt(
-        report,
-        model.loudness_normalize_gain_min as f64,
-        model.loudness_normalize_gain_max as f64,
-        "audio.model.loudness_normalize_gain_min",
-        "audio.model.loudness_normalize_gain_max",
     );
 }
 
@@ -2409,6 +2005,18 @@ fn audit_numerics(cfg: &AppConfig, report: &mut ConfigAuditReport) {
             0.1,
             180.0,
         ),
+        (
+            n.accuracy_target_deg_per_step,
+            "numerics.accuracy_target_deg_per_step",
+            0.1,
+            30.0,
+        ),
+        (
+            n.accuracy_dt_max_s,
+            "numerics.accuracy_dt_max_s",
+            1.0e-6,
+            0.05,
+        ),
     ] {
         require_range(report, value, path, min, max);
     }
@@ -2444,7 +2052,16 @@ fn audit_numerics(cfg: &AppConfig, report: &mut ConfigAuditReport) {
 
 fn audit_ui(cfg: &AppConfig, report: &mut ConfigAuditReport) {
     let ui = &cfg.ui;
+    if ui.simulated_time_per_frame_s <= 0.0 {
+        report.error("ui.simulated_time_per_frame_s must be > 0");
+    }
     for (value, path, min, max) in [
+        (
+            ui.simulated_time_per_frame_s,
+            "ui.simulated_time_per_frame_s",
+            1.0e-4,
+            0.5,
+        ),
         (ui.min_base_dt_s, "ui.min_base_dt_s", 1.0e-7, 0.1),
         (
             ui.realtime_dt_min_factor,
@@ -2524,7 +2141,6 @@ fn audit_ui(cfg: &AppConfig, report: &mut ConfigAuditReport) {
             200.0,
             8_000.0,
         ),
-        (ui.audio_gain_floor as f64, "ui.audio_gain_floor", 0.0, 2.0),
     ] {
         require_range(report, value, path, min, max);
     }
@@ -2852,6 +2468,72 @@ fn audit_external_load(load: &ExternalLoadConfig, prefix: &str, report: &mut Con
             format!("{prefix}.torque_max_nm"),
             0.0,
             5_000.0,
+        ),
+        (
+            load.vehicle.vehicle_mass_kg,
+            format!("{prefix}.vehicle.vehicle_mass_kg"),
+            300.0,
+            40_000.0,
+        ),
+        (
+            load.vehicle.equivalent_mass_factor,
+            format!("{prefix}.vehicle.equivalent_mass_factor"),
+            0.5,
+            3.0,
+        ),
+        (
+            load.vehicle.wheel_radius_m,
+            format!("{prefix}.vehicle.wheel_radius_m"),
+            0.15,
+            0.60,
+        ),
+        (
+            load.vehicle.drivetrain_ratio,
+            format!("{prefix}.vehicle.drivetrain_ratio"),
+            1.0,
+            40.0,
+        ),
+        (
+            load.vehicle.driveline_efficiency,
+            format!("{prefix}.vehicle.driveline_efficiency"),
+            0.1,
+            1.0,
+        ),
+        (
+            load.vehicle.rolling_resistance_coeff,
+            format!("{prefix}.vehicle.rolling_resistance_coeff"),
+            0.0,
+            0.10,
+        ),
+        (
+            load.vehicle.drag_coeff,
+            format!("{prefix}.vehicle.drag_coeff"),
+            0.1,
+            1.5,
+        ),
+        (
+            load.vehicle.frontal_area_m2,
+            format!("{prefix}.vehicle.frontal_area_m2"),
+            0.5,
+            15.0,
+        ),
+        (
+            load.vehicle.air_density_kg_m3,
+            format!("{prefix}.vehicle.air_density_kg_m3"),
+            0.5,
+            2.0,
+        ),
+        (
+            load.vehicle.road_grade_percent,
+            format!("{prefix}.vehicle.road_grade_percent"),
+            -40.0,
+            40.0,
+        ),
+        (
+            load.vehicle.accessory_torque_nm,
+            format!("{prefix}.vehicle.accessory_torque_nm"),
+            0.0,
+            500.0,
         ),
     ] {
         require_range(report, value, &path, min, max);

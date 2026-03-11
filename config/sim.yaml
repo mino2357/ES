@@ -64,129 +64,6 @@ cam:
   # Fixed y-axis limit for the cam-lift plot [mm].
   display_y_max_mm: 14.0
 
-# Exhaust-audio synthesis controls.
-audio:
-  # Final master gain applied after the internal loudness model [-].
-  output_gain: 0.0
-  # Audio sample rate used by the synthesizer [Hz].
-  sample_rate_hz: 48000
-  # Low-level synthesis model coefficients.
-  model:
-    # Minimum allowed digital resonator center frequency [Hz].
-    resonator_freq_min_hz: 20.0
-    # Maximum resonator frequency as a fraction of Nyquist [-].
-    resonator_freq_max_nyquist_ratio: 0.45
-    # Lower clamp for resonator Q values [-].
-    resonator_q_min: 0.2
-    # RPM below which the audio gate is fully closed [rpm].
-    rpm_gate_floor_rpm: 0.0
-    # RPM at which the audio gate reaches full scale [rpm].
-    rpm_gate_full_rpm: 450.0
-    # Curvature exponent for the RPM gate transition [-].
-    rpm_gate_exponent: 1.6
-    # Lower clamp for exhaust temperature in acoustic resonance calculations [K].
-    exhaust_temp_min_k: 450.0
-    # Upper clamp for exhaust temperature in acoustic resonance calculations [K].
-    exhaust_temp_max_k: 1900.0
-    # Effective quarter-wave exhaust-pipe length for resonance estimation [m].
-    exhaust_pipe_length_m: 1.70
-    # Multiplier for the first acoustic resonator mode relative to the quarter-wave base [-].
-    resonator_mode_1: 1.0
-    # Multiplier for the second acoustic resonator mode relative to the quarter-wave base [-].
-    resonator_mode_2: 3.0
-    # Multiplier for the third acoustic resonator mode relative to the quarter-wave base [-].
-    resonator_mode_3: 5.0
-    # Ambient reference pressure used to normalize exhaust pressure for audio [kPa].
-    ambient_pressure_kpa: 101.325
-    # Exhaust-pressure span mapped into the normalized audio pressure variable [kPa].
-    pressure_span_kpa: 80.0
-    # First-order smoothing gain applied to normalized exhaust pressure [-].
-    pressure_smoothing_alpha: 0.0018
-    # Mix weight of the exhaust runner pressure in the pulse excitation [-].
-    runner_pressure_mix: 1.05
-    # Mix weight of the exhaust collector pressure in the pulse excitation [-].
-    collector_pressure_mix: 0.55
-    # Mix weight of the intake-runner vacuum signal in the pulse excitation [-].
-    intake_pressure_mix: 0.18
-    # Flow magnitude corresponding to a normalized exhaust-flow excitation of 1.0 [g/s].
-    flow_span_gps: 75.0
-    # Gain from exhaust runner mass-flow magnitude into the pulse envelope [-].
-    flow_pulse_gain: 0.42
-    # Number of audio samples between resonator retuning passes [-].
-    resonator_retarget_interval: 256
-    # Q value for resonator 1 [-].
-    resonator_1_q: 2.4
-    # Q value for resonator 2 [-].
-    resonator_2_q: 3.6
-    # Q value for resonator 3 [-].
-    resonator_3_q: 5.0
-    # Envelope decay factor for exhaust-event energy [-].
-    pulse_env_decay: 0.991
-    # Gain from positive pressure slope into the pulse envelope [-].
-    pulse_env_dp_gain: 30.0
-    # Lower clamp for the pulse envelope state [-].
-    pulse_env_min: 0.0
-    # Upper clamp for the pulse envelope state [-].
-    pulse_env_max: 2.0
-    # Fast exponential constant of the synthetic exhaust pulse kernel [-].
-    pulse_shape_decay_fast: 28.0
-    # Slow exponential constant of the synthetic exhaust pulse kernel [-].
-    pulse_shape_decay_slow: 140.0
-    # Gain applied to the pressure-derivative click term [-].
-    pressure_pulse_gain: 60.0
-    # Lower clamp for the pressure-derivative click term [-].
-    pressure_pulse_min: -2.2
-    # Upper clamp for the pressure-derivative click term [-].
-    pressure_pulse_max: 2.2
-    # Constant amplitude added to each synthetic exhaust pulse [-].
-    exhaust_pulse_base: 0.10
-    # Pressure-dependent gain added to each synthetic exhaust pulse [-].
-    exhaust_pulse_gain: 1.15
-    # Small sinusoidal support mixed into the excitation at firing frequency [-].
-    pulse_sine_gain: 0.018
-    # Direct dry pulse mixed around the resonators to preserve clear pitch cues [-].
-    direct_pulse_mix: 0.18
-    # Mix weight of resonator 1 in the final audio sum [-].
-    resonator_mix_1: 0.95
-    # Mix weight of resonator 2 in the final audio sum [-].
-    resonator_mix_2: 0.55
-    # Mix weight of resonator 3 in the final audio sum [-].
-    resonator_mix_3: 0.24
-    # Gain of the low-frequency rumble component [-].
-    rumble_gain: 0.06
-    # Rumble frequency expressed as a fraction of firing-phase rate [-].
-    rumble_harmonic: 0.5
-    # State-decay term of the one-pole DC blocker [-].
-    dc_filter_decay: 0.996
-    # Input gain of the one-pole DC blocker [-].
-    dc_filter_input_gain: 0.004
-    # Base loudness term before pressure / envelope modulation [-].
-    loudness_base: 0.22
-    # Loudness gain from smoothed normalized exhaust pressure [-].
-    loudness_pressure_gain: 0.90
-    # Loudness gain from the transient envelope [-].
-    loudness_env_gain: 0.08
-    # Blend factor from raw model loudness toward automatic loudness normalization [-].
-    loudness_normalize_mix: 0.80
-    # Target absolute raw-signal level used by the automatic loudness normalizer [-].
-    loudness_target_level: 0.16
-    # Minimum tracked signal level used to avoid runaway normalization gain [-].
-    loudness_level_floor: 0.01
-    # Attack coefficient of the audio loudness envelope follower [-].
-    loudness_env_attack: 0.020
-    # Release coefficient of the audio loudness envelope follower [-].
-    loudness_env_release: 0.0015
-    # Smoothing factor applied to the automatic normalization gain [-].
-    loudness_gain_smoothing: 0.020
-    # Minimum gain multiplier allowed from the loudness normalizer [-].
-    loudness_normalize_gain_min: 0.25
-    # Maximum gain multiplier allowed from the loudness normalizer [-].
-    loudness_normalize_gain_max: 4.00
-    # Lower floor on the top-level output gain to avoid accidental zeroing [-].
-    output_gain_floor: 0.1
-    # Final output scale after tanh limiting [-].
-    limiter_out_gain: 0.95
-
 # Initial operator commands when the simulator starts.
 control_defaults:
   # Initial throttle command sent to the throttle actuator [0..1].
@@ -681,6 +558,8 @@ model:
     phase_dilution_min: 0.86
   # External brake / vehicle-load surrogate applied on top of internal friction and pumping.
   external_load:
+    # Load-model family used by the live GUI path.
+    mode: vehicle_equivalent
     # Exponent shaping the user load command into a brake-demand fraction [-].
     command_exponent: 1.20
     # Base resisting torque at full load command before speed-dependent terms [Nm].
@@ -693,6 +572,30 @@ model:
     torque_min_nm: 0.0
     # Upper clamp on the commanded external load torque [Nm].
     torque_max_nm: 220.0
+    # Vehicle-equivalent road-load parameters reflected to the engine shaft.
+    vehicle:
+      # Vehicle test mass including driver and fuel [kg].
+      vehicle_mass_kg: 1450.0
+      # Multiplier capturing rotating-mass correction on top of the test mass [-].
+      equivalent_mass_factor: 1.08
+      # Effective loaded tire radius [m].
+      wheel_radius_m: 0.315
+      # Total engine-to-wheel ratio for the selected gear times final drive [-].
+      drivetrain_ratio: 10.8
+      # Driveline efficiency from engine shaft to tire contact patch [-].
+      driveline_efficiency: 0.92
+      # Rolling-resistance coefficient [-].
+      rolling_resistance_coeff: 0.015
+      # Aerodynamic drag coefficient [-].
+      drag_coeff: 0.30
+      # Vehicle frontal area [m^2].
+      frontal_area_m2: 2.10
+      # Ambient air density for the aerodynamic drag term [kg/m^3].
+      air_density_kg_m3: 1.18
+      # Road grade in percent. Positive is uphill [%].
+      road_grade_percent: 0.0
+      # Accessory or baseline absorber torque added on top of road load [Nm].
+      accessory_torque_nm: 8.0
 
 # Numerical-control parameters for timestep selection and error normalization.
 numerics:
@@ -756,9 +659,17 @@ numerics:
   realtime_fixed_dt_headroom_ratio: 2.5
   # Maximum crank-angle advance allowed per fixed realtime step at engine redline [deg/step].
   realtime_fixed_dt_max_deg_per_step: 12.0
+  # Target crank-angle advance per integration step when the GUI runs in accuracy-first mode [deg/step].
+  accuracy_target_deg_per_step: 1.5
+  # Upper timestep clamp used by the GUI in accuracy-first mode [s].
+  accuracy_dt_max_s: 0.0008
 
 # GUI and plotting behavior.
 ui:
+  # If true, the dashboard tries to track wall-clock time. If false, it advances a fixed slice of simulated time every frame.
+  sync_to_wall_clock: false
+  # Simulated time advanced per rendered frame when wall-clock sync is disabled [s].
+  simulated_time_per_frame_s: 0.012
   # Minimum base dt the dashboard will accept even if the environment config is smaller [s].
   min_base_dt_s: 0.0002
   # Lower bound of dashboard dt relative to the base dt [-].
@@ -770,7 +681,7 @@ ui:
   # Throttle increment used by the W / X keyboard shortcuts [-].
   throttle_key_step: 0.01
   # Maximum simulation substeps performed per GUI frame [-].
-  max_steps_per_frame: 600
+  max_steps_per_frame: 1800
   # First-order smoothing factor applied to dt target changes [-].
   dt_smoothing_factor: 0.25
   # Smallest per-step dt allowed once frame remainders are split [s].
@@ -808,11 +719,9 @@ ui:
   # Requested GUI repaint rate [Hz].
   repaint_hz: 20
   # Initial application-window width [px]. Sized so the full dashboard fits on a typical FHD desktop.
-  window_width_px: 1600.0
+  window_width_px: 1536.0
   # Initial application-window height [px].
-  window_height_px: 1000.0
-  # Minimum allowed audio gain forwarded from the GUI into the synthesizer [-].
-  audio_gain_floor: 0.1
+  window_height_px: 900.0
 
 # Fixed plot ranges and p-V-history sampling density.
 plot:

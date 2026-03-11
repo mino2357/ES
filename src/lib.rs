@@ -1,6 +1,4 @@
 #[cfg(feature = "gui")]
-mod audio;
-#[cfg(feature = "gui")]
 mod config;
 #[cfg(feature = "gui")]
 mod constants;

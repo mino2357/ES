@@ -13,6 +13,8 @@ pub(super) struct GaugeSpec<'a> {
     pub(super) unit: &'a str,
     pub(super) accent: egui::Color32,
     pub(super) footer: &'a str,
+    pub(super) width: f32,
+    pub(super) height: f32,
 }
 
 pub(super) struct LinearMeterSpec<'a> {
@@ -22,6 +24,7 @@ pub(super) struct LinearMeterSpec<'a> {
     pub(super) max: f64,
     pub(super) accent: egui::Color32,
     pub(super) value_text: String,
+    pub(super) width: f32,
 }
 
 pub(super) fn section_label(
@@ -114,10 +117,12 @@ pub(super) fn digital_readout(
     value: &str,
     unit: &str,
     footer: &str,
+    width: f32,
 ) {
     theme.instrument_frame(accent).show(ui, |ui| {
-        ui.set_min_width(132.0);
-        ui.set_max_width(240.0);
+        let card_width = width.clamp(132.0, 320.0);
+        ui.set_min_width(card_width);
+        ui.set_max_width(card_width);
         ui.label(
             egui::RichText::new(label)
                 .color(theme.text_soft)
@@ -170,7 +175,7 @@ pub(super) fn metric_row(ui: &mut egui::Ui, theme: DashboardTheme, label: &str, 
 }
 
 pub(super) fn linear_meter(ui: &mut egui::Ui, theme: DashboardTheme, spec: LinearMeterSpec<'_>) {
-    let card_width = 232.0;
+    let card_width = spec.width.clamp(168.0, 320.0);
     theme.instrument_frame(spec.accent).show(ui, |ui| {
         ui.set_min_width(card_width);
         ui.set_max_width(card_width);
@@ -225,7 +230,10 @@ pub(super) fn linear_meter(ui: &mut egui::Ui, theme: DashboardTheme, spec: Linea
 
 // The dyno-cell feel comes mostly from dense digital cards and compact semicircular gauges.
 pub(super) fn gauge(ui: &mut egui::Ui, theme: DashboardTheme, spec: GaugeSpec<'_>) {
-    let desired = egui::vec2(156.0, 116.0);
+    let desired = egui::vec2(
+        spec.width.clamp(132.0, 220.0),
+        spec.height.clamp(104.0, 136.0),
+    );
     let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 12.0, theme.panel_alt_bg);

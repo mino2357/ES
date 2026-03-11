@@ -119,150 +119,6 @@ impl Default for CamConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub(crate) struct AudioModelConfig {
-    pub(crate) resonator_freq_min_hz: f32,
-    pub(crate) resonator_freq_max_nyquist_ratio: f32,
-    pub(crate) resonator_q_min: f32,
-    pub(crate) rpm_gate_floor_rpm: f32,
-    pub(crate) rpm_gate_full_rpm: f32,
-    pub(crate) rpm_gate_exponent: f32,
-    pub(crate) exhaust_temp_min_k: f32,
-    pub(crate) exhaust_temp_max_k: f32,
-    pub(crate) exhaust_pipe_length_m: f32,
-    pub(crate) resonator_mode_1: f32,
-    pub(crate) resonator_mode_2: f32,
-    pub(crate) resonator_mode_3: f32,
-    pub(crate) ambient_pressure_kpa: f32,
-    pub(crate) pressure_span_kpa: f32,
-    pub(crate) pressure_smoothing_alpha: f32,
-    pub(crate) runner_pressure_mix: f32,
-    pub(crate) collector_pressure_mix: f32,
-    pub(crate) intake_pressure_mix: f32,
-    pub(crate) flow_span_gps: f32,
-    pub(crate) flow_pulse_gain: f32,
-    pub(crate) resonator_retarget_interval: u32,
-    pub(crate) resonator_1_q: f32,
-    pub(crate) resonator_2_q: f32,
-    pub(crate) resonator_3_q: f32,
-    pub(crate) pulse_env_decay: f32,
-    pub(crate) pulse_env_dp_gain: f32,
-    pub(crate) pulse_env_min: f32,
-    pub(crate) pulse_env_max: f32,
-    pub(crate) pulse_shape_decay_fast: f32,
-    pub(crate) pulse_shape_decay_slow: f32,
-    pub(crate) pressure_pulse_gain: f32,
-    pub(crate) pressure_pulse_min: f32,
-    pub(crate) pressure_pulse_max: f32,
-    pub(crate) exhaust_pulse_base: f32,
-    pub(crate) exhaust_pulse_gain: f32,
-    pub(crate) pulse_sine_gain: f32,
-    pub(crate) direct_pulse_mix: f32,
-    pub(crate) resonator_mix_1: f32,
-    pub(crate) resonator_mix_2: f32,
-    pub(crate) resonator_mix_3: f32,
-    pub(crate) rumble_gain: f32,
-    pub(crate) rumble_harmonic: f32,
-    pub(crate) dc_filter_decay: f32,
-    pub(crate) dc_filter_input_gain: f32,
-    pub(crate) loudness_base: f32,
-    pub(crate) loudness_pressure_gain: f32,
-    pub(crate) loudness_env_gain: f32,
-    pub(crate) loudness_normalize_mix: f32,
-    pub(crate) loudness_target_level: f32,
-    pub(crate) loudness_level_floor: f32,
-    pub(crate) loudness_env_attack: f32,
-    pub(crate) loudness_env_release: f32,
-    pub(crate) loudness_gain_smoothing: f32,
-    pub(crate) loudness_normalize_gain_min: f32,
-    pub(crate) loudness_normalize_gain_max: f32,
-    pub(crate) output_gain_floor: f32,
-    pub(crate) limiter_out_gain: f32,
-}
-
-impl Default for AudioModelConfig {
-    fn default() -> Self {
-        Self {
-            resonator_freq_min_hz: 20.0,
-            resonator_freq_max_nyquist_ratio: 0.45,
-            resonator_q_min: 0.2,
-            rpm_gate_floor_rpm: 0.0,
-            rpm_gate_full_rpm: 450.0,
-            rpm_gate_exponent: 1.6,
-            exhaust_temp_min_k: 450.0,
-            exhaust_temp_max_k: 1_900.0,
-            exhaust_pipe_length_m: 1.70,
-            resonator_mode_1: 1.0,
-            resonator_mode_2: 3.0,
-            resonator_mode_3: 5.0,
-            ambient_pressure_kpa: 101.325,
-            pressure_span_kpa: 80.0,
-            pressure_smoothing_alpha: 0.0018,
-            runner_pressure_mix: 1.05,
-            collector_pressure_mix: 0.55,
-            intake_pressure_mix: 0.18,
-            flow_span_gps: 75.0,
-            flow_pulse_gain: 0.42,
-            resonator_retarget_interval: 256,
-            resonator_1_q: 2.4,
-            resonator_2_q: 3.6,
-            resonator_3_q: 5.0,
-            pulse_env_decay: 0.991,
-            pulse_env_dp_gain: 30.0,
-            pulse_env_min: 0.0,
-            pulse_env_max: 2.0,
-            pulse_shape_decay_fast: 28.0,
-            pulse_shape_decay_slow: 140.0,
-            pressure_pulse_gain: 60.0,
-            pressure_pulse_min: -2.2,
-            pressure_pulse_max: 2.2,
-            exhaust_pulse_base: 0.10,
-            exhaust_pulse_gain: 1.15,
-            pulse_sine_gain: 0.018,
-            direct_pulse_mix: 0.18,
-            resonator_mix_1: 0.95,
-            resonator_mix_2: 0.55,
-            resonator_mix_3: 0.24,
-            rumble_gain: 0.06,
-            rumble_harmonic: 0.5,
-            dc_filter_decay: 0.996,
-            dc_filter_input_gain: 0.004,
-            loudness_base: 0.22,
-            loudness_pressure_gain: 0.90,
-            loudness_env_gain: 0.08,
-            loudness_normalize_mix: 0.80,
-            loudness_target_level: 0.16,
-            loudness_level_floor: 0.01,
-            loudness_env_attack: 0.020,
-            loudness_env_release: 0.0015,
-            loudness_gain_smoothing: 0.020,
-            loudness_normalize_gain_min: 0.25,
-            loudness_normalize_gain_max: 4.00,
-            output_gain_floor: 0.1,
-            limiter_out_gain: 0.95,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub(crate) struct AudioConfig {
-    pub(crate) output_gain: f32,
-    pub(crate) sample_rate_hz: u32,
-    pub(crate) model: AudioModelConfig,
-}
-
-impl Default for AudioConfig {
-    fn default() -> Self {
-        Self {
-            output_gain: 1.8,
-            sample_rate_hz: 48_000,
-            model: AudioModelConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub(crate) struct ControlDefaults {
     pub(crate) throttle_cmd: f64,
     pub(crate) load_cmd: f64,
@@ -678,26 +534,86 @@ impl Default for InternalEgrConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExternalLoadMode {
+    BrakeMap,
+    VehicleEquivalent,
+}
+
+impl ExternalLoadMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::BrakeMap => "Brake map",
+            Self::VehicleEquivalent => "Vehicle equivalent",
+        }
+    }
+}
+
+impl Default for ExternalLoadMode {
+    fn default() -> Self {
+        Self::BrakeMap
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub(crate) struct VehicleLoadConfig {
+    pub(crate) vehicle_mass_kg: f64,
+    pub(crate) equivalent_mass_factor: f64,
+    pub(crate) wheel_radius_m: f64,
+    pub(crate) drivetrain_ratio: f64,
+    pub(crate) driveline_efficiency: f64,
+    pub(crate) rolling_resistance_coeff: f64,
+    pub(crate) drag_coeff: f64,
+    pub(crate) frontal_area_m2: f64,
+    pub(crate) air_density_kg_m3: f64,
+    pub(crate) road_grade_percent: f64,
+    pub(crate) accessory_torque_nm: f64,
+}
+
+impl Default for VehicleLoadConfig {
+    fn default() -> Self {
+        Self {
+            vehicle_mass_kg: 1_450.0,
+            equivalent_mass_factor: 1.08,
+            wheel_radius_m: 0.315,
+            drivetrain_ratio: 10.8,
+            driveline_efficiency: 0.92,
+            rolling_resistance_coeff: 0.015,
+            drag_coeff: 0.30,
+            frontal_area_m2: 2.10,
+            air_density_kg_m3: 1.18,
+            road_grade_percent: 0.0,
+            accessory_torque_nm: 8.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub(crate) struct ExternalLoadConfig {
+    pub(crate) mode: ExternalLoadMode,
     pub(crate) command_exponent: f64,
     pub(crate) base_torque_nm: f64,
     pub(crate) speed_linear_nms: f64,
     pub(crate) speed_quadratic_nms2: f64,
     pub(crate) torque_min_nm: f64,
     pub(crate) torque_max_nm: f64,
+    pub(crate) vehicle: VehicleLoadConfig,
 }
 
 impl Default for ExternalLoadConfig {
     fn default() -> Self {
         Self {
+            mode: ExternalLoadMode::default(),
             command_exponent: 1.20,
             base_torque_nm: 14.0,
             speed_linear_nms: 0.012,
             speed_quadratic_nms2: 0.00018,
             torque_min_nm: 0.0,
             torque_max_nm: 220.0,
+            vehicle: VehicleLoadConfig::default(),
         }
     }
 }
@@ -949,6 +865,8 @@ pub(crate) struct NumericsConfig {
     pub(crate) realtime_floor_probe_factor_max: f64,
     pub(crate) realtime_fixed_dt_headroom_ratio: f64,
     pub(crate) realtime_fixed_dt_max_deg_per_step: f64,
+    pub(crate) accuracy_target_deg_per_step: f64,
+    pub(crate) accuracy_dt_max_s: f64,
 }
 
 impl Default for NumericsConfig {
@@ -984,6 +902,8 @@ impl Default for NumericsConfig {
             realtime_floor_probe_factor_max: 6.0,
             realtime_fixed_dt_headroom_ratio: 2.5,
             realtime_fixed_dt_max_deg_per_step: 12.0,
+            accuracy_target_deg_per_step: 1.5,
+            accuracy_dt_max_s: 0.0008,
         }
     }
 }
@@ -991,6 +911,8 @@ impl Default for NumericsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub(crate) struct UiConfig {
+    pub(crate) sync_to_wall_clock: bool,
+    pub(crate) simulated_time_per_frame_s: f64,
     pub(crate) min_base_dt_s: f64,
     pub(crate) realtime_dt_min_factor: f64,
     pub(crate) realtime_dt_max_factor: f64,
@@ -1017,12 +939,13 @@ pub(crate) struct UiConfig {
     pub(crate) repaint_hz: u32,
     pub(crate) window_width_px: f32,
     pub(crate) window_height_px: f32,
-    pub(crate) audio_gain_floor: f32,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            sync_to_wall_clock: false,
+            simulated_time_per_frame_s: 0.012,
             min_base_dt_s: 0.0002,
             realtime_dt_min_factor: 0.05,
             realtime_dt_max_factor: 3.0,
@@ -1047,9 +970,8 @@ impl Default for UiConfig {
             pv_headroom_ratio: 1.08,
             pv_min_headroom_kpa: 100.0,
             repaint_hz: 20,
-            window_width_px: 1600.0,
-            window_height_px: 1000.0,
-            audio_gain_floor: 0.1,
+            window_width_px: 1536.0,
+            window_height_px: 900.0,
         }
     }
 }
@@ -1124,12 +1046,14 @@ impl Default for BenchDynoConfig {
             integral_min: -220.0,
             integral_max: 220.0,
             absorber_model: ExternalLoadConfig {
+                mode: ExternalLoadMode::BrakeMap,
                 command_exponent: 1.0,
                 base_torque_nm: 220.0,
                 speed_linear_nms: 0.040,
                 speed_quadratic_nms2: 0.00015,
                 torque_min_nm: 0.0,
                 torque_max_nm: 360.0,
+                vehicle: VehicleLoadConfig::default(),
             },
         }
     }
@@ -1203,7 +1127,6 @@ pub(crate) struct AppConfig {
     pub(crate) environment: EnvironmentConfig,
     pub(crate) engine: EngineConfig,
     pub(crate) cam: CamConfig,
-    pub(crate) audio: AudioConfig,
     pub(crate) control_defaults: ControlDefaults,
     pub(crate) auto_control: AutoControlConfig,
     pub(crate) model: ModelConfig,
@@ -1219,7 +1142,6 @@ impl Default for AppConfig {
             environment: EnvironmentConfig::default(),
             engine: EngineConfig::default(),
             cam: CamConfig::default(),
-            audio: AudioConfig::default(),
             control_defaults: ControlDefaults::default(),
             auto_control: AutoControlConfig::default(),
             model: ModelConfig::default(),
@@ -1326,7 +1248,10 @@ fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> AppConfig {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{BenchMixtureMode, config_candidate_paths, load_config, validate_app_config};
+    use super::{
+        BenchMixtureMode, ExternalLoadMode, config_candidate_paths, load_config,
+        validate_app_config,
+    };
 
     #[test]
     fn checked_in_yaml_with_comments_parses() {
@@ -1334,7 +1259,6 @@ mod tests {
             .join("config")
             .join("sim.yaml");
         let cfg = load_config(&path);
-        assert_eq!(cfg.audio.sample_rate_hz, 48_000);
         assert!((cfg.model.combustion_pressure_gain - 0.62).abs() < 1.0e-12);
         assert!((cfg.engine.bore_m - 0.0805).abs() < 1.0e-12);
         assert!((cfg.engine.stroke_m - 0.0976).abs() < 1.0e-12);
@@ -1349,15 +1273,21 @@ mod tests {
         assert_eq!(cfg.model.wave_action.intake_group_count, 4);
         assert_eq!(cfg.model.wave_action.exhaust_group_count, 2);
         assert!((cfg.model.heat_transfer.base_h_w_m2k - 120.0).abs() < 1.0e-12);
+        assert_eq!(
+            cfg.model.external_load.mode,
+            ExternalLoadMode::VehicleEquivalent
+        );
         assert!((cfg.model.external_load.torque_max_nm - 220.0).abs() < 1.0e-12);
-        assert!((cfg.audio.model.loudness_normalize_mix - 0.80).abs() < 1.0e-6);
+        assert!((cfg.model.external_load.vehicle.vehicle_mass_kg - 1_450.0).abs() < 1.0e-12);
         assert!((cfg.model.fuel_evaporation.latent_heat_j_per_kg - 350_000.0).abs() < 1.0e-12);
         assert!((cfg.auto_control.wot_target_throttle - 1.0).abs() < 1.0e-12);
         assert_eq!(cfg.plot.history_recent_cycles, 1);
         assert_eq!(cfg.plot.pv_recent_cycles, 4);
+        assert!(!cfg.ui.sync_to_wall_clock);
+        assert!((cfg.ui.simulated_time_per_frame_s - 0.012).abs() < 1.0e-12);
         assert!((cfg.ui.pv_plot_height_px - 290.0).abs() < 1.0e-12);
-        assert!((cfg.ui.window_width_px - 1600.0).abs() < 1.0e-12);
-        assert!((cfg.ui.window_height_px - 1000.0).abs() < 1.0e-12);
+        assert!((cfg.ui.window_width_px - 1536.0).abs() < 1.0e-12);
+        assert!((cfg.ui.window_height_px - 900.0).abs() < 1.0e-12);
         assert_eq!(cfg.bench.locked_cycle_samples, 240);
         assert!((cfg.bench.display_rpm_min - 0.0).abs() < 1.0e-12);
         assert!(cfg.bench.include_zero_rpm_anchor);

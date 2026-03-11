@@ -16,13 +16,13 @@ use self::widgets::{
     GaugeSpec, LinearMeterSpec, annunciator, digital_readout, gauge, linear_meter, metric_row,
     monitor_heading, section_label,
 };
-use crate::audio::{AudioEngine, AudioParams};
-use crate::config::{AppConfig, BenchMixtureMode, UiConfig};
+use crate::config::{AppConfig, BenchMixtureMode, ExternalLoadMode, UiConfig};
 use crate::constants::FIXED_CYLINDER_COUNT;
 use crate::simulator::{
     BenchSample, BenchSession, BenchStatus, ControlInput, CycleHistorySample, Simulator,
-    cam_profile_points, estimate_realtime_performance, quick_wot_bench_preview_curve,
-    rpm_linked_dt, shaft_power_hp, shaft_power_kw,
+    accuracy_priority_dt, cam_profile_points, estimate_realtime_performance,
+    external_load_reflected_inertia_kgm2, external_load_vehicle_speed_kph,
+    quick_wot_bench_preview_curve, rpm_linked_dt, shaft_power_hp, shaft_power_kw,
 };
 
 #[derive(Default)]
@@ -183,6 +183,18 @@ fn graph_layout_heights(ui_config: &UiConfig, bench_visible: bool) -> GraphLayou
             .max(standard_plot_px),
         section_spacing_px: if bench_visible { 4.0 } else { 6.0 },
     }
+}
+
+fn responsive_card_columns(available_width: f32, min_card_width: f32, max_columns: usize) -> usize {
+    let spacing = 8.0;
+    let fitted = ((available_width + spacing) / (min_card_width + spacing)).floor() as usize;
+    fitted.clamp(1, max_columns.max(1))
+}
+
+fn responsive_card_width(available_width: f32, columns: usize) -> f32 {
+    let spacing = 8.0;
+    let total_spacing = spacing * columns.saturating_sub(1) as f32;
+    ((available_width - total_spacing) / columns.max(1) as f32).max(96.0)
 }
 
 fn bench_curve_plot_data(
@@ -521,6 +533,38 @@ fn cylinder_trace_color(index: usize) -> egui::Color32 {
     COLORS[index % COLORS.len()]
 }
 
+fn show_collapsible_module(
+    ui: &mut egui::Ui,
+    theme: DashboardTheme,
+    id_source: &'static str,
+    title: &str,
+    subtitle: &str,
+    accent: egui::Color32,
+    default_open: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    theme.monitor_frame().show(ui, |ui| {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(title)
+                .color(theme.text_main)
+                .strong()
+                .size(23.0 / 1.5),
+        )
+        .id_salt(id_source)
+        .default_open(default_open)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(subtitle)
+                    .color(accent)
+                    .family(egui::FontFamily::Monospace)
+                    .size(11.0),
+            );
+            ui.add_space(4.0);
+            body(ui);
+        });
+    });
+}
+
 // The dashboard owns real-time pacing, user controls, and fixed-range plots.
 struct DashboardApp {
     config: AppConfig,
@@ -529,8 +573,6 @@ struct DashboardApp {
     ui_config: UiConfig,
     latest: crate::simulator::Observation,
     last_tick: Instant,
-    audio: Option<AudioEngine>,
-    audio_output_gain: f32,
     dt_base: f64,
     dt_next: f64,
     dt_min_bound: f64,
@@ -548,36 +590,37 @@ impl DashboardApp {
         let ui_config = config.ui.clone();
         let bench_mode_selected = config.bench.default_mode;
         let dt = config.environment.dt.max(ui_config.min_base_dt_s);
-        // Benchmark a safe realtime floor once at startup and keep fixed dt when headroom is ample.
-        let realtime_perf = estimate_realtime_performance(&config, dt);
-        let dt_min_bound = realtime_perf
-            .floor_dt_s
-            .max(dt * ui_config.realtime_dt_min_factor);
-        let dt_max_bound = (dt * ui_config.realtime_dt_max_factor)
-            .max(dt_min_bound * ui_config.realtime_dt_max_over_min_factor);
-        let realtime_fixed_dt_s = (realtime_perf.fixed_dt_headroom_ratio
-            >= config.numerics.realtime_fixed_dt_headroom_ratio)
-            .then_some(
-                realtime_perf
-                    .fixed_dt_candidate_s
-                    .clamp(dt_min_bound, dt_max_bound),
-            );
-        let dt_next = realtime_fixed_dt_s.unwrap_or_else(|| dt.clamp(dt_min_bound, dt_max_bound));
-        let audio_output_gain = config.audio.output_gain.max(ui_config.audio_gain_floor);
+        let (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next) =
+            if ui_config.sync_to_wall_clock {
+                // Benchmark a safe realtime floor once at startup and keep fixed dt when headroom is ample.
+                let realtime_perf = estimate_realtime_performance(&config, dt);
+                let dt_min_bound = realtime_perf
+                    .floor_dt_s
+                    .max(dt * ui_config.realtime_dt_min_factor);
+                let dt_max_bound = (dt * ui_config.realtime_dt_max_factor)
+                    .max(dt_min_bound * ui_config.realtime_dt_max_over_min_factor);
+                let realtime_fixed_dt_s = (realtime_perf.fixed_dt_headroom_ratio
+                    >= config.numerics.realtime_fixed_dt_headroom_ratio)
+                    .then_some(
+                        realtime_perf
+                            .fixed_dt_candidate_s
+                            .clamp(dt_min_bound, dt_max_bound),
+                    );
+                let dt_next =
+                    realtime_fixed_dt_s.unwrap_or_else(|| dt.clamp(dt_min_bound, dt_max_bound));
+                (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next)
+            } else {
+                let dt_min_bound = config
+                    .numerics
+                    .rpm_link_dt_min_floor_s
+                    .max(ui_config.dt_epsilon_s);
+                let dt_max_bound = config.numerics.accuracy_dt_max_s.max(dt_min_bound);
+                let dt_next = accuracy_priority_dt(config.engine.idle_target_rpm, &config.numerics)
+                    .clamp(dt_min_bound, dt_max_bound);
+                (dt_min_bound, dt_max_bound, None, dt_next)
+            };
         let mut sim = Simulator::new(&config);
         let latest = sim.step(dt_next);
-        let initial_audio_params = AudioParams {
-            exhaust_pressure_kpa: (config.environment.ambient_pressure_pa * 1.0e-3) as f32,
-            exhaust_runner_pressure_kpa: (config.environment.ambient_pressure_pa * 1.0e-3) as f32,
-            intake_runner_pressure_kpa: (config.environment.ambient_pressure_pa * 1.0e-3) as f32,
-            exhaust_wave_kpa: 0.0,
-            exhaust_runner_flow_gps: 0.0,
-            engine_speed_rpm: latest.rpm as f32,
-            exhaust_temp_k: config.environment.exhaust_temp_k as f32,
-            cycle_deg: latest.cycle_deg as f32,
-            output_gain: audio_output_gain,
-        };
-        let audio = AudioEngine::new(&config.audio, initial_audio_params);
         Self {
             config,
             sim,
@@ -585,8 +628,6 @@ impl DashboardApp {
             ui_config,
             latest,
             last_tick: Instant::now(),
-            audio,
-            audio_output_gain,
             dt_base: dt,
             dt_next,
             dt_min_bound,
@@ -612,6 +653,7 @@ impl DashboardApp {
     fn start_bench(&mut self, mode: BenchMixtureMode) {
         let mut cfg = self.config.clone();
         cfg.engine.max_rpm = self.sim.params.max_rpm;
+        cfg.model.external_load = self.sim.model.external_load.clone();
         self.bench.start(cfg, self.bench_control_seed(), mode);
         self.bench_export_note = None;
         self.bench_exported_complete = false;
@@ -674,26 +716,36 @@ impl DashboardApp {
 
     fn advance_simulation(&mut self) {
         let now = Instant::now();
-        let elapsed = (now - self.last_tick).as_secs_f64();
-        let target_time = elapsed.max(self.dt_base);
+        let target_time = if self.ui_config.sync_to_wall_clock {
+            (now - self.last_tick).as_secs_f64().max(self.dt_base)
+        } else {
+            self.ui_config.simulated_time_per_frame_s.max(self.dt_base)
+        };
         let mut simulated = 0.0;
         let mut steps = 0usize;
         let max_steps = self.ui_config.max_steps_per_frame.max(1);
-        // Consume elapsed wall time with multiple solver steps so GUI frame rate and ODE dt decouple.
+        // In accuracy-first mode the solver advances a fixed slice of simulated time per frame
+        // and does not try to stay phase-locked to wall clock.
         while simulated < target_time && steps < max_steps {
-            let dt_target = if let Some(dt_fixed) = self.realtime_fixed_dt_s {
-                self.dt_next = dt_fixed;
-                dt_fixed
+            let dt_target = if self.ui_config.sync_to_wall_clock {
+                if let Some(dt_fixed) = self.realtime_fixed_dt_s {
+                    self.dt_next = dt_fixed;
+                    dt_fixed
+                } else {
+                    let dt_nom = rpm_linked_dt(
+                        self.dt_base,
+                        self.latest.rpm,
+                        self.sim.params.idle_target_rpm,
+                        &self.sim.numerics,
+                    );
+                    let dt_target = dt_nom.clamp(self.dt_min_bound, self.dt_max_bound);
+                    self.dt_next += self.ui_config.dt_smoothing_factor * (dt_target - self.dt_next);
+                    self.dt_next = self.dt_next.clamp(self.dt_min_bound, self.dt_max_bound);
+                    self.dt_next
+                }
             } else {
-                let dt_nom = rpm_linked_dt(
-                    self.dt_base,
-                    self.latest.rpm,
-                    self.sim.params.idle_target_rpm,
-                    &self.sim.numerics,
-                );
-                let dt_target = dt_nom.clamp(self.dt_min_bound, self.dt_max_bound);
-                self.dt_next += self.ui_config.dt_smoothing_factor * (dt_target - self.dt_next);
-                self.dt_next = self.dt_next.clamp(self.dt_min_bound, self.dt_max_bound);
+                self.dt_next = accuracy_priority_dt(self.latest.rpm, &self.sim.numerics)
+                    .clamp(self.dt_min_bound, self.dt_max_bound);
                 self.dt_next
             };
 
@@ -704,7 +756,8 @@ impl DashboardApp {
             steps = steps.saturating_add(1);
         }
         if simulated < target_time {
-            // If the frame budget was large, finish the leftover with one bounded catch-up step.
+            // Render the newest computed state even if the requested simulated horizon was not
+            // fully consumed in this frame.
             let dt_tail = (target_time - simulated)
                 .max(self.ui_config.dt_epsilon_s)
                 .min(self.dt_max_bound);
@@ -714,21 +767,6 @@ impl DashboardApp {
                 .unwrap_or_else(|| dt_tail.clamp(self.dt_min_bound, self.dt_max_bound));
         }
         self.last_tick = now;
-
-        if let Some(audio) = &self.audio {
-            // Audio only needs the latest reduced state, not the full simulator internals.
-            audio.update(AudioParams {
-                exhaust_pressure_kpa: self.latest.exhaust_kpa as f32,
-                exhaust_runner_pressure_kpa: self.latest.exhaust_runner_kpa as f32,
-                intake_runner_pressure_kpa: self.latest.intake_runner_kpa as f32,
-                exhaust_wave_kpa: self.latest.exhaust_wave_kpa as f32,
-                exhaust_runner_flow_gps: self.latest.exhaust_runner_flow_gps as f32,
-                engine_speed_rpm: self.latest.rpm as f32,
-                exhaust_temp_k: self.latest.exhaust_temp_k as f32,
-                cycle_deg: self.latest.cycle_deg as f32,
-                output_gain: self.audio_output_gain,
-            });
-        }
     }
 
     fn advance_bench(&mut self) {
@@ -793,7 +831,11 @@ impl DashboardApp {
                         );
                         ui.label(
                             egui::RichText::new(
-                                "Reduced-order realtime console with dyno sweep, p-V / p-theta monitor, and synthetic exhaust instrumentation",
+                                if self.ui_config.sync_to_wall_clock {
+                                    "Wall-clock synchronized console with dyno sweep and p-V / p-theta monitoring"
+                                } else {
+                                    "Accuracy-first transient console with dyno sweep and p-V / p-theta monitoring"
+                                },
                             )
                             .color(self.theme.text_soft)
                             .size(12.0),
@@ -808,6 +850,7 @@ impl DashboardApp {
                             if self.latest.stable_idle { "STABLE" } else { "LIVE" },
                             "",
                             &self.bench_status_summary(),
+                            160.0,
                         );
                     });
                 });
@@ -865,8 +908,8 @@ impl DashboardApp {
                     annunciator(
                         ui,
                         self.theme,
-                        "AUDIO",
-                        self.audio.is_some(),
+                        "ACCURACY",
+                        !self.ui_config.sync_to_wall_clock,
                         self.theme.green,
                     );
                 });
@@ -884,14 +927,15 @@ impl DashboardApp {
                     .show(ui, |ui| {
                         section_label(ui, self.theme, "OPERATOR RACK", self.theme.amber);
 
-                self.theme.monitor_frame().show(ui, |ui| {
-                    monitor_heading(
-                        ui,
-                        self.theme,
-                        "Automation",
-                        "IDLE / WOT supervisor",
-                        self.theme.green,
-                    );
+                show_collapsible_module(
+                    ui,
+                    self.theme,
+                    "rack_automation",
+                    "Automation",
+                    "IDLE / WOT supervisor",
+                    self.theme.green,
+                    true,
+                    |ui| {
                     let mut idle_auto = self.sim.auto.enabled;
                     if ui.checkbox(&mut idle_auto, "Auto Start + Idle").changed() {
                         self.sim.set_idle_auto_enabled(idle_auto);
@@ -917,17 +961,19 @@ impl DashboardApp {
                             self.sim.auto.wot_best_point.vvt_exhaust_deg
                         ));
                     }
-                });
+                    },
+                );
 
                 ui.add_space(8.0);
-                self.theme.monitor_frame().show(ui, |ui| {
-                    monitor_heading(
-                        ui,
-                        self.theme,
-                        "Bench Sequencer",
-                        "preview + continuous sweep",
-                        self.theme.cyan,
-                    );
+                show_collapsible_module(
+                    ui,
+                    self.theme,
+                    "rack_bench",
+                    "Bench Sequencer",
+                    "preview + continuous sweep",
+                    self.theme.cyan,
+                    true,
+                    |ui| {
                     egui::ComboBox::from_label("Bench mode")
                         .selected_text(self.bench_mode_selected.label())
                         .show_ui(ui, |ui| {
@@ -995,20 +1041,23 @@ impl DashboardApp {
                             ui.label(format!("Bench CSV: {path}"));
                         }
                     }
-                });
+                    },
+                );
 
                 ui.add_space(8.0);
-                self.theme.monitor_frame().show(ui, |ui| {
-                    monitor_heading(
-                        ui,
-                        self.theme,
-                        "Actuator Deck",
-                        "manual command surface",
-                        self.theme.amber,
-                    );
+                show_collapsible_module(
+                    ui,
+                    self.theme,
+                    "rack_actuator",
+                    "Actuator Deck",
+                    "manual command surface",
+                    self.theme.amber,
+                    true,
+                    |ui| {
                     let auto_actuator_locked =
                         self.sim.auto.enabled || self.sim.auto.wot_efficiency_enabled;
                     let calibration_locked = self.sim.auto.wot_efficiency_enabled;
+                    let mut load_mode = self.sim.model.external_load.mode;
 
                     ui.add_enabled(
                         !auto_actuator_locked,
@@ -1019,6 +1068,23 @@ impl DashboardApp {
                         egui::Slider::new(&mut self.sim.control.load_cmd, 0.0..=1.0)
                             .text("Load cmd"),
                     );
+                    egui::ComboBox::from_label("Load model")
+                        .selected_text(load_mode.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut load_mode,
+                                ExternalLoadMode::BrakeMap,
+                                ExternalLoadMode::BrakeMap.label(),
+                            );
+                            ui.selectable_value(
+                                &mut load_mode,
+                                ExternalLoadMode::VehicleEquivalent,
+                                ExternalLoadMode::VehicleEquivalent.label(),
+                            );
+                        });
+                    if load_mode != self.sim.model.external_load.mode {
+                        self.sim.model.external_load.mode = load_mode;
+                    }
                     ui.add_enabled(
                         !auto_actuator_locked,
                         egui::Checkbox::new(&mut self.sim.control.starter_cmd, "Starter"),
@@ -1057,23 +1123,42 @@ impl DashboardApp {
                         )
                         .text("Ignition [deg BTDC]"),
                     );
-                });
+                    },
+                );
 
                 ui.add_space(8.0);
-                self.theme.monitor_frame().show(ui, |ui| {
-                    monitor_heading(
-                        ui,
-                        self.theme,
-                        "Status Bus",
-                        "cell and runtime telemetry",
-                        self.theme.green,
-                    );
+                show_collapsible_module(
+                    ui,
+                    self.theme,
+                    "rack_status",
+                    "Status Bus",
+                    "cell and runtime telemetry",
+                    self.theme.green,
+                    false,
+                    |ui| {
+                    let load_model = &self.sim.model.external_load;
                     ui.label(format!(
                         "Engine layout: fixed {}-cylinder",
                         FIXED_CYLINDER_COUNT
                     ));
                     ui.label(format!("Throttle eff: {:.3}", self.sim.state.throttle_eff));
                     ui.label(format!("Load cmd: {:.3}", self.sim.control.load_cmd));
+                    ui.label(format!("Load model: {}", load_model.mode.label()));
+                    if load_model.mode == ExternalLoadMode::VehicleEquivalent {
+                        ui.label(format!(
+                            "Vehicle eq: {:.1} km/h / Jref {:.3} kg m^2",
+                            external_load_vehicle_speed_kph(
+                                self.sim.state.omega_rad_s,
+                                load_model,
+                            ),
+                            external_load_reflected_inertia_kgm2(self.sim.control.load_cmd, load_model)
+                        ));
+                    }
+                    ui.label(if self.ui_config.sync_to_wall_clock {
+                        "Solver mode: wall-clock synchronized"
+                    } else {
+                        "Solver mode: accuracy first"
+                    });
                     ui.label(if self.latest.stable_idle {
                         "State: IDLE STABLE"
                     } else {
@@ -1097,12 +1182,8 @@ impl DashboardApp {
                             last.lambda_target
                         ));
                     }
-                    ui.label(if self.audio.is_some() {
-                        "Audio synth: ON"
-                    } else {
-                        "Audio synth: OFF"
-                    });
-                });
+                    },
+                );
                 ui.add_space(8.0);
                 self.render_state_bus(ui);
                     });
@@ -1113,6 +1194,13 @@ impl DashboardApp {
         let combustion_power_kw =
             shaft_power_kw(self.latest.rpm, self.latest.torque_combustion_cycle_nm);
         let brake_power_kw = shaft_power_kw(self.latest.rpm, self.latest.torque_net_nm);
+        let panel_width = ui.available_width().max(320.0);
+        let readout_columns = responsive_card_columns(panel_width, 190.0, 6);
+        let readout_width = responsive_card_width(panel_width, readout_columns).min(248.0);
+        let gauge_columns = responsive_card_columns(panel_width, 148.0, 6);
+        let gauge_width = responsive_card_width(panel_width, gauge_columns).min(188.0);
+        let meter_columns = responsive_card_columns(panel_width, 210.0, 3);
+        let meter_width = responsive_card_width(panel_width, meter_columns).min(282.0);
         let intake_state = format!(
             "MAP {:.1} kPa / runner {:.1} kPa",
             self.latest.map_kpa, self.latest.intake_runner_kpa
@@ -1131,367 +1219,392 @@ impl DashboardApp {
                 "primary live instruments",
                 self.theme.amber,
             );
-            ui.horizontal_wrapped(|ui| {
-                digital_readout(
-                    ui,
-                    self.theme,
-                    self.theme.amber,
-                    "ENGINE SPEED",
-                    &format!("{:.0}", self.latest.rpm),
-                    "rpm",
-                    if self.latest.stable_idle {
-                        "idle stable"
-                    } else {
-                        "dynamic state"
-                    },
-                );
-                digital_readout(
-                    ui,
-                    self.theme,
-                    self.theme.red,
-                    "NET TORQUE FILT",
-                    &format!("{:.1}", self.latest.torque_net_nm),
-                    "Nm",
-                    &format!("inst {:.1} Nm", self.latest.torque_net_inst_nm),
-                );
-                digital_readout(
-                    ui,
-                    self.theme,
-                    self.theme.cyan,
-                    "BRAKE POWER FILT",
-                    &format!("{:.1}", brake_power_kw),
-                    "kW",
-                    &format!(
-                        "{:.1} hp",
-                        shaft_power_hp(self.latest.rpm, self.latest.torque_net_nm)
-                    ),
-                );
-                digital_readout(
-                    ui,
-                    self.theme,
-                    self.theme.green,
-                    "AIR CHARGE",
-                    &format!("{:.2}", self.latest.trapped_air_mg),
-                    "mg/cyl",
-                    &format!("VE {:.1}%", self.latest.volumetric_efficiency * 100.0),
-                );
-                digital_readout(
-                    ui,
-                    self.theme,
-                    self.theme.amber,
-                    "INTAKE BUS",
-                    &format!("{:.1}", self.latest.map_kpa),
-                    "kPa",
-                    &intake_state,
-                );
-                digital_readout(
-                    ui,
-                    self.theme,
-                    self.theme.cyan,
-                    "INDIC EFF",
-                    &format!("{:.1}", self.latest.eta_thermal_indicated_pv * 100.0),
-                    "%",
-                    &thermal_state,
-                );
-            });
+            let mut readout_index = 0usize;
+            while readout_index < 6 {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for slot in 0..readout_columns {
+                        let idx = readout_index + slot;
+                        if idx >= 6 {
+                            break;
+                        }
+                        match idx {
+                            0 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.amber,
+                                "ENGINE SPEED",
+                                &format!("{:.0}", self.latest.rpm),
+                                "rpm",
+                                if self.latest.stable_idle {
+                                    "idle stable"
+                                } else {
+                                    "dynamic state"
+                                },
+                                readout_width,
+                            ),
+                            1 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.red,
+                                "NET TORQUE FILT",
+                                &format!("{:.1}", self.latest.torque_net_nm),
+                                "Nm",
+                                &format!("inst {:.1} Nm", self.latest.torque_net_inst_nm),
+                                readout_width,
+                            ),
+                            2 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.cyan,
+                                "BRAKE POWER FILT",
+                                &format!("{:.1}", brake_power_kw),
+                                "kW",
+                                &format!(
+                                    "{:.1} hp",
+                                    shaft_power_hp(self.latest.rpm, self.latest.torque_net_nm)
+                                ),
+                                readout_width,
+                            ),
+                            3 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.green,
+                                "AIR CHARGE",
+                                &format!("{:.2}", self.latest.trapped_air_mg),
+                                "mg/cyl",
+                                &format!("VE {:.1}%", self.latest.volumetric_efficiency * 100.0),
+                                readout_width,
+                            ),
+                            4 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.amber,
+                                "INTAKE BUS",
+                                &format!("{:.1}", self.latest.map_kpa),
+                                "kPa",
+                                &intake_state,
+                                readout_width,
+                            ),
+                            5 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.cyan,
+                                "INDIC EFF",
+                                &format!("{:.1}", self.latest.eta_thermal_indicated_pv * 100.0),
+                                "%",
+                                &thermal_state,
+                                readout_width,
+                            ),
+                            _ => unreachable!(),
+                        }
+                    }
+                });
+                readout_index += readout_columns;
+            }
 
             ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                gauge(
-                    ui,
-                    self.theme,
-                    GaugeSpec {
-                        label: "RPM",
-                        value: self.latest.rpm,
-                        min: 0.0,
-                        max: self.sim.params.max_rpm,
-                        unit: "rpm",
-                        accent: self.theme.amber,
-                        footer: "crankshaft speed",
-                    },
-                );
-                gauge(
-                    ui,
-                    self.theme,
-                    GaugeSpec {
-                        label: "MAP",
-                        value: self.latest.map_kpa,
-                        min: 20.0,
-                        max: 120.0,
-                        unit: "kPa",
-                        accent: self.theme.cyan,
-                        footer: "intake plenum",
-                    },
-                );
-                gauge(
-                    ui,
-                    self.theme,
-                    GaugeSpec {
-                        label: "LAMBDA",
-                        value: self.latest.lambda_target,
-                        min: 0.70,
-                        max: 1.20,
-                        unit: "-",
-                        accent: self.theme.green,
-                        footer: "target mixture",
-                    },
-                );
-                gauge(
-                    ui,
-                    self.theme,
-                    GaugeSpec {
-                        label: "BMEP",
-                        value: self.latest.brake_bmep_bar,
-                        min: 0.0,
-                        max: 16.0,
-                        unit: "bar",
-                        accent: self.theme.red,
-                        footer: "brake mean effective pressure",
-                    },
-                );
-                gauge(
-                    ui,
-                    self.theme,
-                    GaugeSpec {
-                        label: "EXH TEMP",
-                        value: self.latest.exhaust_temp_k,
-                        min: 300.0,
-                        max: 1_200.0,
-                        unit: "K",
-                        accent: self.theme.amber,
-                        footer: "collector model",
-                    },
-                );
-                gauge(
-                    ui,
-                    self.theme,
-                    GaugeSpec {
-                        label: "COMB PWR",
-                        value: combustion_power_kw,
-                        min: 0.0,
-                        max: 160.0,
-                        unit: "kW",
-                        accent: self.theme.cyan,
-                        footer: "gross combustion",
-                    },
-                );
-            });
+            let mut gauge_index = 0usize;
+            while gauge_index < 6 {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for slot in 0..gauge_columns {
+                        let idx = gauge_index + slot;
+                        if idx >= 6 {
+                            break;
+                        }
+                        let spec = match idx {
+                            0 => GaugeSpec {
+                                label: "RPM",
+                                value: self.latest.rpm,
+                                min: 0.0,
+                                max: self.sim.params.max_rpm,
+                                unit: "rpm",
+                                accent: self.theme.amber,
+                                footer: "crankshaft speed",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            1 => GaugeSpec {
+                                label: "MAP",
+                                value: self.latest.map_kpa,
+                                min: 20.0,
+                                max: 120.0,
+                                unit: "kPa",
+                                accent: self.theme.cyan,
+                                footer: "intake plenum",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            2 => GaugeSpec {
+                                label: "LAMBDA",
+                                value: self.latest.lambda_target,
+                                min: 0.70,
+                                max: 1.20,
+                                unit: "-",
+                                accent: self.theme.green,
+                                footer: "target mixture",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            3 => GaugeSpec {
+                                label: "BMEP",
+                                value: self.latest.brake_bmep_bar,
+                                min: 0.0,
+                                max: 16.0,
+                                unit: "bar",
+                                accent: self.theme.red,
+                                footer: "brake mean effective pressure",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            4 => GaugeSpec {
+                                label: "EXH TEMP",
+                                value: self.latest.exhaust_temp_k,
+                                min: 300.0,
+                                max: 1_200.0,
+                                unit: "K",
+                                accent: self.theme.amber,
+                                footer: "collector model",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            5 => GaugeSpec {
+                                label: "COMB PWR",
+                                value: combustion_power_kw,
+                                min: 0.0,
+                                max: 160.0,
+                                unit: "kW",
+                                accent: self.theme.cyan,
+                                footer: "gross combustion",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            _ => unreachable!(),
+                        };
+                        gauge(ui, self.theme, spec);
+                    }
+                });
+                gauge_index += gauge_columns;
+            }
 
             ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                linear_meter(
-                    ui,
-                    self.theme,
-                    LinearMeterSpec {
-                        label: "THROTTLE CMD",
-                        value: self.sim.control.throttle_cmd,
-                        min: 0.0,
-                        max: 1.0,
-                        accent: self.theme.amber,
-                        value_text: format!("{:.3}", self.sim.control.throttle_cmd),
-                    },
-                );
-                linear_meter(
-                    ui,
-                    self.theme,
-                    LinearMeterSpec {
-                        label: "THROTTLE EFF",
-                        value: self.sim.state.throttle_eff,
-                        min: 0.0,
-                        max: 1.0,
-                        accent: self.theme.cyan,
-                        value_text: format!("{:.3}", self.sim.state.throttle_eff),
-                    },
-                );
-                linear_meter(
-                    ui,
-                    self.theme,
-                    LinearMeterSpec {
-                        label: "LOAD CMD",
-                        value: self.sim.control.load_cmd,
-                        min: 0.0,
-                        max: 1.0,
-                        accent: self.theme.red,
-                        value_text: format!("{:.3}", self.sim.control.load_cmd),
-                    },
-                );
-                linear_meter(
-                    ui,
-                    self.theme,
-                    LinearMeterSpec {
-                        label: "IGNITION",
-                        value: self.sim.control.ignition_timing_deg,
-                        min: self.ui_config.ignition_slider_min_deg,
-                        max: self.ui_config.ignition_slider_max_deg,
-                        accent: self.theme.green,
-                        value_text: format!("{:.1} deg BTDC", self.sim.control.ignition_timing_deg),
-                    },
-                );
-                linear_meter(
-                    ui,
-                    self.theme,
-                    LinearMeterSpec {
-                        label: "VVT IN",
-                        value: self.sim.control.vvt_intake_deg,
-                        min: self.ui_config.vvt_slider_min_deg,
-                        max: self.ui_config.vvt_slider_max_deg,
-                        accent: self.theme.cyan,
-                        value_text: format!("{:.1} deg", self.sim.control.vvt_intake_deg),
-                    },
-                );
-                linear_meter(
-                    ui,
-                    self.theme,
-                    LinearMeterSpec {
-                        label: "VVT EX",
-                        value: self.sim.control.vvt_exhaust_deg,
-                        min: self.ui_config.vvt_slider_min_deg,
-                        max: self.ui_config.vvt_slider_max_deg,
-                        accent: self.theme.red,
-                        value_text: format!("{:.1} deg", self.sim.control.vvt_exhaust_deg),
-                    },
-                );
-            });
+            let mut meter_index = 0usize;
+            while meter_index < 6 {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for slot in 0..meter_columns {
+                        let idx = meter_index + slot;
+                        if idx >= 6 {
+                            break;
+                        }
+                        let spec = match idx {
+                            0 => LinearMeterSpec {
+                                label: "THROTTLE CMD",
+                                value: self.sim.control.throttle_cmd,
+                                min: 0.0,
+                                max: 1.0,
+                                accent: self.theme.amber,
+                                value_text: format!("{:.3}", self.sim.control.throttle_cmd),
+                                width: meter_width,
+                            },
+                            1 => LinearMeterSpec {
+                                label: "THROTTLE EFF",
+                                value: self.sim.state.throttle_eff,
+                                min: 0.0,
+                                max: 1.0,
+                                accent: self.theme.cyan,
+                                value_text: format!("{:.3}", self.sim.state.throttle_eff),
+                                width: meter_width,
+                            },
+                            2 => LinearMeterSpec {
+                                label: "LOAD CMD",
+                                value: self.sim.control.load_cmd,
+                                min: 0.0,
+                                max: 1.0,
+                                accent: self.theme.red,
+                                value_text: format!("{:.3}", self.sim.control.load_cmd),
+                                width: meter_width,
+                            },
+                            3 => LinearMeterSpec {
+                                label: "IGNITION",
+                                value: self.sim.control.ignition_timing_deg,
+                                min: self.ui_config.ignition_slider_min_deg,
+                                max: self.ui_config.ignition_slider_max_deg,
+                                accent: self.theme.green,
+                                value_text: format!(
+                                    "{:.1} deg BTDC",
+                                    self.sim.control.ignition_timing_deg
+                                ),
+                                width: meter_width,
+                            },
+                            4 => LinearMeterSpec {
+                                label: "VVT IN",
+                                value: self.sim.control.vvt_intake_deg,
+                                min: self.ui_config.vvt_slider_min_deg,
+                                max: self.ui_config.vvt_slider_max_deg,
+                                accent: self.theme.cyan,
+                                value_text: format!("{:.1} deg", self.sim.control.vvt_intake_deg),
+                                width: meter_width,
+                            },
+                            5 => LinearMeterSpec {
+                                label: "VVT EX",
+                                value: self.sim.control.vvt_exhaust_deg,
+                                min: self.ui_config.vvt_slider_min_deg,
+                                max: self.ui_config.vvt_slider_max_deg,
+                                accent: self.theme.red,
+                                value_text: format!("{:.1} deg", self.sim.control.vvt_exhaust_deg),
+                                width: meter_width,
+                            },
+                            _ => unreachable!(),
+                        };
+                        linear_meter(ui, self.theme, spec);
+                    }
+                });
+                meter_index += meter_columns;
+            }
         });
         ui.add_space(8.0);
     }
 
     fn render_state_bus(&self, ui: &mut egui::Ui) {
-        self.theme.monitor_frame().show(ui, |ui| {
-            monitor_heading(
-                ui,
-                self.theme,
-                "Sensor / State Bus",
-                "live reduced-order state and closures",
-                self.theme.green,
-            );
-            egui::Grid::new("state_bus_grid")
-                .num_columns(2)
-                .spacing(egui::vec2(16.0, 6.0))
-                .show(ui, |ui| {
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Intake runner pressure",
-                        format!("{:.1} kPa", self.latest.intake_runner_kpa),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Exhaust pressure",
-                        format!("{:.1} kPa", self.latest.exhaust_kpa),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Exhaust runner pressure",
-                        format!("{:.1} kPa", self.latest.exhaust_runner_kpa),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Wave pressure I / E",
-                        format!(
-                            "{:.2} / {:.2} kPa",
-                            self.latest.intake_wave_kpa, self.latest.exhaust_wave_kpa
-                        ),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Air flow",
-                        format!("{:.2} g/s", self.latest.air_flow_gps),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Charge temp",
-                        format!("{:.1} K", self.latest.intake_charge_temp_k),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Pulse VE / ram / scav",
-                        format!(
-                            "{:.3} / {:.3} / {:.3}",
-                            self.latest.ve_pulse_multiplier,
-                            self.latest.intake_ram_multiplier,
-                            self.latest.exhaust_scavenge_multiplier
-                        ),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Ignition timing",
-                        format!("{:.1} deg BTDC", self.latest.ignition_timing_deg),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Heat loss",
-                        format!("{:.3} kJ/cyl/cycle", self.latest.heat_loss_cycle_j * 1.0e-3),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "IMEP",
-                        format!("{:.2} bar", self.latest.imep_bar),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Theoretical eta",
-                        format!("{:.1} %", self.latest.eta_thermal_theoretical * 100.0),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Cycle angle / burn rate",
-                        format!(
-                            "{:.1} deg / {:.2}",
-                            self.latest.cycle_deg, self.latest.combustion_rate_norm
-                        ),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Torque comb inst / cycle mean",
-                        format!(
-                            "{:.2} / {:.2} Nm",
-                            self.latest.torque_combustion_nm,
-                            self.latest.torque_combustion_cycle_nm
-                        ),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Torque friction / pump",
-                        format!(
-                            "{:.2} / {:.2} Nm",
-                            self.latest.torque_friction_nm, self.latest.torque_pumping_nm
-                        ),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Starter / load torque",
-                        format!(
-                            "{:.2} / {:.2} Nm",
-                            self.latest.torque_starter_nm, self.latest.torque_load_nm
-                        ),
-                    );
-                    metric_row(
-                        ui,
-                        self.theme,
-                        "Brake power filt / load power",
-                        format!(
-                            "{:.2} / {:.2} kW",
-                            shaft_power_kw(self.latest.rpm, self.latest.torque_net_nm),
-                            shaft_power_kw(self.latest.rpm, self.latest.torque_load_nm)
-                        ),
-                    );
-                });
-        });
+        show_collapsible_module(
+            ui,
+            self.theme,
+            "rack_sensor_state",
+            "Sensor / State Bus",
+            "live reduced-order state and closures",
+            self.theme.green,
+            false,
+            |ui| {
+                egui::Grid::new("state_bus_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(16.0, 6.0))
+                    .show(ui, |ui| {
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Intake runner pressure",
+                            format!("{:.1} kPa", self.latest.intake_runner_kpa),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Exhaust pressure",
+                            format!("{:.1} kPa", self.latest.exhaust_kpa),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Exhaust runner pressure",
+                            format!("{:.1} kPa", self.latest.exhaust_runner_kpa),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Wave pressure I / E",
+                            format!(
+                                "{:.2} / {:.2} kPa",
+                                self.latest.intake_wave_kpa, self.latest.exhaust_wave_kpa
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Air flow",
+                            format!("{:.2} g/s", self.latest.air_flow_gps),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Charge temp",
+                            format!("{:.1} K", self.latest.intake_charge_temp_k),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Pulse VE / ram / scav",
+                            format!(
+                                "{:.3} / {:.3} / {:.3}",
+                                self.latest.ve_pulse_multiplier,
+                                self.latest.intake_ram_multiplier,
+                                self.latest.exhaust_scavenge_multiplier
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Ignition timing",
+                            format!("{:.1} deg BTDC", self.latest.ignition_timing_deg),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Heat loss",
+                            format!("{:.3} kJ/cyl/cycle", self.latest.heat_loss_cycle_j * 1.0e-3),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "IMEP",
+                            format!("{:.2} bar", self.latest.imep_bar),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Theoretical eta",
+                            format!("{:.1} %", self.latest.eta_thermal_theoretical * 100.0),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Cycle angle / burn rate",
+                            format!(
+                                "{:.1} deg / {:.2}",
+                                self.latest.cycle_deg, self.latest.combustion_rate_norm
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Torque comb inst / cycle mean",
+                            format!(
+                                "{:.2} / {:.2} Nm",
+                                self.latest.torque_combustion_nm,
+                                self.latest.torque_combustion_cycle_nm
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Torque friction / pump",
+                            format!(
+                                "{:.2} / {:.2} Nm",
+                                self.latest.torque_friction_nm, self.latest.torque_pumping_nm
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Starter / load torque",
+                            format!(
+                                "{:.2} / {:.2} Nm",
+                                self.latest.torque_starter_nm, self.latest.torque_load_nm
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Brake power filt / load power",
+                            format!(
+                                "{:.2} / {:.2} kW",
+                                shaft_power_kw(self.latest.rpm, self.latest.torque_net_nm),
+                                shaft_power_kw(self.latest.rpm, self.latest.torque_load_nm)
+                            ),
+                        );
+                    });
+            },
+        );
     }
 
     fn render_bench_curve(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
@@ -1782,202 +1895,208 @@ impl DashboardApp {
     }
 
     fn render_cycle_monitors(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
-        self.theme.monitor_frame().show(ui, |ui| {
-            monitor_heading(
-                ui,
-                self.theme,
-                "Cycle Monitors",
-                "recent histories and valve event trace",
-                self.theme.cyan,
-            );
-            let recent_cycles = self.sim.plot.history_recent_cycles.max(1);
+        show_collapsible_module(
+            ui,
+            self.theme,
+            "cycle_monitors",
+            "Cycle Monitors",
+            "recent histories and valve event trace",
+            self.theme.cyan,
+            false,
+            |ui| {
+                let recent_cycles = self.sim.plot.history_recent_cycles.max(1);
 
-            ui.columns(2, |columns| {
-                let rpm_lines = recent_cycle_plot_lines(&self.sim.history_rpm, recent_cycles);
-                let rpm_min_span = (self.sim.params.max_rpm * 0.04).max(150.0);
-                let (rpm_y_min, rpm_y_max) = adaptive_plot_y_range(
-                    recent_cycle_min_max(&self.sim.history_rpm, recent_cycles),
-                    rpm_min_span,
-                    self.ui_config.torque_margin_ratio,
-                    Some(0.0),
-                );
-                Plot::new("rpm_plot")
-                    .height(graph_heights.standard_plot_px)
-                    .allow_scroll(false)
-                    .allow_drag(false)
-                    .allow_zoom(false)
-                    .legend(Legend::default())
-                    .x_axis_label("Crank angle [degCA]")
-                    .y_axis_label("RPM inst [rpm]")
-                    .show(&mut columns[0], |plot_ui| {
-                        plot_ui.set_auto_bounds(false);
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [0.0, rpm_y_min],
-                            [720.0, rpm_y_max],
-                        ));
-                        let total = rpm_lines.len();
-                        for (idx, points) in rpm_lines.into_iter().enumerate() {
-                            let mut line = Line::new(points)
-                                .color(faded_cycle_color(egui::Color32::LIGHT_GREEN, idx, total))
-                                .width(self.ui_config.line_width_px);
-                            if idx + 1 == total {
-                                line = line.name("RPM");
+                ui.columns(2, |columns| {
+                    let rpm_lines = recent_cycle_plot_lines(&self.sim.history_rpm, recent_cycles);
+                    let rpm_min_span = (self.sim.params.max_rpm * 0.04).max(150.0);
+                    let (rpm_y_min, rpm_y_max) = adaptive_plot_y_range(
+                        recent_cycle_min_max(&self.sim.history_rpm, recent_cycles),
+                        rpm_min_span,
+                        self.ui_config.torque_margin_ratio,
+                        Some(0.0),
+                    );
+                    Plot::new("rpm_plot")
+                        .height(graph_heights.standard_plot_px)
+                        .allow_scroll(false)
+                        .allow_drag(false)
+                        .allow_zoom(false)
+                        .legend(Legend::default())
+                        .x_axis_label("Crank angle [degCA]")
+                        .y_axis_label("RPM inst [rpm]")
+                        .show(&mut columns[0], |plot_ui| {
+                            plot_ui.set_auto_bounds(false);
+                            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                [0.0, rpm_y_min],
+                                [720.0, rpm_y_max],
+                            ));
+                            let total = rpm_lines.len();
+                            for (idx, points) in rpm_lines.into_iter().enumerate() {
+                                let mut line = Line::new(points)
+                                    .color(faded_cycle_color(
+                                        egui::Color32::LIGHT_GREEN,
+                                        idx,
+                                        total,
+                                    ))
+                                    .width(self.ui_config.line_width_px);
+                                if idx + 1 == total {
+                                    line = line.name("RPM");
+                                }
+                                plot_ui.line(line);
                             }
-                            plot_ui.line(line);
-                        }
-                        plot_ui.vline(
-                            VLine::new(self.latest.cycle_deg)
-                                .name("Crank cursor")
-                                .color(self.theme.chrome),
-                        );
-                    });
+                            plot_ui.vline(
+                                VLine::new(self.latest.cycle_deg)
+                                    .name("Crank cursor")
+                                    .color(self.theme.chrome),
+                            );
+                        });
 
-                let torque_lines =
-                    recent_cycle_plot_lines(&self.sim.history_torque_net_nm, recent_cycles);
-                let load_lines =
-                    recent_cycle_plot_lines(&self.sim.history_torque_load_nm, recent_cycles);
-                let (torque_y_min, torque_y_max) = adaptive_plot_y_range(
-                    combine_min_max(
-                        recent_cycle_min_max(&self.sim.history_torque_net_nm, recent_cycles),
-                        recent_cycle_min_max(&self.sim.history_torque_load_nm, recent_cycles),
-                    ),
-                    self.ui_config.torque_min_span_nm,
-                    self.ui_config.torque_margin_ratio,
-                    None,
-                );
-                Plot::new("torque_plot")
-                    .height(graph_heights.standard_plot_px)
-                    .allow_scroll(false)
-                    .allow_drag(false)
-                    .allow_zoom(false)
-                    .legend(Legend::default())
-                    .x_axis_label("Crank angle [degCA]")
-                    .y_axis_label("Net torque filt / load [Nm]")
-                    .show(&mut columns[1], |plot_ui| {
-                        plot_ui.set_auto_bounds(false);
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [0.0, torque_y_min],
-                            [720.0, torque_y_max],
-                        ));
-                        let total = torque_lines.len().max(load_lines.len());
-                        let torque_total = torque_lines.len();
-                        let load_total = load_lines.len();
-                        for (idx, points) in torque_lines.into_iter().enumerate() {
-                            let mut line = Line::new(points)
-                                .color(faded_cycle_color(
-                                    egui::Color32::from_rgb(255, 120, 120),
-                                    idx,
-                                    total,
-                                ))
-                                .width(self.ui_config.line_width_px);
-                            if idx + 1 == torque_total {
-                                line = line.name("Filtered net torque [Nm]");
+                    let torque_lines =
+                        recent_cycle_plot_lines(&self.sim.history_torque_net_nm, recent_cycles);
+                    let load_lines =
+                        recent_cycle_plot_lines(&self.sim.history_torque_load_nm, recent_cycles);
+                    let (torque_y_min, torque_y_max) = adaptive_plot_y_range(
+                        combine_min_max(
+                            recent_cycle_min_max(&self.sim.history_torque_net_nm, recent_cycles),
+                            recent_cycle_min_max(&self.sim.history_torque_load_nm, recent_cycles),
+                        ),
+                        self.ui_config.torque_min_span_nm,
+                        self.ui_config.torque_margin_ratio,
+                        None,
+                    );
+                    Plot::new("torque_plot")
+                        .height(graph_heights.standard_plot_px)
+                        .allow_scroll(false)
+                        .allow_drag(false)
+                        .allow_zoom(false)
+                        .legend(Legend::default())
+                        .x_axis_label("Crank angle [degCA]")
+                        .y_axis_label("Net torque filt / load [Nm]")
+                        .show(&mut columns[1], |plot_ui| {
+                            plot_ui.set_auto_bounds(false);
+                            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                [0.0, torque_y_min],
+                                [720.0, torque_y_max],
+                            ));
+                            let total = torque_lines.len().max(load_lines.len());
+                            let torque_total = torque_lines.len();
+                            let load_total = load_lines.len();
+                            for (idx, points) in torque_lines.into_iter().enumerate() {
+                                let mut line = Line::new(points)
+                                    .color(faded_cycle_color(
+                                        egui::Color32::from_rgb(255, 120, 120),
+                                        idx,
+                                        total,
+                                    ))
+                                    .width(self.ui_config.line_width_px);
+                                if idx + 1 == torque_total {
+                                    line = line.name("Filtered net torque [Nm]");
+                                }
+                                plot_ui.line(line);
                             }
-                            plot_ui.line(line);
-                        }
-                        for (idx, points) in load_lines.into_iter().enumerate() {
-                            let mut line = Line::new(points)
-                                .color(faded_cycle_color(
-                                    egui::Color32::from_rgb(255, 185, 70),
-                                    idx,
-                                    total,
-                                ))
-                                .width(self.ui_config.line_width_px);
-                            if idx + 1 == load_total {
-                                line = line.name("External load [Nm]");
+                            for (idx, points) in load_lines.into_iter().enumerate() {
+                                let mut line = Line::new(points)
+                                    .color(faded_cycle_color(
+                                        egui::Color32::from_rgb(255, 185, 70),
+                                        idx,
+                                        total,
+                                    ))
+                                    .width(self.ui_config.line_width_px);
+                                if idx + 1 == load_total {
+                                    line = line.name("External load [Nm]");
+                                }
+                                plot_ui.line(line);
                             }
-                            plot_ui.line(line);
-                        }
-                        plot_ui.vline(
-                            VLine::new(self.latest.cycle_deg)
-                                .name("Crank cursor")
-                                .color(self.theme.chrome),
-                        );
-                    });
-            });
+                            plot_ui.vline(
+                                VLine::new(self.latest.cycle_deg)
+                                    .name("Crank cursor")
+                                    .color(self.theme.chrome),
+                            );
+                        });
+                });
 
-            ui.add_space(graph_heights.section_spacing_px);
+                ui.add_space(graph_heights.section_spacing_px);
 
-            ui.columns(2, |columns| {
-                let trapped_air_lines =
-                    recent_cycle_plot_lines(&self.sim.history_trapped_air_mg, recent_cycles);
-                let trapped_air_min_span =
-                    (self.ui_config.trapped_air_min_y_max_mg * 0.25).max(20.0);
-                let (trapped_air_y_min, trapped_air_y_max) = adaptive_plot_y_range(
-                    recent_cycle_min_max(&self.sim.history_trapped_air_mg, recent_cycles),
-                    trapped_air_min_span,
-                    self.ui_config.torque_margin_ratio,
-                    Some(0.0),
-                );
-                Plot::new("air_mass_plot")
-                    .height(graph_heights.standard_plot_px)
-                    .allow_scroll(false)
-                    .allow_drag(false)
-                    .allow_zoom(false)
-                    .legend(Legend::default())
-                    .x_axis_label("Crank angle [degCA]")
-                    .y_axis_label("Trapped air inst [mg/cyl]")
-                    .show(&mut columns[0], |plot_ui| {
-                        plot_ui.set_auto_bounds(false);
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [0.0, trapped_air_y_min],
-                            [720.0, trapped_air_y_max],
-                        ));
-                        let total = trapped_air_lines.len();
-                        for (idx, points) in trapped_air_lines.into_iter().enumerate() {
-                            let mut line = Line::new(points)
-                                .color(faded_cycle_color(
-                                    egui::Color32::from_rgb(120, 200, 255),
-                                    idx,
-                                    total,
-                                ))
-                                .width(self.ui_config.line_width_px);
-                            if idx + 1 == total {
-                                line = line.name("Trapped air inst [mg/cyl]");
+                ui.columns(2, |columns| {
+                    let trapped_air_lines =
+                        recent_cycle_plot_lines(&self.sim.history_trapped_air_mg, recent_cycles);
+                    let trapped_air_min_span =
+                        (self.ui_config.trapped_air_min_y_max_mg * 0.25).max(20.0);
+                    let (trapped_air_y_min, trapped_air_y_max) = adaptive_plot_y_range(
+                        recent_cycle_min_max(&self.sim.history_trapped_air_mg, recent_cycles),
+                        trapped_air_min_span,
+                        self.ui_config.torque_margin_ratio,
+                        Some(0.0),
+                    );
+                    Plot::new("air_mass_plot")
+                        .height(graph_heights.standard_plot_px)
+                        .allow_scroll(false)
+                        .allow_drag(false)
+                        .allow_zoom(false)
+                        .legend(Legend::default())
+                        .x_axis_label("Crank angle [degCA]")
+                        .y_axis_label("Trapped air inst [mg/cyl]")
+                        .show(&mut columns[0], |plot_ui| {
+                            plot_ui.set_auto_bounds(false);
+                            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                [0.0, trapped_air_y_min],
+                                [720.0, trapped_air_y_max],
+                            ));
+                            let total = trapped_air_lines.len();
+                            for (idx, points) in trapped_air_lines.into_iter().enumerate() {
+                                let mut line = Line::new(points)
+                                    .color(faded_cycle_color(
+                                        egui::Color32::from_rgb(120, 200, 255),
+                                        idx,
+                                        total,
+                                    ))
+                                    .width(self.ui_config.line_width_px);
+                                if idx + 1 == total {
+                                    line = line.name("Trapped air inst [mg/cyl]");
+                                }
+                                plot_ui.line(line);
                             }
-                            plot_ui.line(line);
-                        }
-                        plot_ui.vline(
-                            VLine::new(self.latest.cycle_deg)
-                                .name("Crank cursor")
-                                .color(self.theme.chrome),
-                        );
-                    });
+                            plot_ui.vline(
+                                VLine::new(self.latest.cycle_deg)
+                                    .name("Crank cursor")
+                                    .color(self.theme.chrome),
+                            );
+                        });
 
-                let (intake_cam, exhaust_cam) =
-                    cam_profile_points(&self.sim.control, &self.sim.cam, &self.sim.model);
-                let intake_line = Line::new(intake_cam)
-                    .name("Intake lift")
-                    .color(egui::Color32::from_rgb(80, 190, 255))
-                    .width(self.ui_config.line_width_px);
-                let exhaust_line = Line::new(exhaust_cam)
-                    .name("Exhaust lift")
-                    .color(egui::Color32::from_rgb(255, 110, 110))
-                    .width(self.ui_config.line_width_px);
-                let crank_cursor = VLine::new(self.latest.cycle_deg)
-                    .name("Crank")
-                    .color(egui::Color32::from_rgb(170, 170, 170))
-                    .width(self.ui_config.crank_line_width_px);
-                Plot::new("cam_plot")
-                    .height(graph_heights.standard_plot_px)
-                    .allow_scroll(false)
-                    .allow_drag(false)
-                    .allow_zoom(false)
-                    .legend(Legend::default())
-                    .x_axis_label("Crank angle [degCA]")
-                    .y_axis_label("Valve lift [mm]")
-                    .show(&mut columns[1], |plot_ui| {
-                        plot_ui.set_auto_bounds(false);
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [0.0, 0.0],
-                            [720.0, self.sim.cam.display_y_max_mm],
-                        ));
-                        plot_ui.line(intake_line);
-                        plot_ui.line(exhaust_line);
-                        plot_ui.vline(crank_cursor);
-                    });
-            });
-        });
+                    let (intake_cam, exhaust_cam) =
+                        cam_profile_points(&self.sim.control, &self.sim.cam, &self.sim.model);
+                    let intake_line = Line::new(intake_cam)
+                        .name("Intake lift")
+                        .color(egui::Color32::from_rgb(80, 190, 255))
+                        .width(self.ui_config.line_width_px);
+                    let exhaust_line = Line::new(exhaust_cam)
+                        .name("Exhaust lift")
+                        .color(egui::Color32::from_rgb(255, 110, 110))
+                        .width(self.ui_config.line_width_px);
+                    let crank_cursor = VLine::new(self.latest.cycle_deg)
+                        .name("Crank")
+                        .color(egui::Color32::from_rgb(170, 170, 170))
+                        .width(self.ui_config.crank_line_width_px);
+                    Plot::new("cam_plot")
+                        .height(graph_heights.standard_plot_px)
+                        .allow_scroll(false)
+                        .allow_drag(false)
+                        .allow_zoom(false)
+                        .legend(Legend::default())
+                        .x_axis_label("Crank angle [degCA]")
+                        .y_axis_label("Valve lift [mm]")
+                        .show(&mut columns[1], |plot_ui| {
+                            plot_ui.set_auto_bounds(false);
+                            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                [0.0, 0.0],
+                                [720.0, self.sim.cam.display_y_max_mm],
+                            ));
+                            plot_ui.line(intake_line);
+                            plot_ui.line(exhaust_line);
+                            plot_ui.vline(crank_cursor);
+                        });
+                });
+            },
+        );
     }
 }
 

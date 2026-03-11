@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use crate::config::{
     AppConfig, AutoControlConfig, BenchConfig, BenchMixtureMode, CamConfig, ControlDefaults,
-    EnvironmentConfig, ExternalLoadConfig, ModelConfig, NumericsConfig, PlotConfig, PvModelConfig,
-    VolumetricEfficiencyConfig,
+    EnvironmentConfig, ExternalLoadConfig, ExternalLoadMode, ModelConfig, NumericsConfig,
+    PlotConfig, PvModelConfig, VolumetricEfficiencyConfig,
 };
 use crate::constants::{
     FIXED_CYLINDER_COUNT, FUEL_LHV_J_PER_KG, GAMMA_AIR, R_AIR, W_PER_KW, W_PER_MECHANICAL_HP,
@@ -520,6 +520,7 @@ pub(crate) struct EvalPoint {
     torque_starter_nm: f64,
     torque_pumping_nm: f64,
     torque_load_nm: f64,
+    load_inertia_kgm2: f64,
     p_intake_cyl_pa: f64,
     p_exhaust_cyl_pa: f64,
     trapped_air_kg: f64,
@@ -808,7 +809,6 @@ pub(crate) struct Observation {
     pub(crate) exhaust_runner_kpa: f64,
     pub(crate) intake_wave_kpa: f64,
     pub(crate) exhaust_wave_kpa: f64,
-    pub(crate) exhaust_runner_flow_gps: f64,
     pub(crate) exhaust_temp_k: f64,
     pub(crate) intake_charge_temp_k: f64,
     pub(crate) torque_combustion_nm: f64,
@@ -2234,6 +2234,8 @@ impl Simulator {
             state.omega_rad_s,
             &self.model.external_load,
         );
+        let load_inertia_kgm2 =
+            external_load_reflected_inertia_kgm2(self.control.load_cmd, &self.model.external_load);
 
         let cycles_per_sec = rpm / 120.0;
         let fuel_mass_cycle_cyl = if combustion_enabled {
@@ -2271,6 +2273,7 @@ impl Simulator {
             torque_starter_nm: torque_starter,
             torque_pumping_nm: torque_pumping,
             torque_load_nm: torque_load,
+            load_inertia_kgm2,
             p_intake_cyl_pa,
             p_exhaust_cyl_pa,
             trapped_air_kg: trapped_air,
@@ -2300,11 +2303,13 @@ impl Simulator {
             - eval.torque_friction_nm
             - eval.torque_pumping_nm
             - eval.torque_load_nm;
+        let effective_inertia = (self.params.inertia_kgm2 + eval.load_inertia_kgm2)
+            .max(self.params.inertia_kgm2 * 0.25);
         let intake_runner_loss_pa = self.intake_runner_pressure_loss_pa(state);
         let exhaust_runner_loss_pa =
             self.exhaust_runner_pressure_loss_pa(state, eval.exhaust_temp_k);
         Derivatives {
-            d_omega: net_torque / self.params.inertia_kgm2,
+            d_omega: net_torque / effective_inertia,
             d_theta: state.omega_rad_s,
             d_p_intake: (R_AIR * self.env.intake_temp_k / self.params.intake_volume_m3)
                 * (eval.m_dot_throttle - state.m_dot_intake_runner_kg_s),
@@ -2374,6 +2379,7 @@ impl Simulator {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn advance_state_rk2_from_eval(
         &self,
         state: EngineState,
@@ -2391,6 +2397,7 @@ impl Simulator {
         next
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn advance_state_rk2(&self, state: EngineState, dt: f64) -> EngineState {
         let eval_1 = self.eval(state);
         self.advance_state_rk2_from_eval(state, eval_1, dt)
@@ -2675,7 +2682,6 @@ impl Simulator {
             exhaust_runner_kpa: self.state.p_exhaust_runner_pa * 1e-3,
             intake_wave_kpa: eval_final.intake_wave_current_pa * 1.0e-3,
             exhaust_wave_kpa: eval_final.exhaust_wave_current_pa * 1.0e-3,
-            exhaust_runner_flow_gps: self.state.m_dot_exhaust_runner_kg_s * 1.0e3,
             exhaust_temp_k: eval_final.exhaust_temp_k,
             intake_charge_temp_k: eval_final.intake_charge_temp_k,
             torque_combustion_nm: eval_final.torque_combustion_nm,
@@ -2885,6 +2891,12 @@ pub(crate) fn rpm_linked_dt(
     dt.clamp(dt_min, dt_max)
 }
 
+pub(crate) fn accuracy_priority_dt(rpm: f64, numerics: &NumericsConfig) -> f64 {
+    let rpm_eff = rpm.max(numerics.rpm_link_rpm_floor);
+    let dt = numerics.accuracy_target_deg_per_step.max(f64::EPSILON) / (rpm_eff * 6.0);
+    dt.clamp(numerics.rpm_link_dt_min_floor_s, numerics.accuracy_dt_max_s)
+}
+
 fn realtime_fixed_dt_candidate(base_dt: f64, max_rpm: f64, numerics: &NumericsConfig) -> f64 {
     let rpm_ref = max_rpm.max(numerics.rpm_link_rpm_floor).max(f64::EPSILON);
     let max_deg = numerics
@@ -3089,6 +3101,7 @@ fn bench_adaptive_step_with_deg_per_step(
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RealtimePerformanceEstimate {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) wall_per_step_s: f64,
     pub(crate) floor_dt_s: f64,
     pub(crate) fixed_dt_candidate_s: f64,
@@ -3149,22 +3162,94 @@ pub(crate) fn torque_to_bmep_bar(torque_nm: f64, displacement_m3: f64) -> f64 {
     4.0 * PI * torque_nm / displacement_m3 * 1.0e-5
 }
 
+fn external_load_command_scale(load_cmd: f64, load_model: &ExternalLoadConfig) -> f64 {
+    let command = load_cmd.clamp(0.0, 1.0);
+    if command <= 0.0 {
+        return 0.0;
+    }
+    command.powf(load_model.command_exponent.max(f64::EPSILON))
+}
+
+fn vehicle_load_engine_speed_ratio(load_model: &ExternalLoadConfig) -> f64 {
+    load_model.vehicle.drivetrain_ratio.max(f64::EPSILON)
+}
+
+pub(crate) fn external_load_vehicle_speed_mps(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    if load_model.mode != ExternalLoadMode::VehicleEquivalent {
+        return 0.0;
+    }
+    let wheel_radius = load_model.vehicle.wheel_radius_m.max(f64::EPSILON);
+    omega_rad_s.max(0.0) * wheel_radius / vehicle_load_engine_speed_ratio(load_model)
+}
+
+pub(crate) fn external_load_vehicle_speed_kph(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    external_load_vehicle_speed_mps(omega_rad_s, load_model) * 3.6
+}
+
+pub(crate) fn external_load_reflected_inertia_kgm2(
+    load_cmd: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    if load_model.mode != ExternalLoadMode::VehicleEquivalent {
+        return 0.0;
+    }
+    let scale = external_load_command_scale(load_cmd, load_model);
+    if scale <= 0.0 {
+        return 0.0;
+    }
+    let vehicle_mass =
+        load_model.vehicle.vehicle_mass_kg.max(0.0) * load_model.vehicle.equivalent_mass_factor;
+    let ratio = vehicle_load_engine_speed_ratio(load_model);
+    let wheel_radius = load_model.vehicle.wheel_radius_m.max(f64::EPSILON);
+    scale * vehicle_mass * (wheel_radius / ratio).powi(2)
+}
+
 pub(crate) fn external_load_torque_nm(
     load_cmd: f64,
     omega_rad_s: f64,
     load_model: &ExternalLoadConfig,
 ) -> f64 {
-    let command = load_cmd.clamp(0.0, 1.0);
-    if command <= 0.0 {
+    let scale = external_load_command_scale(load_cmd, load_model);
+    if scale <= 0.0 {
         return 0.0;
     }
-    let exponent = load_model.command_exponent.max(f64::EPSILON);
-    let command = command.powf(exponent);
     let omega = omega_rad_s.max(0.0);
-    let reference_torque = load_model.base_torque_nm
-        + load_model.speed_linear_nms * omega
-        + load_model.speed_quadratic_nms2 * omega.powi(2);
-    (command * reference_torque).clamp(load_model.torque_min_nm, load_model.torque_max_nm)
+    let reference_torque = match load_model.mode {
+        ExternalLoadMode::BrakeMap => {
+            load_model.base_torque_nm
+                + load_model.speed_linear_nms * omega
+                + load_model.speed_quadratic_nms2 * omega.powi(2)
+        }
+        ExternalLoadMode::VehicleEquivalent => {
+            const G_MPS2: f64 = 9.80665;
+            let vehicle = &load_model.vehicle;
+            let vehicle_mass = vehicle.vehicle_mass_kg.max(0.0) * vehicle.equivalent_mass_factor;
+            let road_speed_mps = external_load_vehicle_speed_mps(omega, load_model);
+            let grade_angle = (vehicle.road_grade_percent / 100.0).atan();
+            let rolling_force = vehicle.rolling_resistance_coeff
+                * vehicle_mass
+                * G_MPS2
+                * grade_angle.cos().max(0.0);
+            let grade_force = vehicle_mass * G_MPS2 * grade_angle.sin();
+            let aero_force = 0.5
+                * vehicle.air_density_kg_m3
+                * vehicle.drag_coeff
+                * vehicle.frontal_area_m2
+                * road_speed_mps.powi(2);
+            let wheel_force = (rolling_force + grade_force + aero_force).max(0.0);
+            let wheel_torque = wheel_force * vehicle.wheel_radius_m.max(f64::EPSILON);
+            let driveline_eff = vehicle.driveline_efficiency.clamp(0.1, 1.0);
+            wheel_torque / (vehicle_load_engine_speed_ratio(load_model) * driveline_eff)
+                + vehicle.accessory_torque_nm
+        }
+    };
+    (scale * reference_torque).clamp(load_model.torque_min_nm, load_model.torque_max_nm)
 }
 
 pub(crate) fn bench_rpm_targets(bench: &BenchConfig) -> Vec<f64> {
@@ -3885,7 +3970,6 @@ pub(crate) fn cam_profile_points(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{AudioParams, render_engine_audio};
 
     fn wrapped_angle_error(a: f64, b: f64) -> f64 {
         let period = 4.0 * PI;
@@ -4433,6 +4517,33 @@ mod tests {
 
         assert!(loaded.torque_load_nm > 10.0);
         assert!(loaded_net + 10.0 < unloaded_net);
+    }
+
+    #[test]
+    fn vehicle_equivalent_load_reports_speed_and_reflected_inertia() {
+        let mut cfg = AppConfig::default();
+        cfg.model.external_load.mode = crate::config::ExternalLoadMode::VehicleEquivalent;
+        let load_model = &cfg.model.external_load;
+        let omega = rpm_to_rad_s(3_000.0);
+
+        let speed_kph = external_load_vehicle_speed_kph(omega, load_model);
+        let load = external_load_torque_nm(1.0, omega, load_model);
+        let reflected_inertia = external_load_reflected_inertia_kgm2(1.0, load_model);
+
+        assert!(speed_kph > 20.0);
+        assert!(load > 5.0);
+        assert!(reflected_inertia > 0.05);
+    }
+
+    #[test]
+    fn accuracy_priority_dt_refines_step_size_as_rpm_rises() {
+        let cfg = AppConfig::default();
+        let low = accuracy_priority_dt(900.0, &cfg.numerics);
+        let high = accuracy_priority_dt(6_500.0, &cfg.numerics);
+
+        assert!(high < low);
+        assert!(high <= cfg.numerics.accuracy_dt_max_s);
+        assert!(high >= cfg.numerics.rpm_link_dt_min_floor_s);
     }
 
     #[test]
@@ -5834,281 +5945,6 @@ mod tests {
         );
         assert!(perf.fixed_dt_candidate_s.is_finite() && perf.fixed_dt_candidate_s > 0.0);
         assert!(perf.fixed_dt_headroom_ratio.is_finite() && perf.fixed_dt_headroom_ratio > 0.0);
-    }
-
-    #[test]
-    fn audio_energy_increases_with_exhaust_pressure() {
-        let low = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 102.0,
-                exhaust_runner_pressure_kpa: 104.0,
-                intake_runner_pressure_kpa: 96.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 12.0,
-                engine_speed_rpm: 900.0,
-                exhaust_temp_k: 880.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            2.0,
-            48_000,
-        );
-        let high = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 165.0,
-                exhaust_runner_pressure_kpa: 188.0,
-                intake_runner_pressure_kpa: 92.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 58.0,
-                engine_speed_rpm: 3000.0,
-                exhaust_temp_k: 980.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            2.0,
-            48_000,
-        );
-        let rms = |samples: &[f32]| -> f32 {
-            let power = samples.iter().map(|v| v * v).sum::<f32>() / samples.len().max(1) as f32;
-            power.sqrt()
-        };
-        assert!(rms(&high) > rms(&low) * 1.2);
-    }
-
-    #[test]
-    fn audio_normalization_limits_extreme_loudness_ratio() {
-        let low = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 102.0,
-                exhaust_runner_pressure_kpa: 104.0,
-                intake_runner_pressure_kpa: 96.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 10.0,
-                engine_speed_rpm: 900.0,
-                exhaust_temp_k: 860.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            2.0,
-            48_000,
-        );
-        let high = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 170.0,
-                exhaust_runner_pressure_kpa: 198.0,
-                intake_runner_pressure_kpa: 88.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 65.0,
-                engine_speed_rpm: 4_200.0,
-                exhaust_temp_k: 1_020.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            2.0,
-            48_000,
-        );
-        let rms = |samples: &[f32]| -> f32 {
-            let power = samples.iter().map(|v| v * v).sum::<f32>() / samples.len().max(1) as f32;
-            power.sqrt()
-        };
-        let ratio = rms(&high) / rms(&low).max(1.0e-6);
-        assert!(
-            ratio > 1.1,
-            "normalization should not erase load/rpm loudness increase"
-        );
-        assert!(
-            ratio < 4.0,
-            "normalization should limit extreme loudness swing, ratio={ratio:.3}"
-        );
-    }
-
-    #[test]
-    fn audio_is_nearly_silent_at_zero_rpm() {
-        let stopped = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 101.325,
-                exhaust_runner_pressure_kpa: 101.325,
-                intake_runner_pressure_kpa: 101.325,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 0.0,
-                engine_speed_rpm: 0.0,
-                exhaust_temp_k: 880.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            1.0,
-            48_000,
-        );
-        let idling = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 103.0,
-                exhaust_runner_pressure_kpa: 106.0,
-                intake_runner_pressure_kpa: 92.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 8.0,
-                engine_speed_rpm: 850.0,
-                exhaust_temp_k: 880.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            1.0,
-            48_000,
-        );
-        let rms = |samples: &[f32]| -> f32 {
-            let power = samples.iter().map(|v| v * v).sum::<f32>() / samples.len().max(1) as f32;
-            power.sqrt()
-        };
-        assert!(
-            rms(&stopped) < 1.0e-4,
-            "audio should be effectively silent at zero rpm, rms={:.6}",
-            rms(&stopped)
-        );
-        assert!(
-            rms(&idling) > rms(&stopped) * 100.0,
-            "idling audio should be meaningfully above zero-rpm audio"
-        );
-    }
-
-    #[test]
-    fn audio_pitch_tracks_firing_frequency() {
-        let sample_rate = 48_000;
-        let low_rpm = 1_000.0_f32;
-        let high_rpm = 3_000.0_f32;
-        let low = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 120.0,
-                exhaust_runner_pressure_kpa: 132.0,
-                intake_runner_pressure_kpa: 94.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 18.0,
-                engine_speed_rpm: low_rpm,
-                exhaust_temp_k: 900.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            1.5,
-            sample_rate,
-        );
-        let high = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 120.0,
-                exhaust_runner_pressure_kpa: 175.0,
-                intake_runner_pressure_kpa: 88.0,
-                exhaust_wave_kpa: 0.0,
-                exhaust_runner_flow_gps: 48.0,
-                engine_speed_rpm: high_rpm,
-                exhaust_temp_k: 900.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            1.5,
-            sample_rate,
-        );
-
-        let estimate_periodic_frequency = |samples: &[f32], min_hz: f32, max_hz: f32| -> f32 {
-            let start = samples.len() / 4;
-            let window = &samples[start..];
-            let rectified: Vec<f32> = window.iter().map(|v| v.abs()).collect();
-            let mean = rectified.iter().copied().sum::<f32>() / rectified.len().max(1) as f32;
-            let min_lag = (sample_rate as f32 / max_hz).floor() as usize;
-            let max_lag = (sample_rate as f32 / min_hz).ceil() as usize;
-            let mut best_lag = min_lag.max(1);
-            let mut best_corr = f32::MIN;
-            for lag in min_lag.max(1)..=max_lag.min(rectified.len().saturating_sub(2)) {
-                let mut corr = 0.0_f32;
-                for i in 0..(rectified.len() - lag) {
-                    let a = rectified[i] - mean;
-                    let b = rectified[i + lag] - mean;
-                    corr += a * b;
-                }
-                if corr > best_corr {
-                    best_corr = corr;
-                    best_lag = lag;
-                }
-            }
-            sample_rate as f32 / best_lag as f32
-        };
-
-        let low_est_hz = estimate_periodic_frequency(&low, 20.0, 90.0);
-        let high_est_hz = estimate_periodic_frequency(&high, 70.0, 220.0);
-        let low_expected_hz = low_rpm * FIXED_CYLINDER_COUNT as f32 / 120.0;
-        let high_expected_hz = high_rpm * FIXED_CYLINDER_COUNT as f32 / 120.0;
-
-        assert!(
-            ((low_est_hz - low_expected_hz) / low_expected_hz).abs() < 0.15,
-            "low-rpm audio periodicity should follow firing frequency, expected {:.1} Hz got {:.1} Hz",
-            low_expected_hz,
-            low_est_hz
-        );
-        assert!(
-            ((high_est_hz - high_expected_hz) / high_expected_hz).abs() < 0.12,
-            "high-rpm audio periodicity should follow firing frequency, expected {:.1} Hz got {:.1} Hz",
-            high_expected_hz,
-            high_est_hz
-        );
-        assert!(
-            high_est_hz > low_est_hz * 2.4,
-            "audio pitch should rise strongly with rpm, low {:.1} Hz high {:.1} Hz",
-            low_est_hz,
-            high_est_hz
-        );
-    }
-
-    #[test]
-    fn audio_higher_exhaust_flow_increases_broadband_content() {
-        let sample_rate = 48_000;
-        let low_flow = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 126.0,
-                exhaust_runner_pressure_kpa: 136.0,
-                intake_runner_pressure_kpa: 94.0,
-                exhaust_wave_kpa: 1.5,
-                exhaust_runner_flow_gps: 12.0,
-                engine_speed_rpm: 2_400.0,
-                exhaust_temp_k: 920.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            1.5,
-            sample_rate,
-        );
-        let high_flow = render_engine_audio(
-            AudioParams {
-                exhaust_pressure_kpa: 126.0,
-                exhaust_runner_pressure_kpa: 148.0,
-                intake_runner_pressure_kpa: 90.0,
-                exhaust_wave_kpa: 4.5,
-                exhaust_runner_flow_gps: 52.0,
-                engine_speed_rpm: 2_400.0,
-                exhaust_temp_k: 920.0,
-                cycle_deg: 0.0,
-                output_gain: 1.0,
-            },
-            1.5,
-            sample_rate,
-        );
-        let hf_ratio = |samples: &[f32]| -> f32 {
-            let start = samples.len() / 4;
-            let window = &samples[start..];
-            let rms =
-                (window.iter().map(|v| v * v).sum::<f32>() / window.len().max(1) as f32).sqrt();
-            let diff_rms = (window
-                .windows(2)
-                .map(|w| {
-                    let dv = w[1] - w[0];
-                    dv * dv
-                })
-                .sum::<f32>()
-                / window.len().max(1) as f32)
-                .sqrt();
-            diff_rms / rms.max(1.0e-6)
-        };
-        let low_ratio = hf_ratio(&low_flow);
-        let high_ratio = hf_ratio(&high_flow);
-        assert!(
-            high_ratio > low_ratio * 1.05,
-            "higher exhaust flow should add some broadband edge content, low={low_ratio:.3} high={high_ratio:.3}"
-        );
     }
 
     #[test]
