@@ -6,8 +6,7 @@ It explains how to build, run, operate, and interpret the current GUI-centered s
 ## Terms
 
 - `GUI`: graphical user interface
-- `bench`: automated speed-hold sweep that imitates a dynamometer workflow
-- `dyno`: absorber and controller used by the bench
+- `dyno`: a dynamometer or absorber load path
 - `lambda`: air-fuel equivalence ratio
 - `VVT`: variable valve timing
 - `FHD`: full high definition, typically `1920x1080`
@@ -17,7 +16,7 @@ It explains how to build, run, operate, and interpret the current GUI-centered s
 ## Scope
 
 `ES Simulator` is a reduced-order inline-4 engine simulator with a stylized test-cell dashboard.
-It is intended for interactive transient studies, bench-style sweeps, and physically interpretable visualization.
+It is intended for interactive transient studies, physically interpretable load-response studies, and visualization.
 
 It is not:
 
@@ -48,13 +47,18 @@ The GUI is organized like a compact engine test cell.
 
 The header shows machine-state annunciators such as:
 
+- `E-STOP`
+- `INTERLOCK`
+- `DYNO EN`
+- `VENT`
+- `COOLING`
 - `RUN`
 - `FUEL`
 - `SPARK`
-- `STARTER`
-- `AUTO IDLE`
-- `WOT SEARCH`
-- `BENCH`
+- `MOTOR`
+- `FIRING`
+- `SPD CTRL`
+- `PWR LIM`
 - `ACCURACY`
 
 `ACCURACY` means the simulator is not forcing wall-clock synchronization and is instead advancing a fixed amount of simulated time per rendered frame.
@@ -63,10 +67,9 @@ The header shows machine-state annunciators such as:
 
 The left rack contains collapsible modules:
 
-- `Automation`: idle automation and WOT efficiency search
-- `Bench Sequencer`: automated dyno sweep controls
-- `Actuator Deck`: manual throttle, load, starter, spark, fuel, ignition, and VVT commands
-- `Status Bus`: runtime status, load-model mode, and solver mode
+- `Bench Console`: bench-side interlocks, dyno coupling, absorber limits, and safety state
+- `Actuator Deck`: manual throttle, `Target RPM`, spark, fuel, ignition, and VVT commands under motoring speed hold
+- `Status Bus`: runtime status, operator inputs, load-model mode, and solver mode
 - `Sensor / State Bus`: lower-level reduced-order states and closure outputs
 
 The left rack is scrollable.
@@ -77,17 +80,17 @@ Lower-priority modules are collapsible so the dashboard remains usable on FHD-cl
 The top-center display shows:
 
 - large digital readouts for speed, torque, power, trapped air, intake pressure, and indicated efficiency
-- gauges for RPM, MAP, lambda, BMEP, exhaust temperature, and combustion power
-- linear meters for throttle, load command, ignition, and VVT
+- gauges for RPM, MAP, lambda, BMEP, exhaust temperature, combustion power, and internal EGR
+- linear meters for throttle, `Target RPM`, ignition, and VVT
 
 ### Plots
 
 The center and lower areas show:
 
-- bench torque and power plots
 - cylinder `p-V`
 - cylinder `p-theta`
 - cycle-history plots for RPM, torque, and trapped air
+- `Engine Motion Schematic`: a normalized slow-motion single-cylinder cutaway showing the piston, crank, intake port, exhaust port, valve seats, and valve lift from current bore, stroke, displayed crank phase, and VVT; it freezes only when the engine is stopped
 
 The central region is scrollable when the full layout does not fit vertically.
 
@@ -97,34 +100,51 @@ The central region is scrollable when the full layout does not fit vertically.
 
 1. Start the application.
 2. Use `Throttle cmd` to request airflow.
-3. Use `Load cmd` to apply absorber or vehicle-equivalent load.
-4. Toggle `Starter`, `Spark`, and `Fuel` as needed.
-5. Adjust `Ignition`, `VVT Intake`, and `VVT Exhaust` to inspect transient response.
+3. Set `Target RPM` to the requested engine speed.
+4. Read `Required brake torque` and `Required brake power` as the resulting outputs.
+5. Toggle `Spark` and `Fuel` as needed.
+6. Adjust `Ignition`, `VVT Intake`, and `VVT Exhaust` to inspect transient response.
+
+### Operator Inputs And Outputs
+
+The primary operator inputs are:
+
+- `Throttle cmd`
+- `Target RPM`
+
+The dashboard-side speed-hold controller estimates current shaft torque, then adjusts the internal
+`load_cmd` so the machine torque drives RPM error toward zero.
+The primary outputs are:
+
+- `Required brake torque`
+- `Brake power`
+- `RPM error`
+- `Machine torque act / shaft est`
 
 ### Choosing A Load Model
 
 In `Actuator Deck`, `Load model` can be:
 
-- `Brake map`: a speed-dependent absorber torque surrogate
+- `Brake dyno`: a speed-dependent absorber torque surrogate with absorber power limit
 - `Vehicle eq.`: a road-load model reflected to engine torque and engine-side inertia
 
 `Vehicle eq.` is the default checked-in path because it gives a more interpretable transient response.
 
-### Bench Sweep
+### Bench Console Behavior
 
-`Bench Sequencer` performs an automated speed-hold sweep.
+`Bench Console` adds operator-side stand controls that are common on engine dyno consoles:
 
-1. Choose a bench mixture mode.
-2. Press `Run Bench`.
-3. The dyno controller adjusts load automatically to hold each target RPM.
-4. Brake torque and brake power are accumulated and exported.
+- `E-STOP`
+- `Dyno enable`
+- `Cell vent`
+- `Cooling cond`
 
-The latest CSV is written to:
+The GUI layout is not meant to copy any one vendor console.
+It keeps the repository's existing plots and readouts, then adds a reduced subset of bench-side switches and status indicators.
 
-- `dist/bench/bench-rich_charge_cooling-latest.csv`
-- `dist/bench/bench-lambda_one-latest.csv`
-
-depending on the selected mixture mode.
+`E-STOP` cuts throttle, spark, fuel, and speed-hold demand.
+Disabling `Dyno enable` opens the load path and zeroes the absorber command.
+Opening the bench interlock inhibits firing.
 
 ## Configuration
 
@@ -134,15 +154,13 @@ It is parsed by `AppConfig` in `src/config.rs` and checked by the plausibility a
 ### Important Sections
 
 - `environment`: ambient pressure, temperature, and base timestep
-- `engine`: displacement geometry, inertia, idle target, manifold volumes, runner dimensions
+- `engine`: displacement geometry, inertia, default target RPM, manifold volumes, runner dimensions
 - `cam`: valve event locations and durations
 - `control_defaults`: initial throttle, spark, fuel, load, and calibration commands
-- `auto_control`: idle and WOT search behavior
 - `model`: combustion, flow, friction, internal-EGR, and load closures
 - `numerics`: timestep ceilings, floors, and accuracy-target settings
 - `ui`: window size, scroll behavior, and wall-clock versus accuracy-first stepping
 - `plot`: plot histories and p-V sampling
-- `bench`: dyno sweep setup and absorber model
 
 ### Accuracy-First Mode
 
@@ -185,8 +203,9 @@ Good uses:
 
 - studying transient trends with physically interpretable controls
 - comparing load-model behavior
+- reasoning about engine-dyno interlocks and absorber limits in a reduced-order way
 - visualizing the qualitative effect of ignition and VVT changes
-- producing bench-style torque curves
+- studying load transients with `Brake dyno` and `Vehicle eq.`
 
 Poor uses:
 
@@ -198,4 +217,5 @@ Poor uses:
 
 - [../README.md](../README.md): repository overview
 - [MODEL_REFERENCE.md](MODEL_REFERENCE.md): equations, closures, implementation map, and sources
+- [BENCH_CONSOLE_REFERENCE.md](BENCH_CONSOLE_REFERENCE.md): source-backed bench-console and dyno-load reference
 - [USER_MANUAL.ja.md](USER_MANUAL.ja.md): Japanese version of this manual

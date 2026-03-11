@@ -121,6 +121,7 @@ pub(super) fn digital_readout(
 ) {
     theme.instrument_frame(accent).show(ui, |ui| {
         let card_width = width.clamp(132.0, 320.0);
+        let value_slot_width = (card_width * 0.48).clamp(72.0, 128.0);
         ui.set_min_width(card_width);
         ui.set_max_width(card_width);
         ui.label(
@@ -130,20 +131,32 @@ pub(super) fn digital_readout(
                 .size(10.5),
         );
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(value)
-                    .color(accent)
-                    .monospace()
-                    .strong()
-                    .size(24.0),
+            ui.allocate_ui_with_layout(
+                egui::vec2(value_slot_width, 28.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(value)
+                            .color(accent)
+                            .monospace()
+                            .strong()
+                            .size(24.0),
+                    );
+                },
             );
             if !unit.is_empty() {
                 ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(unit)
-                        .color(theme.text_main)
-                        .monospace()
-                        .size(11.0),
+                ui.allocate_ui_with_layout(
+                    egui::vec2(34.0, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(unit)
+                                .color(theme.text_main)
+                                .monospace()
+                                .size(11.0),
+                        );
+                    },
                 );
             }
         });
@@ -176,6 +189,7 @@ pub(super) fn metric_row(ui: &mut egui::Ui, theme: DashboardTheme, label: &str, 
 
 pub(super) fn linear_meter(ui: &mut egui::Ui, theme: DashboardTheme, spec: LinearMeterSpec<'_>) {
     let card_width = spec.width.clamp(168.0, 320.0);
+    let value_slot_width = (card_width * 0.34).clamp(64.0, 108.0);
     theme.instrument_frame(spec.accent).show(ui, |ui| {
         ui.set_min_width(card_width);
         ui.set_max_width(card_width);
@@ -187,11 +201,17 @@ pub(super) fn linear_meter(ui: &mut egui::Ui, theme: DashboardTheme, spec: Linea
                     .size(10.0),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(spec.value_text)
-                        .color(theme.text_main)
-                        .monospace()
-                        .size(10.0),
+                ui.allocate_ui_with_layout(
+                    egui::vec2(value_slot_width, 16.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(spec.value_text)
+                                .color(theme.text_main)
+                                .monospace()
+                                .size(10.0),
+                        );
+                    },
                 );
             });
         });

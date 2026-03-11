@@ -36,6 +36,14 @@ It is therefore:
 - much cheaper than CFD or a full 1D gas-dynamics solver
 - still dependent on semi-empirical closures for volumetric efficiency, combustion, heat transfer, and internal residual effects
 
+## Related Documents
+
+- [../README.md](../README.md): repository overview and document map
+- [USER_MANUAL.md](USER_MANUAL.md): GUI operation and configuration usage
+- [BENCH_CONSOLE_REFERENCE.md](BENCH_CONSOLE_REFERENCE.md): source-backed bench-console and dyno-load rationale
+- [MODEL_REFERENCE.ja.md](MODEL_REFERENCE.ja.md): Japanese version of this model reference
+- [../ENGINE_MODEL_WORKLOG.md](../ENGINE_MODEL_WORKLOG.md): chronological implementation log
+
 ## State Partition
 
 ### Differential State
@@ -72,7 +80,7 @@ They are evaluated as algebraic closures from `x` and operator inputs:
 - charge temperature
 - effective `c_p` and `gamma`
 - combustion phasing and burn duration
-- combustion, friction, pumping, starter, and load torques
+- combustion, friction, pumping, and load torques
 - `p-V` and `p-theta` display traces
 
 ## Complete ODE System Summary
@@ -95,7 +103,6 @@ u_{load} &
 \theta_{ign} &
 VVT_i &
 VVT_e &
-u_{starter} &
 u_{spark} &
 u_{fuel}
 \end{bmatrix}^{\mathsf T}
@@ -120,7 +127,7 @@ p_{er} \\
 \end{bmatrix}
 =
 \begin{bmatrix}
-\dfrac{\tau_{comb} + \tau_{starter} - \tau_{fric} - \tau_{pump} - \tau_{load}}{J_{eff}} \\
+\dfrac{\tau_{comb} - \tau_{fric} - \tau_{pump} - \tau_{load}}{J_{eff}} \\
 \omega \\
 \dfrac{R T_i}{V_{im}}\left(\dot m_{th} - \dot m_{ir}\right) \\
 \dfrac{R T_i}{V_{ir}}\left(\dot m_{ir} - \dot m_{cyl}\right) \\
@@ -146,7 +153,6 @@ The nonlinear terms are first evaluated by `Simulator::eval()`, then injected in
 J_{eff}\frac{d\omega}{dt}
 =
 \tau_{comb}
-\tau_{starter}
 - \tau_{fric}
 - \tau_{pump}
 - \tau_{load}
@@ -297,12 +303,58 @@ VE_{base}
 \operatorname{clamp}
 \left(
 VE_{rpm}
-\left(
-1 + c_{vi}VVT_i - c_{ve}VVT_e
-\right)
+M_{vvt,lin}
+M_{vvt,opt}
 VE_{th},
 VE_{min},
 VE_{max}
+\right)
+```
+
+```math
+M_{vvt,lin}
+=
+1 + c_{vi}VVT_i - c_{ve}VVT_e
+```
+
+```math
+\beta_{vvt}
+=
+\operatorname{clamp}
+\left(
+\frac{rpm-rpm_{vvt,low}}{rpm_{vvt,high}-rpm_{vvt,low}},
+0,
+1
+\right)
+```
+
+```math
+VVT_{i,opt}
+=
+(1-\beta_{vvt})VVT_{i,low}
++
+\beta_{vvt}VVT_{i,high}
+```
+
+```math
+VVT_{e,opt}
+=
+(1-\beta_{vvt})VVT_{e,low}
++
+\beta_{vvt}VVT_{e,high}
+```
+
+```math
+M_{vvt,opt}
+=
+\max\left(
+0.75,
+\left(
+1 - g_i\left(\frac{VVT_i - VVT_{i,opt}}{w_i}\right)^2
+\right)
+\left(
+1 - g_e\left(\frac{VVT_e - VVT_{e,opt}}{w_e}\right)^2
+\right)
 \right)
 ```
 
@@ -627,18 +679,36 @@ W_{cyc,cyl} = m_{fuel}LHV\eta_{th}
 
 ## External Load Models
 
-### Brake-Map Mode
+### Brake Dyno Mode
 
 ```math
 s = u_{load}^{n_{load}}
 ```
 
 ```math
-\tau_{load}
 =
 s
+\tau_{avail}
+```
+
+with
+
+```math
+\tau_{ref}
+=
 \left(
 a_0 + a_1\omega + a_2\omega^2
+\right)
+```
+
+and
+
+```math
+\tau_{avail}
+=
+\min\left(
+\tau_{ref},
+\frac{P_{abs,max}}{\omega}
 \right)
 ```
 
@@ -668,15 +738,19 @@ F_{drag} = \frac{1}{2}\rho C_d A_f v^2
 \tau_{load}
 =
 s
-\left(
+\min\left(
 \frac{\tau_w}{i_{tot}\eta_d} + \tau_{acc}
+\;,\;
+\frac{P_{abs,max}}{\omega}
 \right)
 ```
 
 ```math
 J_{load,reflected}
 =
-s\,m_{eq}\left(\frac{r_w}{i_{tot}}\right)^2
+J_{abs}
++
+|s|\,m_{eq}\left(\frac{r_w}{i_{tot}}\right)^2
 ```
 
 ## Reconstructed `p-V` And `p-theta`
@@ -724,6 +798,9 @@ IMEP = \frac{W_i}{V_{swept}}
 ## Numerical Method
 
 ### RK3
+
+This simulator uses the classical Kutta three-stage, third-order explicit Runge-Kutta formula, with Butcher tableau
+`c = [0, 1/2, 1]`, `A = [[0], [1/2], [-1, 2]]`, `b = [1/6, 4/6, 1/6]`.
 
 ```math
 k_1 = f(x_n)
@@ -807,8 +884,12 @@ Useful entry points:
   Hendricks and Sorenson, 1990; Hendricks and Vesterholm, 1992
 - Reduced-order EGR and residual-gas treatment:
   Fons et al., 1999
+- Bench-console functions and operator-side engine-dyno instrumentation:
+  HORIBA SPARC Engine; Froude Texcel V12 PRO; Froude InCell
 - Single-zone combustion framing and Wiebe-style burn law usage:
   Grau et al., 2002
+- Qualitative VVT direction used for the low-speed versus high-speed phasing surrogate:
+  Ma et al., 2001; Lee and Min, 2010; Asmus, 1985
 - Heat-release interpretation from pressure data:
   Gatowski et al., 1984
 - Heat-transfer scaling:
@@ -821,7 +902,8 @@ Useful entry points:
 What is currently defensible:
 
 - qualitative transient response to throttle, load, ignition, and VVT changes
-- bench-style torque-curve generation
+- qualitative low-speed versus high-speed VVT torque-direction trends
+- transient load-response analysis
 - physically interpretable vehicle-equivalent loading
 - reduced-order visualization of manifold, runner, and reconstructed cylinder behavior
 
@@ -850,3 +932,15 @@ What still requires calibration before claiming realism against a specific engin
 7. Rajamani, R., *Vehicle Dynamics and Control*, Springer. Book page: https://link.springer.com/book/10.1007/978-1-4614-1433-9
 
 8. Hellgren, J., and Larsson, E., "A Propulsion Energy Estimator for Road Vehicles," in *FISITA World Congress 2023*, Springer, 2024. Chapter page: https://link.springer.com/chapter/10.1007/978-3-031-70392-8_45
+
+9. Ma, T., Kuo, T.-W., Lin, C.-A., and Huang, Z.-Y., "Optimization of the Variable Valve Timing and Lift Profile for a SI Engine," SAE Technical Paper 2001-01-0247, 2001. https://doi.org/10.4271/2001-01-0247
+
+10. Lee, Y., and Min, K., "Effects of Variable Intake Valve Timing on Engine Performance in a Spark Ignition Engine," SAE Technical Paper 2010-01-1190, 2010. https://doi.org/10.4271/2010-01-1190
+
+11. Asmus, T., "Variable Valve Timing: A Valuable Means for Improving the Overall Engine Performance," SAE Technical Paper 850507, 1985. https://doi.org/10.4271/850507
+
+12. HORIBA, "SPARC Engine," official product page. https://www.horiba.com/usa/medical/products/detail/action/show/Product/sparc-95/
+
+13. Froude, "Texcel V12 PRO Controller," official product page. https://www.froudedyno.com/products/control-systems/texcel-v12-controller
+
+14. Froude, "InCell Control and Data Acquisition System," official product page. https://www.froudedyno.com/products/control-systems/incell-control-and-data-acquisition-system

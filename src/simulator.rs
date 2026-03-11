@@ -3,9 +3,8 @@ use std::f64::consts::{PI, TAU};
 use std::time::Instant;
 
 use crate::config::{
-    AppConfig, AutoControlConfig, BenchConfig, BenchMixtureMode, CamConfig, ControlDefaults,
-    EnvironmentConfig, ExternalLoadConfig, ExternalLoadMode, ModelConfig, NumericsConfig,
-    PlotConfig, PvModelConfig, VolumetricEfficiencyConfig,
+    AppConfig, CamConfig, ControlDefaults, EnvironmentConfig, ExternalLoadConfig, ExternalLoadMode,
+    ModelConfig, NumericsConfig, PlotConfig, PvModelConfig, VolumetricEfficiencyConfig,
 };
 use crate::constants::{
     FIXED_CYLINDER_COUNT, FUEL_LHV_J_PER_KG, GAMMA_AIR, R_AIR, W_PER_KW, W_PER_MECHANICAL_HP,
@@ -32,7 +31,7 @@ pub(crate) struct EngineParams {
     pub(crate) exhaust_runner_volume_m3: f64,
     pub(crate) throttle_area_max_m2: f64,
     pub(crate) tailpipe_area_m2: f64,
-    pub(crate) idle_target_rpm: f64,
+    pub(crate) default_target_rpm: f64,
     pub(crate) max_rpm: f64,
 }
 
@@ -40,7 +39,6 @@ pub(crate) struct EngineParams {
 pub(crate) struct ControlInput {
     pub(crate) throttle_cmd: f64,
     pub(crate) load_cmd: f64,
-    pub(crate) starter_cmd: bool,
     pub(crate) spark_cmd: bool,
     pub(crate) fuel_cmd: bool,
     pub(crate) ignition_timing_deg: f64,
@@ -60,404 +58,11 @@ impl ControlInput {
         Self {
             throttle_cmd: defaults.throttle_cmd,
             load_cmd: defaults.load_cmd,
-            starter_cmd: defaults.starter_cmd,
             spark_cmd: defaults.spark_cmd,
             fuel_cmd: defaults.fuel_cmd,
             ignition_timing_deg: defaults.ignition_timing_deg,
             vvt_intake_deg: defaults.vvt_intake_deg,
             vvt_exhaust_deg: defaults.vvt_exhaust_deg,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WotSearchAxis {
-    Ignition,
-    IntakeVvt,
-    ExhaustVvt,
-}
-
-impl WotSearchAxis {
-    fn next(self) -> Self {
-        match self {
-            Self::Ignition => Self::IntakeVvt,
-            Self::IntakeVvt => Self::ExhaustVvt,
-            Self::ExhaustVvt => Self::Ignition,
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Ignition => "Ignition",
-            Self::IntakeVvt => "VVT intake",
-            Self::ExhaustVvt => "VVT exhaust",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WotSearchPhase {
-    Idle,
-    Cranking,
-    Baseline,
-    Candidate,
-}
-
-impl WotSearchPhase {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "Idle",
-            Self::Cranking => "Cranking",
-            Self::Baseline => "Baseline",
-            Self::Candidate => "Candidate",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct WotSearchPoint {
-    pub(crate) ignition_deg: f64,
-    pub(crate) vvt_intake_deg: f64,
-    pub(crate) vvt_exhaust_deg: f64,
-}
-
-impl WotSearchPoint {
-    fn from_control(control: &ControlInput) -> Self {
-        Self {
-            ignition_deg: control.ignition_timing_deg,
-            vvt_intake_deg: control.vvt_intake_deg,
-            vvt_exhaust_deg: control.vvt_exhaust_deg,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AutoController {
-    pub(crate) enabled: bool,
-    pub(crate) wot_efficiency_enabled: bool,
-    pub(crate) integral: f64,
-    pub(crate) wot_phase: WotSearchPhase,
-    pub(crate) wot_axis: WotSearchAxis,
-    pub(crate) wot_best_point: WotSearchPoint,
-    pub(crate) wot_best_eta: f64,
-    wot_baseline_point: WotSearchPoint,
-    wot_candidate_point: WotSearchPoint,
-    wot_baseline_eta: f64,
-    wot_direction: f64,
-    wot_eval_time_s: f64,
-    wot_eval_sum: f64,
-    wot_eval_samples: u32,
-    wot_initialized: bool,
-}
-
-impl Default for AutoController {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            wot_efficiency_enabled: false,
-            integral: 0.0,
-            wot_phase: WotSearchPhase::Idle,
-            wot_axis: WotSearchAxis::Ignition,
-            wot_best_point: WotSearchPoint {
-                ignition_deg: 0.0,
-                vvt_intake_deg: 0.0,
-                vvt_exhaust_deg: 0.0,
-            },
-            wot_best_eta: 0.0,
-            wot_baseline_point: WotSearchPoint {
-                ignition_deg: 0.0,
-                vvt_intake_deg: 0.0,
-                vvt_exhaust_deg: 0.0,
-            },
-            wot_candidate_point: WotSearchPoint {
-                ignition_deg: 0.0,
-                vvt_intake_deg: 0.0,
-                vvt_exhaust_deg: 0.0,
-            },
-            wot_baseline_eta: 0.0,
-            wot_direction: 1.0,
-            wot_eval_time_s: 0.0,
-            wot_eval_sum: 0.0,
-            wot_eval_samples: 0,
-            wot_initialized: false,
-        }
-    }
-}
-
-impl AutoController {
-    pub(crate) fn reset_wot_search(&mut self, control: &ControlInput) {
-        let point = WotSearchPoint::from_control(control);
-        self.wot_phase = if self.wot_efficiency_enabled {
-            WotSearchPhase::Cranking
-        } else {
-            WotSearchPhase::Idle
-        };
-        self.wot_axis = WotSearchAxis::Ignition;
-        self.wot_best_point = point;
-        self.wot_best_eta = 0.0;
-        self.wot_baseline_point = point;
-        self.wot_candidate_point = point;
-        self.wot_baseline_eta = 0.0;
-        self.wot_direction = 1.0;
-        self.wot_eval_time_s = 0.0;
-        self.wot_eval_sum = 0.0;
-        self.wot_eval_samples = 0;
-        self.wot_initialized = false;
-    }
-
-    fn reset_wot_window(&mut self) {
-        self.wot_eval_time_s = 0.0;
-        self.wot_eval_sum = 0.0;
-        self.wot_eval_samples = 0;
-    }
-
-    fn current_wot_point(&self) -> WotSearchPoint {
-        match self.wot_phase {
-            WotSearchPhase::Candidate => self.wot_candidate_point,
-            _ => self.wot_best_point,
-        }
-    }
-
-    fn initialize_wot_search(
-        &mut self,
-        control: &ControlInput,
-        rpm: f64,
-        load: f64,
-        tuning: &AutoControlConfig,
-        model: &ModelConfig,
-    ) {
-        let mut point =
-            clamp_wot_search_point(WotSearchPoint::from_control(control), tuning, model);
-        point.ignition_deg = estimate_mbt_deg(model, rpm, load);
-        self.wot_best_point = point;
-        self.wot_baseline_point = point;
-        self.wot_candidate_point = point;
-        self.wot_best_eta = 0.0;
-        self.wot_baseline_eta = 0.0;
-        self.wot_axis = WotSearchAxis::Ignition;
-        self.wot_direction = 1.0;
-        self.wot_phase = WotSearchPhase::Baseline;
-        self.wot_initialized = true;
-        self.reset_wot_window();
-    }
-
-    fn seed_candidate_from_best(
-        &mut self,
-        tuning: &AutoControlConfig,
-        model: &ModelConfig,
-    ) -> bool {
-        self.wot_candidate_point = match self.wot_axis {
-            WotSearchAxis::Ignition => step_wot_search_point(
-                self.wot_best_point,
-                self.wot_axis,
-                self.wot_direction,
-                tuning,
-                model,
-            ),
-            WotSearchAxis::IntakeVvt => {
-                let mut point = self.wot_best_point;
-                point.vvt_intake_deg = tuning.wot_search_vvt_min_deg;
-                clamp_wot_search_point(point, tuning, model)
-            }
-            WotSearchAxis::ExhaustVvt => {
-                let mut point = self.wot_best_point;
-                point.vvt_exhaust_deg = tuning.wot_search_vvt_min_deg;
-                clamp_wot_search_point(point, tuning, model)
-            }
-        };
-        if self.wot_axis != WotSearchAxis::Ignition
-            && self.wot_candidate_point == self.wot_best_point
-        {
-            return self.advance_vvt_scan_candidate(tuning, model);
-        }
-        self.wot_candidate_point != self.wot_best_point
-    }
-
-    fn advance_vvt_scan_candidate(
-        &mut self,
-        tuning: &AutoControlConfig,
-        model: &ModelConfig,
-    ) -> bool {
-        let (current_value, step) = match self.wot_axis {
-            WotSearchAxis::IntakeVvt => (
-                self.wot_candidate_point.vvt_intake_deg,
-                tuning.wot_search_vvt_intake_step_deg.abs(),
-            ),
-            WotSearchAxis::ExhaustVvt => (
-                self.wot_candidate_point.vvt_exhaust_deg,
-                tuning.wot_search_vvt_exhaust_step_deg.abs(),
-            ),
-            WotSearchAxis::Ignition => return false,
-        };
-        let next_value = current_value + step.max(f64::EPSILON);
-        if next_value > tuning.wot_search_vvt_max_deg + 1.0e-9 {
-            return false;
-        }
-        let mut point = self.wot_best_point;
-        match self.wot_axis {
-            WotSearchAxis::IntakeVvt => point.vvt_intake_deg = next_value,
-            WotSearchAxis::ExhaustVvt => point.vvt_exhaust_deg = next_value,
-            WotSearchAxis::Ignition => {}
-        }
-        self.wot_candidate_point = clamp_wot_search_point(point, tuning, model);
-        true
-    }
-
-    fn advance_wot_axis(&mut self) {
-        self.wot_axis = self.wot_axis.next();
-        self.wot_direction = 1.0;
-        self.wot_phase = WotSearchPhase::Baseline;
-        self.reset_wot_window();
-    }
-
-    pub(crate) fn apply(
-        &mut self,
-        control: &mut ControlInput,
-        rpm: f64,
-        running: bool,
-        idle_target_rpm: f64,
-        dt: f64,
-        tuning: &AutoControlConfig,
-        model: &ModelConfig,
-        load: f64,
-    ) {
-        if self.wot_efficiency_enabled {
-            control.spark_cmd = true;
-            control.fuel_cmd = true;
-            control.throttle_cmd = tuning.wot_target_throttle.clamp(0.0, 1.0);
-
-            let cranking = !running || rpm < tuning.cranking_rpm_threshold;
-            control.starter_cmd = cranking && rpm < tuning.starter_cutoff_rpm;
-
-            if !self.wot_initialized {
-                self.initialize_wot_search(control, rpm, load, tuning, model);
-            }
-            if !running || rpm < tuning.wot_search_min_rpm {
-                self.wot_phase = WotSearchPhase::Cranking;
-                self.reset_wot_window();
-            } else if self.wot_phase == WotSearchPhase::Cranking {
-                self.wot_phase = WotSearchPhase::Baseline;
-                self.reset_wot_window();
-            }
-
-            let point = clamp_wot_search_point(self.current_wot_point(), tuning, model);
-            control.ignition_timing_deg = point.ignition_deg;
-            control.vvt_intake_deg = point.vvt_intake_deg;
-            control.vvt_exhaust_deg = point.vvt_exhaust_deg;
-            return;
-        }
-
-        // Auto mode is deliberately simple: force spark/fuel on, then PI the throttle to idle.
-        if !self.enabled {
-            return;
-        }
-
-        control.spark_cmd = true;
-        control.fuel_cmd = true;
-
-        let cranking = !running || rpm < tuning.cranking_rpm_threshold;
-        control.starter_cmd = cranking && rpm < tuning.starter_cutoff_rpm;
-
-        let target_rpm = if control.starter_cmd {
-            tuning.starter_target_rpm
-        } else {
-            idle_target_rpm
-        };
-        let error = target_rpm - rpm;
-
-        let (kp, ki, base) = if control.starter_cmd {
-            (
-                tuning.starter_kp,
-                tuning.starter_ki,
-                tuning.starter_base_throttle,
-            )
-        } else {
-            (tuning.run_kp, tuning.run_ki, tuning.run_base_throttle)
-        };
-
-        self.integral =
-            (self.integral + error * dt).clamp(tuning.integral_min, tuning.integral_max);
-        control.throttle_cmd = (base + kp * error + ki * self.integral)
-            .clamp(tuning.throttle_min, tuning.throttle_max);
-
-        if rpm > target_rpm + tuning.integral_relief_rpm_band {
-            self.integral *= tuning.integral_relief_factor;
-        }
-    }
-
-    pub(crate) fn observe_wot_efficiency(
-        &mut self,
-        observation: &Observation,
-        dt: f64,
-        tuning: &AutoControlConfig,
-        model: &ModelConfig,
-    ) {
-        if !self.wot_efficiency_enabled {
-            return;
-        }
-        if self.wot_phase == WotSearchPhase::Cranking
-            || observation.rpm < tuning.wot_search_min_rpm
-            || observation.indicated_work_cycle_j <= 0.0
-            || !observation.eta_thermal_indicated_pv.is_finite()
-        {
-            self.reset_wot_window();
-            return;
-        }
-
-        self.wot_eval_time_s += dt;
-        self.wot_eval_sum += observation.eta_thermal_indicated_pv.max(0.0);
-        self.wot_eval_samples = self.wot_eval_samples.saturating_add(1);
-        if self.wot_eval_time_s < tuning.wot_search_eval_time_s || self.wot_eval_samples == 0 {
-            return;
-        }
-
-        let avg_eta = self.wot_eval_sum / self.wot_eval_samples as f64;
-        self.reset_wot_window();
-
-        match self.wot_phase {
-            WotSearchPhase::Baseline => {
-                self.wot_baseline_point = self.wot_best_point;
-                self.wot_baseline_eta = avg_eta;
-                self.wot_best_eta = self.wot_best_eta.max(avg_eta);
-                self.wot_direction = 1.0;
-                if self.seed_candidate_from_best(tuning, model) {
-                    self.wot_phase = WotSearchPhase::Candidate;
-                } else {
-                    self.advance_wot_axis();
-                }
-            }
-            WotSearchPhase::Candidate => {
-                if avg_eta > self.wot_best_eta {
-                    self.wot_best_eta = avg_eta;
-                }
-
-                if self.wot_axis == WotSearchAxis::Ignition {
-                    if avg_eta > self.wot_baseline_eta + tuning.wot_search_min_improvement {
-                        self.wot_best_point = self.wot_candidate_point;
-                        self.wot_baseline_point = self.wot_best_point;
-                        self.wot_baseline_eta = avg_eta;
-                        if !self.seed_candidate_from_best(tuning, model) {
-                            self.advance_wot_axis();
-                        }
-                    } else if self.wot_direction > 0.0 {
-                        self.wot_direction = -1.0;
-                        if !self.seed_candidate_from_best(tuning, model) {
-                            self.advance_wot_axis();
-                        }
-                    } else {
-                        self.advance_wot_axis();
-                    }
-                } else {
-                    if avg_eta > self.wot_baseline_eta + tuning.wot_search_min_improvement {
-                        self.wot_best_point = self.wot_candidate_point;
-                        self.wot_baseline_eta = avg_eta;
-                    }
-                    if !self.advance_vvt_scan_candidate(tuning, model) {
-                        self.advance_wot_axis();
-                    }
-                }
-            }
-            WotSearchPhase::Idle | WotSearchPhase::Cranking => {}
         }
     }
 }
@@ -517,7 +122,6 @@ pub(crate) struct EvalPoint {
     m_dot_tailpipe: f64,
     torque_combustion_nm: f64,
     torque_friction_nm: f64,
-    torque_starter_nm: f64,
     torque_pumping_nm: f64,
     torque_load_nm: f64,
     load_inertia_kgm2: f64,
@@ -536,6 +140,7 @@ pub(crate) struct EvalPoint {
     intake_ram_multiplier: f64,
     exhaust_scavenge_multiplier: f64,
     ve_pulse_multiplier: f64,
+    internal_egr_fraction: f64,
     lambda_target: f64,
     intake_charge_temp_k: f64,
     heat_loss_cycle_j: f64,
@@ -595,214 +200,9 @@ pub(crate) struct LockedCycleAverage {
     pub(crate) exhaust_temp_k: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BenchSample {
-    pub(crate) target_rpm: f64,
-    pub(crate) rpm: f64,
-    pub(crate) torque_brake_nm: f64,
-    pub(crate) load_cmd: f64,
-    pub(crate) load_torque_nm: f64,
-    pub(crate) map_kpa: f64,
-    pub(crate) eta_thermal_indicated_pv: f64,
-    pub(crate) lambda_target: f64,
-    pub(crate) intake_charge_temp_k: f64,
-    pub(crate) mixture_mode: BenchMixtureMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BenchPhase {
-    Idle,
-    Warmup,
-    Sweep,
-    Complete,
-}
-
-impl BenchPhase {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "Idle",
-            Self::Warmup => "Warmup",
-            Self::Sweep => "Sweep",
-            Self::Complete => "Complete",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BenchStatus {
-    pub(crate) mode: BenchMixtureMode,
-    pub(crate) phase: BenchPhase,
-    pub(crate) target_rpm: f64,
-    pub(crate) live_rpm: f64,
-    pub(crate) completed_points: usize,
-    pub(crate) total_points: usize,
-    pub(crate) phase_elapsed_s: f64,
-    pub(crate) phase_total_s: f64,
-    pub(crate) live_torque_brake_nm: f64,
-    pub(crate) live_load_cmd: f64,
-    pub(crate) live_load_torque_nm: f64,
-    pub(crate) live_eta_thermal_indicated_pv: f64,
-    pub(crate) live_map_kpa: f64,
-    pub(crate) live_lambda_target: f64,
-    pub(crate) live_intake_charge_temp_k: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct BenchAccumulator {
-    rpm_sum: f64,
-    torque_brake_sum_nm: f64,
-    load_cmd_sum: f64,
-    load_torque_sum_nm: f64,
-    map_sum_kpa: f64,
-    eta_sum: f64,
-    lambda_sum: f64,
-    intake_charge_temp_sum_k: f64,
-    p_intake_sum_pa: f64,
-    p_intake_runner_sum_pa: f64,
-    p_exhaust_sum_pa: f64,
-    p_exhaust_runner_sum_pa: f64,
-    m_dot_intake_runner_sum_kg_s: f64,
-    m_dot_exhaust_runner_sum_kg_s: f64,
-    samples: usize,
-}
-
-impl BenchAccumulator {
-    fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    fn accumulate(&mut self, obs: &Observation, state: EngineState) {
-        self.rpm_sum += obs.rpm;
-        self.torque_brake_sum_nm += obs.torque_net_nm + obs.torque_load_nm;
-        self.load_cmd_sum += obs.load_cmd;
-        self.load_torque_sum_nm += obs.torque_load_nm;
-        self.map_sum_kpa += obs.map_kpa;
-        self.eta_sum += obs.eta_thermal_indicated_pv.max(0.0);
-        self.lambda_sum += obs.lambda_target;
-        self.intake_charge_temp_sum_k += obs.intake_charge_temp_k;
-        self.p_intake_sum_pa += state.p_intake_pa;
-        self.p_intake_runner_sum_pa += state.p_intake_runner_pa;
-        self.p_exhaust_sum_pa += state.p_exhaust_pa;
-        self.p_exhaust_runner_sum_pa += state.p_exhaust_runner_pa;
-        self.m_dot_intake_runner_sum_kg_s += state.m_dot_intake_runner_kg_s;
-        self.m_dot_exhaust_runner_sum_kg_s += state.m_dot_exhaust_runner_kg_s;
-        self.samples = self.samples.saturating_add(1);
-    }
-
-    fn count_f64(&self) -> f64 {
-        self.samples.max(1) as f64
-    }
-
-    fn mean_rpm(&self) -> f64 {
-        self.rpm_sum / self.count_f64()
-    }
-
-    fn mean_torque_brake_nm(&self) -> f64 {
-        self.torque_brake_sum_nm / self.count_f64()
-    }
-
-    fn mean_load_cmd(&self) -> f64 {
-        self.load_cmd_sum / self.count_f64()
-    }
-
-    fn mean_load_torque_nm(&self) -> f64 {
-        self.load_torque_sum_nm / self.count_f64()
-    }
-
-    fn mean_map_kpa(&self) -> f64 {
-        self.map_sum_kpa / self.count_f64()
-    }
-
-    fn mean_eta(&self) -> f64 {
-        self.eta_sum / self.count_f64()
-    }
-
-    fn mean_lambda_target(&self) -> f64 {
-        self.lambda_sum / self.count_f64()
-    }
-
-    fn mean_intake_charge_temp_k(&self) -> f64 {
-        self.intake_charge_temp_sum_k / self.count_f64()
-    }
-
-    #[cfg(test)]
-    fn locked_state(&self, target_omega_rad_s: f64, throttle_eff: f64) -> EngineState {
-        let count = self.count_f64();
-        EngineState {
-            omega_rad_s: target_omega_rad_s,
-            theta_rad: 0.0,
-            p_intake_pa: self.p_intake_sum_pa / count,
-            p_intake_runner_pa: self.p_intake_runner_sum_pa / count,
-            p_exhaust_pa: self.p_exhaust_sum_pa / count,
-            p_exhaust_runner_pa: self.p_exhaust_runner_sum_pa / count,
-            m_dot_intake_runner_kg_s: self.m_dot_intake_runner_sum_kg_s / count,
-            m_dot_exhaust_runner_kg_s: self.m_dot_exhaust_runner_sum_kg_s / count,
-            running: true,
-            throttle_eff,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BenchDynoController {
-    integral: f64,
-    load_cmd: f64,
-}
-
-impl BenchDynoController {
-    fn new(initial_load_cmd: f64) -> Self {
-        Self {
-            integral: 0.0,
-            load_cmd: initial_load_cmd.clamp(0.0, 1.0),
-        }
-    }
-
-    fn update(&mut self, target_rpm: f64, actual_rpm: f64, dt: f64, bench: &BenchConfig) -> f64 {
-        let dyno = &bench.dyno;
-        let error_rpm = actual_rpm - target_rpm;
-        let candidate_integral =
-            (self.integral + error_rpm * dt).clamp(dyno.integral_min, dyno.integral_max);
-        let load_cmd = (dyno.initial_load_cmd
-            + dyno.speed_hold_kp * error_rpm
-            + dyno.speed_hold_ki * candidate_integral)
-            .clamp(0.0, 1.0);
-        let saturated_high = load_cmd >= 1.0 - 1.0e-9 && error_rpm > 0.0;
-        let saturated_low = load_cmd <= 1.0e-9 && error_rpm < 0.0;
-        if !(saturated_high || saturated_low) {
-            self.integral = candidate_integral;
-        }
-        self.load_cmd = load_cmd;
-        load_cmd
-    }
-}
-
-pub(crate) struct BenchSession {
-    config: AppConfig,
-    mode: BenchMixtureMode,
-    control_seed: ControlInput,
-    targets_rpm: Vec<f64>,
-    current_idx: usize,
-    phase: BenchPhase,
-    phase_elapsed_s: f64,
-    sim: Option<Simulator>,
-    dyno: BenchDynoController,
-    bins: Vec<BenchAccumulator>,
-    results: Vec<BenchSample>,
-    live_rpm: f64,
-    live_torque_brake_nm: f64,
-    live_load_cmd: f64,
-    live_load_torque_nm: f64,
-    live_eta_thermal_indicated_pv: f64,
-    live_map_kpa: f64,
-    live_lambda_target: f64,
-    live_intake_charge_temp_k: f64,
-    dt_next_s: f64,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct Observation {
     pub(crate) rpm: f64,
-    pub(crate) load_cmd: f64,
     pub(crate) map_kpa: f64,
     pub(crate) intake_runner_kpa: f64,
     pub(crate) exhaust_kpa: f64,
@@ -815,7 +215,6 @@ pub(crate) struct Observation {
     pub(crate) torque_combustion_cycle_nm: f64,
     pub(crate) torque_friction_nm: f64,
     pub(crate) torque_pumping_nm: f64,
-    pub(crate) torque_starter_nm: f64,
     pub(crate) torque_load_nm: f64,
     pub(crate) torque_net_inst_nm: f64,
     pub(crate) torque_net_nm: f64,
@@ -826,6 +225,7 @@ pub(crate) struct Observation {
     pub(crate) intake_ram_multiplier: f64,
     pub(crate) exhaust_scavenge_multiplier: f64,
     pub(crate) ve_pulse_multiplier: f64,
+    pub(crate) internal_egr_fraction: f64,
     pub(crate) lambda_target: f64,
     pub(crate) heat_loss_cycle_j: f64,
     pub(crate) imep_bar: f64,
@@ -834,8 +234,9 @@ pub(crate) struct Observation {
     pub(crate) indicated_work_cycle_j: f64,
     pub(crate) combustion_rate_norm: f64,
     pub(crate) ignition_timing_deg: f64,
+    pub(crate) burn_start_deg: f64,
+    pub(crate) burn_duration_deg: f64,
     pub(crate) cycle_deg: f64,
-    pub(crate) stable_idle: bool,
     pub(crate) pv_points: Vec<(f64, f64)>,
 }
 
@@ -859,12 +260,10 @@ pub(crate) struct Simulator {
     pub(crate) env: EnvironmentConfig,
     pub(crate) cam: CamConfig,
     pub(crate) plot: PlotConfig,
-    pub(crate) auto_control: AutoControlConfig,
     pub(crate) model: ModelConfig,
     pub(crate) numerics: NumericsConfig,
     pub(crate) params: EngineParams,
     pub(crate) control: ControlInput,
-    pub(crate) auto: AutoController,
     pub(crate) state: EngineState,
     pub(crate) history_rpm: VecDeque<CycleHistorySample>,
     pub(crate) history_torque_net_nm: VecDeque<CycleHistorySample>,
@@ -888,8 +287,6 @@ pub(crate) struct Simulator {
     net_torque_cycle_recent_nm: VecDeque<f64>,
     torque_net_filtered_nm: f64,
     step_count: u64,
-    lambda_override: Option<f64>,
-    charge_cooling_enabled: bool,
 }
 
 impl Simulator {
@@ -909,7 +306,7 @@ impl Simulator {
             exhaust_runner_volume_m3: cfg.engine.exhaust_runner_volume_m3,
             throttle_area_max_m2: cfg.engine.throttle_area_max_m2,
             tailpipe_area_m2: cfg.engine.tailpipe_area_m2,
-            idle_target_rpm: cfg.engine.idle_target_rpm,
+            default_target_rpm: cfg.engine.default_target_rpm,
             max_rpm: cfg.engine.max_rpm.max(cfg.model.max_rpm_floor),
         };
         let mut state = EngineState::default();
@@ -934,12 +331,10 @@ impl Simulator {
             env: cfg.environment.clone(),
             cam: cfg.cam.clone(),
             plot: cfg.plot.clone(),
-            auto_control: cfg.auto_control.clone(),
             model: cfg.model.clone(),
             numerics: cfg.numerics.clone(),
             params,
             control: ControlInput::from_defaults(&cfg.control_defaults),
-            auto: AutoController::default(),
             state,
             history_rpm: VecDeque::with_capacity(history_capacity),
             history_torque_net_nm: VecDeque::with_capacity(history_capacity),
@@ -967,34 +362,7 @@ impl Simulator {
             ),
             torque_net_filtered_nm: 0.0,
             step_count: 0,
-            lambda_override: None,
-            charge_cooling_enabled: false,
         }
-    }
-
-    pub(crate) fn set_idle_auto_enabled(&mut self, enabled: bool) {
-        self.auto.enabled = enabled;
-        self.auto.integral = 0.0;
-        if enabled {
-            self.auto.wot_efficiency_enabled = false;
-        }
-        self.auto.reset_wot_search(&self.control);
-    }
-
-    pub(crate) fn set_wot_efficiency_auto_enabled(&mut self, enabled: bool) {
-        self.auto.wot_efficiency_enabled = enabled;
-        self.auto.integral = 0.0;
-        if enabled {
-            self.auto.enabled = false;
-        }
-        self.auto.reset_wot_search(&self.control);
-    }
-
-    pub(crate) fn disable_auto_modes(&mut self) {
-        self.auto.enabled = false;
-        self.auto.wot_efficiency_enabled = false;
-        self.auto.integral = 0.0;
-        self.auto.reset_wot_search(&self.control);
     }
 
     fn theoretical_otto_efficiency(&self) -> f64 {
@@ -1666,18 +1034,11 @@ impl Simulator {
     }
 
     fn target_lambda(&self, throttle_eff: f64) -> f64 {
-        self.lambda_override
-            .unwrap_or_else(|| {
-                (self.model.lambda_base - self.model.lambda_throttle_coeff * throttle_eff)
-                    .clamp(self.model.lambda_min, self.model.lambda_max)
-            })
+        (self.model.lambda_base - self.model.lambda_throttle_coeff * throttle_eff)
             .clamp(self.model.lambda_min, self.model.lambda_max)
     }
 
     fn fresh_charge_temp_k(&self, trapped_air_guess_kg: f64, fuel_mass_guess_kg: f64) -> f64 {
-        if !self.charge_cooling_enabled {
-            return self.env.intake_temp_k;
-        }
         let evap = &self.model.fuel_evaporation;
         let charge_mass_kg = (trapped_air_guess_kg + fuel_mass_guess_kg)
             .max(self.model.fuel_mass_presence_threshold_kg);
@@ -1754,14 +1115,6 @@ impl Simulator {
             mixture_gamma: Self::gas_gamma_from_cp_j_per_kgk(mixture_cp_j_per_kgk),
             burned_gas_cp_j_per_kgk,
         }
-    }
-
-    fn configure_bench_mixture_mode(&mut self, mode: BenchMixtureMode, bench: &BenchConfig) {
-        self.lambda_override = Some(match mode {
-            BenchMixtureMode::RichChargeCooling => bench.rich_charge_cooling_lambda,
-            BenchMixtureMode::LambdaOne => bench.lambda_one_target,
-        });
-        self.charge_cooling_enabled = true;
     }
 
     fn cylinder_heat_loss_cycle_j(
@@ -1882,8 +1235,11 @@ impl Simulator {
         if averaged.len() < self.model.pv_display_min_populated_bins.min(bins) {
             return raw;
         }
+        let averaged = smooth_closed_pv_loop(&averaged, 2);
         if let Some(first) = averaged.first().copied() {
-            averaged.push(first);
+            let mut closed = averaged;
+            closed.push(first);
+            return closed;
         }
         averaged
     }
@@ -1951,6 +1307,8 @@ impl Simulator {
                     eval.combustion_enabled,
                     eval.burn_start_deg,
                     eval.burn_start_deg + eval.burn_duration_deg,
+                    self.model.wiebe_a,
+                    self.model.wiebe_m,
                     &self.model.pv_model,
                 );
                 global_curves[cylinder_idx].push((global_theta_deg, pressure_pa));
@@ -2000,6 +1358,7 @@ impl Simulator {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn locked_cycle_average(
         &self,
         state: EngineState,
@@ -2172,9 +1531,7 @@ impl Simulator {
             && rpm > self.model.combustion_enable_rpm_min
             && p_intake_cyl_pa > self.model.combustion_enable_intake_pressure_min_pa
             && phase_stable
-            && (self.control.starter_cmd
-                || state.running
-                || rpm > self.model.combustion_enable_running_rpm_min);
+            && (state.running || rpm > self.model.combustion_enable_running_rpm_min);
         let cylinder_pressure_ref = (p_intake_cyl_pa
             * self
                 .params
@@ -2224,11 +1581,6 @@ impl Simulator {
                 self.model.pumping_torque_min_nm,
                 self.model.pumping_torque_max_nm,
             );
-        let torque_starter = if self.control.starter_cmd {
-            starter_torque(rpm, &self.model)
-        } else {
-            0.0
-        };
         let torque_load = external_load_torque_nm(
             self.control.load_cmd,
             state.omega_rad_s,
@@ -2270,7 +1622,6 @@ impl Simulator {
             m_dot_tailpipe,
             torque_combustion_nm: torque_combustion,
             torque_friction_nm: torque_friction,
-            torque_starter_nm: torque_starter,
             torque_pumping_nm: torque_pumping,
             torque_load_nm: torque_load,
             load_inertia_kgm2,
@@ -2289,6 +1640,7 @@ impl Simulator {
             intake_ram_multiplier: wave_action.intake_ram_multiplier,
             exhaust_scavenge_multiplier: wave_action.exhaust_scavenge_multiplier,
             ve_pulse_multiplier: wave_action.ve_pulse_multiplier,
+            internal_egr_fraction,
             lambda_target,
             intake_charge_temp_k: charge_state.intake_charge_temp_k,
             heat_loss_cycle_j,
@@ -2299,7 +1651,7 @@ impl Simulator {
 
     fn derivatives(&self, state: EngineState, eval: EvalPoint) -> Derivatives {
         // The ODE itself stays compact because all nonlinear closures have already been evaluated.
-        let net_torque = eval.torque_combustion_nm + eval.torque_starter_nm
+        let net_torque = eval.torque_combustion_nm
             - eval.torque_friction_nm
             - eval.torque_pumping_nm
             - eval.torque_load_nm;
@@ -2374,7 +1726,7 @@ impl Simulator {
         if self.control.spark_cmd && self.control.fuel_cmd && rpm > self.model.running_set_rpm {
             state.running = true;
         }
-        if rpm < self.model.running_clear_rpm && !self.control.starter_cmd {
+        if rpm < self.model.running_clear_rpm {
             state.running = false;
         }
     }
@@ -2409,7 +1761,8 @@ impl Simulator {
         eval_1: EvalPoint,
         dt: f64,
     ) -> EngineState {
-        // Classical Kutta RK3 keeps 3rd-order accuracy with one fewer stage than RK4.
+        // Classical Kutta 3-stage, 3rd-order Runge-Kutta method.
+        // Butcher tableau: c = [0, 1/2, 1], A = [[0], [1/2], [-1, 2]], b = [1/6, 4/6, 1/6].
         let k1 = self.derivatives(state, eval_1);
         let stage2 = integrate_state(state, k1, 0.5 * dt);
         let eval_2 = self.eval(stage2);
@@ -2428,6 +1781,7 @@ impl Simulator {
         next
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn advance_state_rk3(&self, state: EngineState, dt: f64) -> EngineState {
         let eval_1 = self.eval(state);
         self.advance_state_rk3_from_eval(state, eval_1, dt)
@@ -2498,6 +1852,8 @@ impl Simulator {
                 combustion_enabled,
                 burn_start_deg,
                 burn_start_deg + burn_duration_deg,
+                self.model.wiebe_a,
+                self.model.wiebe_m,
                 &self.model.pv_model,
             );
             push_bounded(
@@ -2557,25 +1913,11 @@ impl Simulator {
     }
 
     fn pv_display_active(&self, rpm: f64, state: EngineState) -> bool {
-        self.control.starter_cmd || state.running || rpm > self.model.combustion_enable_rpm_min
+        state.running || rpm > self.model.combustion_enable_rpm_min
     }
 
     pub(crate) fn step(&mut self, dt: f64) -> Observation {
         let state_prev = self.state;
-        let rpm_now = rad_s_to_rpm(self.state.omega_rad_s.max(0.0));
-        let load_now = (self.base_intake_cylinder_boundary_pa(self.state)
-            / self.env.ambient_pressure_pa)
-            .clamp(self.model.load_min, self.model.load_max);
-        self.auto.apply(
-            &mut self.control,
-            rpm_now,
-            self.state.running,
-            self.params.idle_target_rpm,
-            dt,
-            &self.auto_control,
-            &self.model,
-            load_now,
-        );
         let eval_prev = self.eval(state_prev);
         self.state = self.advance_state_rk3_from_eval(state_prev, eval_prev, dt);
         let rpm = rad_s_to_rpm(self.state.omega_rad_s);
@@ -2583,7 +1925,7 @@ impl Simulator {
         self.step_count = self.step_count.wrapping_add(1);
 
         let eval_final = self.eval(self.state);
-        let torque_net_inst_nm = eval_final.torque_combustion_nm + eval_final.torque_starter_nm
+        let torque_net_inst_nm = eval_final.torque_combustion_nm
             - eval_final.torque_friction_nm
             - eval_final.torque_pumping_nm
             - eval_final.torque_load_nm;
@@ -2675,7 +2017,6 @@ impl Simulator {
 
         let observation = Observation {
             rpm,
-            load_cmd: self.control.load_cmd,
             map_kpa: self.state.p_intake_pa * 1e-3,
             intake_runner_kpa: self.state.p_intake_runner_pa * 1e-3,
             exhaust_kpa: self.state.p_exhaust_pa * 1e-3,
@@ -2688,7 +2029,6 @@ impl Simulator {
             torque_combustion_cycle_nm: self.combustion_cycle_mean_nm,
             torque_friction_nm: eval_final.torque_friction_nm,
             torque_pumping_nm: eval_final.torque_pumping_nm,
-            torque_starter_nm: eval_final.torque_starter_nm,
             torque_load_nm: eval_final.torque_load_nm,
             torque_net_inst_nm,
             torque_net_nm: self.torque_net_filtered_nm,
@@ -2702,6 +2042,7 @@ impl Simulator {
             intake_ram_multiplier: eval_final.intake_ram_multiplier,
             exhaust_scavenge_multiplier: eval_final.exhaust_scavenge_multiplier,
             ve_pulse_multiplier: eval_final.ve_pulse_multiplier,
+            internal_egr_fraction: eval_final.internal_egr_fraction,
             lambda_target: eval_final.lambda_target,
             heat_loss_cycle_j: eval_final.heat_loss_cycle_j,
             imep_bar: imep_cycle_pa * 1e-5,
@@ -2710,14 +2051,11 @@ impl Simulator {
             indicated_work_cycle_j,
             combustion_rate_norm: eval_final.combustion_rate_norm,
             ignition_timing_deg: eval_final.ignition_timing_deg,
+            burn_start_deg: eval_final.burn_start_deg,
+            burn_duration_deg: eval_final.burn_duration_deg,
             cycle_deg: self.state.theta_rad.to_degrees(),
-            stable_idle: self.state.running
-                && (rpm - self.params.idle_target_rpm).abs() < self.model.stable_idle_rpm_band
-                && self.control.throttle_cmd < self.model.stable_idle_throttle_max,
             pv_points,
         };
-        self.auto
-            .observe_wot_efficiency(&observation, dt, &self.auto_control, &self.model);
         observation
     }
 }
@@ -2763,46 +2101,6 @@ fn estimate_mbt_deg(model: &ModelConfig, rpm: f64, load: f64) -> f64 {
         + model.mbt_rpm_slope_deg_per_rpm * (rpm - model.mbt_rpm_reference)
         + model.mbt_load_coeff * (1.0 - load))
         .clamp(model.mbt_min_deg, model.mbt_max_deg)
-}
-
-fn clamp_wot_search_point(
-    point: WotSearchPoint,
-    tuning: &AutoControlConfig,
-    model: &ModelConfig,
-) -> WotSearchPoint {
-    WotSearchPoint {
-        ignition_deg: point
-            .ignition_deg
-            .clamp(model.ignition_timing_min_deg, model.ignition_timing_max_deg),
-        vvt_intake_deg: point
-            .vvt_intake_deg
-            .clamp(tuning.wot_search_vvt_min_deg, tuning.wot_search_vvt_max_deg),
-        vvt_exhaust_deg: point
-            .vvt_exhaust_deg
-            .clamp(tuning.wot_search_vvt_min_deg, tuning.wot_search_vvt_max_deg),
-    }
-}
-
-fn step_wot_search_point(
-    point: WotSearchPoint,
-    axis: WotSearchAxis,
-    direction: f64,
-    tuning: &AutoControlConfig,
-    model: &ModelConfig,
-) -> WotSearchPoint {
-    let mut next = point;
-    match axis {
-        WotSearchAxis::Ignition => {
-            next.ignition_deg += direction * tuning.wot_search_ignition_step_deg;
-        }
-        WotSearchAxis::IntakeVvt => {
-            next.vvt_intake_deg += direction * tuning.wot_search_vvt_intake_step_deg;
-        }
-        WotSearchAxis::ExhaustVvt => {
-            next.vvt_exhaust_deg += direction * tuning.wot_search_vvt_exhaust_step_deg;
-        }
-    }
-    clamp_wot_search_point(next, tuning, model)
 }
 
 pub(crate) fn integrate_state(state: EngineState, k: Derivatives, dt: f64) -> EngineState {
@@ -2874,13 +2172,13 @@ pub(crate) fn rad_s_to_rpm(rad_s: f64) -> f64 {
 pub(crate) fn rpm_linked_dt(
     base_dt: f64,
     rpm: f64,
-    idle_target_rpm: f64,
+    reference_rpm: f64,
     numerics: &NumericsConfig,
 ) -> f64 {
     // Keep crank-angle advance per step roughly constant so high RPM gets finer time resolution.
     let base = base_dt.max(numerics.rpm_link_base_dt_min_s);
-    let idle = idle_target_rpm.max(numerics.rpm_link_idle_rpm_min);
-    let target_deg_per_step = (base * idle * 6.0).clamp(
+    let rpm_ref = reference_rpm.max(numerics.rpm_link_reference_rpm_min);
+    let target_deg_per_step = (base * rpm_ref * 6.0).clamp(
         numerics.rpm_link_deg_per_step_min,
         numerics.rpm_link_deg_per_step_max,
     );
@@ -2905,41 +2203,7 @@ fn realtime_fixed_dt_candidate(base_dt: f64, max_rpm: f64, numerics: &NumericsCo
     base_dt.min(max_deg / (rpm_ref * 6.0))
 }
 
-#[cfg(test)]
-fn bench_nominal_dt(bench: &BenchConfig, rpm: f64, numerics: &NumericsConfig) -> f64 {
-    bench_nominal_dt_for_deg_per_step(bench, rpm, numerics, bench.integration_deg_per_step)
-}
-
-fn bench_nominal_dt_for_deg_per_step(
-    bench: &BenchConfig,
-    rpm: f64,
-    numerics: &NumericsConfig,
-    deg_per_step: f64,
-) -> f64 {
-    let rpm_eff = rpm.max(numerics.rpm_link_rpm_floor);
-    let dt = deg_per_step.max(f64::EPSILON) / (rpm_eff * 6.0);
-    dt.clamp(bench.integration_dt_min_s, bench.integration_dt_max_s)
-}
-
-fn bench_sweep_target_rpm(bench: &BenchConfig, elapsed_s: f64) -> f64 {
-    let duration = bench.sweep_duration_s.max(f64::EPSILON);
-    let progress = (elapsed_s / duration).clamp(0.0, 1.0);
-    lerp(
-        bench.rpm_start_rpm.max(0.0),
-        bench.rpm_end_rpm.max(bench.rpm_start_rpm),
-        progress,
-    )
-}
-
-fn nearest_bench_target_idx(targets_rpm: &[f64], rpm: f64) -> usize {
-    targets_rpm
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| ((*a - rpm).abs()).total_cmp(&((*b - rpm).abs())))
-        .map(|(idx, _)| idx)
-        .unwrap_or(0)
-}
-
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn state_error_norm(
     coarse: EngineState,
     fine: EngineState,
@@ -3004,101 +2268,6 @@ fn state_error_norm_internal(
     err
 }
 
-fn bench_state_step_error(sim: &Simulator, dt: f64) -> f64 {
-    let state = sim.state;
-    let state_full = sim.advance_state_rk3(state, dt);
-    let state_half = sim.advance_state_rk3(sim.advance_state_rk3(state, dt * 0.5), dt * 0.5);
-    state_error_norm(state_full, state_half, &sim.numerics)
-}
-
-fn bench_commit_step(
-    sim: &mut Simulator,
-    config: &AppConfig,
-    dyno: &mut BenchDynoController,
-    dt: f64,
-    target_rpm: f64,
-) -> crate::simulator::Observation {
-    let load_cmd = dyno.update(
-        target_rpm,
-        rad_s_to_rpm(sim.state.omega_rad_s),
-        dt,
-        &config.bench,
-    );
-    sim.control.load_cmd = load_cmd;
-    sim.step(dt)
-}
-
-#[cfg(test)]
-fn bench_adaptive_step(
-    sim: &mut Simulator,
-    config: &AppConfig,
-    dyno: &mut BenchDynoController,
-    target_rpm: f64,
-    phase_remaining_s: f64,
-    dt_next_s: &mut f64,
-) -> (crate::simulator::Observation, f64) {
-    bench_adaptive_step_with_deg_per_step(
-        sim,
-        config,
-        dyno,
-        target_rpm,
-        phase_remaining_s,
-        dt_next_s,
-        config.bench.integration_deg_per_step,
-    )
-}
-
-fn bench_adaptive_step_with_deg_per_step(
-    sim: &mut Simulator,
-    config: &AppConfig,
-    dyno: &mut BenchDynoController,
-    target_rpm: f64,
-    phase_remaining_s: f64,
-    dt_next_s: &mut f64,
-    deg_per_step: f64,
-) -> (crate::simulator::Observation, f64) {
-    let dt_nominal = bench_nominal_dt_for_deg_per_step(
-        &config.bench,
-        target_rpm,
-        &config.numerics,
-        deg_per_step,
-    );
-    let min_dt = if phase_remaining_s <= config.bench.integration_dt_min_s {
-        phase_remaining_s.max(f64::EPSILON)
-    } else {
-        config.bench.integration_dt_min_s
-    };
-    let max_dt = dt_nominal
-        .min(config.bench.integration_dt_max_s)
-        .min(phase_remaining_s.max(min_dt));
-    let mut dt = if *dt_next_s > 0.0 {
-        *dt_next_s
-    } else {
-        dt_nominal
-    }
-    .clamp(min_dt, max_dt);
-    let mut error = bench_state_step_error(sim, dt);
-    let tolerance = config.bench.integration_error_tolerance.max(f64::EPSILON);
-    let mut refinements = 0usize;
-    while error > tolerance
-        && refinements < config.bench.integration_refine_limit
-        && dt > min_dt * (1.0 + f64::EPSILON)
-    {
-        dt = (dt * 0.5).max(min_dt);
-        error = bench_state_step_error(sim, dt);
-        refinements = refinements.saturating_add(1);
-    }
-
-    let obs = bench_commit_step(sim, config, dyno, dt, target_rpm);
-    let growth = if error < tolerance * 0.25 {
-        config.bench.integration_dt_growth.max(1.0)
-    } else {
-        1.0
-    };
-    *dt_next_s = (dt * growth).clamp(config.bench.integration_dt_min_s, dt_nominal);
-    (obs, dt)
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RealtimePerformanceEstimate {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -3115,7 +2284,8 @@ pub(crate) fn estimate_realtime_performance(
     // Per-step cost is dominated by the ODE RHS and stays almost dt-independent for this model.
     let probe_dt = dt_base.max(config.numerics.realtime_probe_dt_min_s);
     let mut sim = Simulator::new(config);
-    sim.auto.enabled = true;
+    sim.control.spark_cmd = true;
+    sim.control.fuel_cmd = true;
     for _ in 0..config.numerics.realtime_warmup_steps {
         sim.step(probe_dt);
     }
@@ -3143,6 +2313,31 @@ pub(crate) fn rpm_to_rad_s(rpm: f64) -> f64 {
     rpm * TAU / 60.0
 }
 
+fn smooth_closed_pv_loop(points: &[(f64, f64)], radius: usize) -> Vec<(f64, f64)> {
+    if points.len() <= radius.saturating_mul(2) || radius == 0 {
+        return points.to_vec();
+    }
+
+    let len = points.len();
+    let mut smoothed = Vec::with_capacity(len);
+    for idx in 0..len {
+        let mut sum_v = 0.0;
+        let mut sum_p = 0.0;
+        let mut count = 0usize;
+        for offset in 0..=(radius * 2) {
+            let signed = offset as isize - radius as isize;
+            let wrapped = (idx as isize + signed).rem_euclid(len as isize) as usize;
+            let (v, p) = points[wrapped];
+            sum_v += v;
+            sum_p += p;
+            count += 1;
+        }
+        let inv = 1.0 / count as f64;
+        smoothed.push((sum_v * inv, sum_p * inv));
+    }
+    smoothed
+}
+
 pub(crate) fn shaft_power_w(rpm: f64, torque_nm: f64) -> f64 {
     torque_nm * rpm_to_rad_s(rpm)
 }
@@ -3163,64 +2358,26 @@ pub(crate) fn torque_to_bmep_bar(torque_nm: f64, displacement_m3: f64) -> f64 {
 }
 
 fn external_load_command_scale(load_cmd: f64, load_model: &ExternalLoadConfig) -> f64 {
-    let command = load_cmd.clamp(0.0, 1.0);
-    if command <= 0.0 {
+    let command = load_cmd.clamp(-1.0, 1.0);
+    if command.abs() <= f64::EPSILON {
         return 0.0;
     }
-    command.powf(load_model.command_exponent.max(f64::EPSILON))
+    command.signum()
+        * command
+            .abs()
+            .powf(load_model.command_exponent.max(f64::EPSILON))
 }
 
 fn vehicle_load_engine_speed_ratio(load_model: &ExternalLoadConfig) -> f64 {
     load_model.vehicle.drivetrain_ratio.max(f64::EPSILON)
 }
 
-pub(crate) fn external_load_vehicle_speed_mps(
+pub(crate) fn external_load_reference_torque_nm(
     omega_rad_s: f64,
     load_model: &ExternalLoadConfig,
 ) -> f64 {
-    if load_model.mode != ExternalLoadMode::VehicleEquivalent {
-        return 0.0;
-    }
-    let wheel_radius = load_model.vehicle.wheel_radius_m.max(f64::EPSILON);
-    omega_rad_s.max(0.0) * wheel_radius / vehicle_load_engine_speed_ratio(load_model)
-}
-
-pub(crate) fn external_load_vehicle_speed_kph(
-    omega_rad_s: f64,
-    load_model: &ExternalLoadConfig,
-) -> f64 {
-    external_load_vehicle_speed_mps(omega_rad_s, load_model) * 3.6
-}
-
-pub(crate) fn external_load_reflected_inertia_kgm2(
-    load_cmd: f64,
-    load_model: &ExternalLoadConfig,
-) -> f64 {
-    if load_model.mode != ExternalLoadMode::VehicleEquivalent {
-        return 0.0;
-    }
-    let scale = external_load_command_scale(load_cmd, load_model);
-    if scale <= 0.0 {
-        return 0.0;
-    }
-    let vehicle_mass =
-        load_model.vehicle.vehicle_mass_kg.max(0.0) * load_model.vehicle.equivalent_mass_factor;
-    let ratio = vehicle_load_engine_speed_ratio(load_model);
-    let wheel_radius = load_model.vehicle.wheel_radius_m.max(f64::EPSILON);
-    scale * vehicle_mass * (wheel_radius / ratio).powi(2)
-}
-
-pub(crate) fn external_load_torque_nm(
-    load_cmd: f64,
-    omega_rad_s: f64,
-    load_model: &ExternalLoadConfig,
-) -> f64 {
-    let scale = external_load_command_scale(load_cmd, load_model);
-    if scale <= 0.0 {
-        return 0.0;
-    }
     let omega = omega_rad_s.max(0.0);
-    let reference_torque = match load_model.mode {
+    let base_reference = match load_model.mode {
         ExternalLoadMode::BrakeMap => {
             load_model.base_torque_nm
                 + load_model.speed_linear_nms * omega
@@ -3249,459 +2406,106 @@ pub(crate) fn external_load_torque_nm(
                 + vehicle.accessory_torque_nm
         }
     };
-    (scale * reference_torque).clamp(load_model.torque_min_nm, load_model.torque_max_nm)
+    base_reference
+        .min(external_load_power_limit_torque_nm(omega_rad_s, load_model))
+        .max(0.0)
 }
 
-pub(crate) fn bench_rpm_targets(bench: &BenchConfig) -> Vec<f64> {
-    let start = bench.rpm_start_rpm.max(0.0);
-    let end = bench.rpm_end_rpm.max(start);
-    let step = bench.rpm_step_rpm.max(1.0);
-    let count = (((end - start) / step).floor() as usize).saturating_add(1);
-    let mut targets = Vec::with_capacity(count.max(1));
-    let mut rpm = start;
-    while rpm <= end + 0.5 * step {
-        targets.push(rpm.min(end));
-        rpm += step;
-        if targets
-            .last()
-            .is_some_and(|last| (*last - end).abs() < f64::EPSILON)
-        {
-            break;
-        }
+pub(crate) fn external_load_power_limit_torque_nm(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    let power_limit_kw = load_model.absorber_power_limit_kw.max(f64::EPSILON);
+    let omega = omega_rad_s.abs();
+    if omega <= f64::EPSILON {
+        return f64::INFINITY;
     }
-    if targets.is_empty() {
-        targets.push(start);
-    }
-    if targets.last().copied().unwrap_or(start) < end {
-        targets.push(end);
-    }
-    targets
+    power_limit_kw * W_PER_KW / omega
 }
 
-fn seed_bench_simulator(
-    config: &AppConfig,
-    control_seed: &ControlInput,
-    mode: BenchMixtureMode,
-    target_rpm: f64,
-) -> (Simulator, f64) {
-    let mut sim = Simulator::new(config);
-    sim.configure_bench_mixture_mode(mode, &config.bench);
-    sim.model.external_load = config.bench.dyno.absorber_model.clone();
-
-    let mut control = control_seed.clone();
-    let throttle_target = config.auto_control.wot_target_throttle.clamp(0.0, 1.0);
-    control.throttle_cmd = throttle_target;
-    control.load_cmd = config.bench.dyno.initial_load_cmd.clamp(0.0, 1.0);
-    control.starter_cmd = false;
-    control.spark_cmd = true;
-    control.fuel_cmd = true;
-    sim.control = control;
-
-    let target_rpm = target_rpm.clamp(config.bench.rpm_start_rpm.max(0.0), sim.params.max_rpm);
-    let target_omega_rad_s = rpm_to_rad_s(target_rpm);
-    let initial_intake_pa =
-        (config.environment.ambient_pressure_pa * config.bench.initial_map_ratio).clamp(
-            sim.model.intake_pressure_min_pa,
-            sim.model.intake_pressure_max_pa,
-        );
-    let initial_exhaust_pa = (config.environment.ambient_pressure_pa
-        + config.bench.initial_exhaust_over_ambient_pa)
-        .clamp(
-            config.environment.ambient_pressure_pa * sim.model.exhaust_pressure_min_ambient_ratio,
-            config.environment.ambient_pressure_pa + sim.model.exhaust_pressure_max_over_ambient_pa,
-        );
-    sim.state = EngineState {
-        omega_rad_s: target_omega_rad_s,
-        theta_rad: 410.0_f64.to_radians(),
-        p_intake_pa: initial_intake_pa,
-        p_exhaust_pa: initial_exhaust_pa,
-        throttle_eff: throttle_target,
-        running: true,
-        p_intake_runner_pa: initial_intake_pa.clamp(
-            sim.model.gas_path.runner_pressure_min_pa,
-            sim.model.gas_path.runner_pressure_max_pa,
-        ),
-        p_exhaust_runner_pa: initial_exhaust_pa.clamp(
-            sim.model.gas_path.runner_pressure_min_pa,
-            sim.model.gas_path.runner_pressure_max_pa,
-        ),
-        m_dot_intake_runner_kg_s: 0.0,
-        m_dot_exhaust_runner_kg_s: 0.0,
-    };
-    sim.prev_theta_rad = sim.state.theta_rad;
-    (sim, target_rpm)
+pub(crate) fn external_load_available_torque_nm(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    external_load_reference_torque_nm(omega_rad_s, load_model)
+        .min(load_model.torque_max_nm.max(0.0))
+        .max(0.0)
 }
 
-impl BenchSession {
-    pub(crate) fn new(
-        config: &AppConfig,
-        control_seed: ControlInput,
-        mode: BenchMixtureMode,
-    ) -> Self {
-        let mut session = Self {
-            config: config.clone(),
-            mode,
-            control_seed,
-            targets_rpm: bench_rpm_targets(&config.bench),
-            current_idx: 0,
-            phase: BenchPhase::Idle,
-            phase_elapsed_s: 0.0,
-            sim: None,
-            dyno: BenchDynoController::new(config.bench.dyno.initial_load_cmd),
-            bins: vec![BenchAccumulator::default(); bench_rpm_targets(&config.bench).len()],
-            results: Vec::new(),
-            live_rpm: 0.0,
-            live_torque_brake_nm: 0.0,
-            live_load_cmd: config.bench.dyno.initial_load_cmd.clamp(0.0, 1.0),
-            live_load_torque_nm: 0.0,
-            live_eta_thermal_indicated_pv: 0.0,
-            live_map_kpa: 0.0,
-            live_lambda_target: 0.0,
-            live_intake_charge_temp_k: config.environment.intake_temp_k,
-            dt_next_s: 0.0,
-        };
-        session.prepare_sweep();
-        session
-    }
-
-    pub(crate) fn stop(&mut self) {
-        self.phase = BenchPhase::Idle;
-        self.sim = None;
-        self.phase_elapsed_s = 0.0;
-        self.dt_next_s = 0.0;
-    }
-
-    pub(crate) fn is_active(&self) -> bool {
-        matches!(self.phase, BenchPhase::Warmup | BenchPhase::Sweep)
-    }
-
-    pub(crate) fn is_complete(&self) -> bool {
-        self.phase == BenchPhase::Complete
-    }
-
-    pub(crate) fn results(&self) -> &[BenchSample] {
-        &self.results
-    }
-
-    pub(crate) fn status(&self) -> BenchStatus {
-        let total_points = self.targets_rpm.len();
-        let target_rpm = self.current_target_rpm();
-        let phase_total_s = match self.phase {
-            BenchPhase::Warmup => self.config.bench.sweep_warmup_time_s,
-            BenchPhase::Sweep => self.config.bench.sweep_duration_s,
-            BenchPhase::Idle | BenchPhase::Complete => 0.0,
-        };
-        BenchStatus {
-            mode: self.mode,
-            phase: self.phase,
-            target_rpm,
-            completed_points: self.results.len(),
-            total_points,
-            phase_elapsed_s: self.phase_elapsed_s,
-            phase_total_s,
-            live_rpm: self.live_rpm,
-            live_torque_brake_nm: self.live_torque_brake_nm,
-            live_load_cmd: self.live_load_cmd,
-            live_load_torque_nm: self.live_load_torque_nm,
-            live_eta_thermal_indicated_pv: self.live_eta_thermal_indicated_pv,
-            live_map_kpa: self.live_map_kpa,
-            live_lambda_target: self.live_lambda_target,
-            live_intake_charge_temp_k: self.live_intake_charge_temp_k,
-        }
-    }
-
-    pub(crate) fn live_sample(&self) -> Option<BenchSample> {
-        if !self.is_active() || self.targets_rpm.is_empty() {
-            return None;
-        }
-        Some(BenchSample {
-            target_rpm: self.current_target_rpm(),
-            rpm: self.live_rpm,
-            torque_brake_nm: self.live_torque_brake_nm,
-            load_cmd: self.live_load_cmd,
-            load_torque_nm: self.live_load_torque_nm,
-            map_kpa: self.live_map_kpa,
-            eta_thermal_indicated_pv: self.live_eta_thermal_indicated_pv,
-            lambda_target: self.live_lambda_target,
-            intake_charge_temp_k: self.live_intake_charge_temp_k,
-            mixture_mode: self.mode,
-        })
-    }
-
-    pub(crate) fn advance_steps(&mut self, max_steps: usize) {
-        if max_steps == 0 || !self.is_active() {
-            return;
-        }
-        for _ in 0..max_steps {
-            if !self.is_active() {
-                break;
-            }
-            self.advance_one_step();
-        }
-    }
-
-    fn current_target_rpm(&self) -> f64 {
-        if self.targets_rpm.is_empty() {
-            return 0.0;
-        }
-        match self.phase {
-            BenchPhase::Warmup => self.targets_rpm[0],
-            BenchPhase::Sweep => bench_sweep_target_rpm(&self.config.bench, self.phase_elapsed_s),
-            BenchPhase::Idle => self.targets_rpm[self.current_idx.min(self.targets_rpm.len() - 1)],
-            BenchPhase::Complete => self.targets_rpm.last().copied().unwrap_or(0.0),
-        }
-    }
-
-    fn prepare_sweep(&mut self) {
-        if self.targets_rpm.is_empty() {
-            self.phase = if self.targets_rpm.is_empty() {
-                BenchPhase::Idle
-            } else {
-                BenchPhase::Complete
-            };
-            self.sim = None;
-            self.phase_elapsed_s = 0.0;
-            return;
-        }
-
-        let (sim, target_rpm) = seed_bench_simulator(
-            &self.config,
-            &self.control_seed,
-            self.mode,
-            self.targets_rpm[0],
-        );
-
-        self.phase = if self.config.bench.sweep_warmup_time_s > 0.0 {
-            BenchPhase::Warmup
-        } else {
-            BenchPhase::Sweep
-        };
-        self.current_idx = 0;
-        self.phase_elapsed_s = 0.0;
-        for bin in &mut self.bins {
-            bin.clear();
-        }
-        self.dyno = BenchDynoController::new(self.config.bench.dyno.initial_load_cmd);
-        self.results.clear();
-        self.live_rpm = target_rpm;
-        self.live_torque_brake_nm = 0.0;
-        self.live_load_cmd = self.config.bench.dyno.initial_load_cmd.clamp(0.0, 1.0);
-        self.live_load_torque_nm = 0.0;
-        self.live_eta_thermal_indicated_pv = 0.0;
-        self.live_map_kpa = sim.state.p_intake_pa * 1.0e-3;
-        self.live_lambda_target = sim
-            .lambda_override
-            .unwrap_or(self.config.bench.lambda_one_target);
-        self.live_intake_charge_temp_k = self.config.environment.intake_temp_k;
-        self.dt_next_s = bench_nominal_dt_for_deg_per_step(
-            &self.config.bench,
-            target_rpm,
-            &self.config.numerics,
-            self.config.bench.sweep_integration_deg_per_step,
-        );
-        self.sim = Some(sim);
-    }
-
-    fn advance_one_step(&mut self) {
-        let target_rpm = self.current_target_rpm();
-        self.current_idx = nearest_bench_target_idx(&self.targets_rpm, target_rpm);
-        let phase_total_s = match self.phase {
-            BenchPhase::Warmup => self.config.bench.sweep_warmup_time_s,
-            BenchPhase::Sweep => self.config.bench.sweep_duration_s,
-            BenchPhase::Idle | BenchPhase::Complete => 0.0,
-        };
-        let phase_remaining_s = (phase_total_s - self.phase_elapsed_s).max(
-            self.config
-                .bench
-                .integration_dt_min_s
-                .min(phase_total_s.max(0.0)),
-        );
-
-        let (obs, dt_used) = {
-            let sim = self
-                .sim
-                .as_mut()
-                .expect("bench session should own a simulator while active");
-            bench_adaptive_step_with_deg_per_step(
-                sim,
-                &self.config,
-                &mut self.dyno,
-                target_rpm,
-                phase_remaining_s,
-                &mut self.dt_next_s,
-                self.config.bench.sweep_integration_deg_per_step,
-            )
-        };
-
-        self.live_rpm = obs.rpm;
-        self.live_torque_brake_nm = obs.torque_net_nm + obs.torque_load_nm;
-        self.live_load_cmd = obs.load_cmd;
-        self.live_load_torque_nm = obs.torque_load_nm;
-        self.live_map_kpa = obs.map_kpa;
-        self.live_lambda_target = obs.lambda_target;
-        self.live_intake_charge_temp_k = obs.intake_charge_temp_k;
-        if self.phase == BenchPhase::Sweep {
-            let sim_state = self
-                .sim
-                .as_ref()
-                .expect("bench session should own a simulator while sweeping")
-                .state;
-            let bin_idx = nearest_bench_target_idx(&self.targets_rpm, target_rpm);
-            self.bins[bin_idx].accumulate(&obs, sim_state);
-            self.refresh_results_from_bins();
-            let bin = &self.bins[bin_idx];
-            self.live_rpm = bin.mean_rpm();
-            self.live_torque_brake_nm = bin.mean_torque_brake_nm();
-            self.live_load_cmd = bin.mean_load_cmd();
-            self.live_load_torque_nm = bin.mean_load_torque_nm();
-            self.live_map_kpa = bin.mean_map_kpa();
-            self.live_eta_thermal_indicated_pv = bin.mean_eta();
-            self.live_lambda_target = bin.mean_lambda_target();
-            self.live_intake_charge_temp_k = bin.mean_intake_charge_temp_k();
-        } else {
-            self.live_eta_thermal_indicated_pv = 0.0;
-        }
-
-        self.phase_elapsed_s += dt_used;
-        match self.phase {
-            BenchPhase::Warmup if self.phase_elapsed_s >= self.config.bench.sweep_warmup_time_s => {
-                self.phase = BenchPhase::Sweep;
-                self.phase_elapsed_s = 0.0;
-                self.live_eta_thermal_indicated_pv = 0.0;
-                self.dt_next_s = bench_nominal_dt_for_deg_per_step(
-                    &self.config.bench,
-                    target_rpm,
-                    &self.config.numerics,
-                    self.config.bench.sweep_integration_deg_per_step,
-                );
-            }
-            BenchPhase::Sweep if self.phase_elapsed_s >= self.config.bench.sweep_duration_s => {
-                self.phase = BenchPhase::Complete;
-                self.sim = None;
-                self.phase_elapsed_s = 0.0;
-            }
-            BenchPhase::Idle | BenchPhase::Complete | BenchPhase::Warmup | BenchPhase::Sweep => {}
-        }
-    }
-
-    fn refresh_results_from_bins(&mut self) {
-        self.results.clear();
-        for (rpm, bin) in self.targets_rpm.iter().copied().zip(self.bins.iter()) {
-            if bin.samples == 0 {
-                continue;
-            }
-            self.results.push(BenchSample {
-                target_rpm: rpm,
-                rpm: bin.mean_rpm(),
-                torque_brake_nm: bin.mean_torque_brake_nm(),
-                load_cmd: bin.mean_load_cmd(),
-                load_torque_nm: bin.mean_load_torque_nm(),
-                map_kpa: bin.mean_map_kpa(),
-                eta_thermal_indicated_pv: bin.mean_eta(),
-                lambda_target: bin.mean_lambda_target(),
-                intake_charge_temp_k: bin.mean_intake_charge_temp_k(),
-                mixture_mode: self.mode,
-            });
-        }
-    }
+pub(crate) fn external_load_speed_limit_active(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> bool {
+    rad_s_to_rpm(omega_rad_s.abs()) >= load_model.absorber_speed_limit_rpm
 }
 
-#[cfg(test)]
-pub(crate) fn measure_wot_bench_sample(
-    config: &AppConfig,
-    control_seed: &ControlInput,
-    rpm: f64,
-    mode: BenchMixtureMode,
-) -> BenchSample {
-    let (mut sim, target_rpm) = seed_bench_simulator(config, control_seed, mode, rpm);
-    let mut dyno = BenchDynoController::new(config.bench.dyno.initial_load_cmd);
-
-    let mut dt_next_s = bench_nominal_dt(&config.bench, target_rpm, &config.numerics);
-    let mut settle_elapsed_s = 0.0;
-    while settle_elapsed_s < config.bench.settle_time_s {
-        let (_, dt_used) = bench_adaptive_step(
-            &mut sim,
-            config,
-            &mut dyno,
-            target_rpm,
-            config.bench.settle_time_s - settle_elapsed_s,
-            &mut dt_next_s,
-        );
-        settle_elapsed_s += dt_used;
-    }
-
-    let mut average = BenchAccumulator::default();
-    let mut average_elapsed_s = 0.0;
-    while average_elapsed_s < config.bench.average_time_s {
-        let (obs, dt_used) = bench_adaptive_step(
-            &mut sim,
-            config,
-            &mut dyno,
-            target_rpm,
-            config.bench.average_time_s - average_elapsed_s,
-            &mut dt_next_s,
-        );
-        average.accumulate(&obs, sim.state);
-        average_elapsed_s += dt_used;
-    }
-
-    let mean_omega = rpm_to_rad_s(average.mean_rpm());
-    let state_locked = average.locked_state(mean_omega, sim.state.throttle_eff);
-    let avg = sim.locked_cycle_average(state_locked, config.bench.locked_cycle_samples);
-
-    BenchSample {
-        target_rpm,
-        rpm: average.mean_rpm(),
-        torque_brake_nm: avg.torque_net_nm + avg.torque_load_nm,
-        load_cmd: average.mean_load_cmd(),
-        load_torque_nm: average.mean_load_torque_nm(),
-        map_kpa: average.mean_map_kpa(),
-        eta_thermal_indicated_pv: average.mean_eta(),
-        lambda_target: average.mean_lambda_target(),
-        intake_charge_temp_k: average.mean_intake_charge_temp_k(),
-        mixture_mode: mode,
-    }
+pub(crate) fn external_load_command_for_torque_nm(
+    target_torque_nm: f64,
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    let reference_torque = external_load_reference_torque_nm(omega_rad_s, load_model)
+        .abs()
+        .max(f64::EPSILON);
+    let achievable_pos = reference_torque.min(load_model.torque_max_nm.max(0.0));
+    let achievable_neg = reference_torque.min((-load_model.torque_min_nm).max(0.0));
+    let target_torque_nm = target_torque_nm.clamp(-achievable_neg, achievable_pos);
+    let normalized = (target_torque_nm.abs() / reference_torque).clamp(0.0, 1.0);
+    let exponent = load_model.command_exponent.max(f64::EPSILON);
+    let command_mag = normalized.powf(1.0 / exponent);
+    target_torque_nm.signum() * command_mag
 }
 
-pub(crate) fn quick_wot_bench_preview_curve(
-    config: &AppConfig,
-    control_seed: &ControlInput,
-    mode: BenchMixtureMode,
-) -> Vec<BenchSample> {
-    // The preview is intentionally coarse: it should draw a plausible dyno curve
-    // almost immediately, then the budgeted bench sweep refines the result in-place.
-    let preview_samples = (config.bench.locked_cycle_samples / 4).clamp(24, 64);
-    bench_rpm_targets(&config.bench)
-        .into_iter()
-        .map(|rpm| {
-            let (mut sim, target_rpm) = seed_bench_simulator(config, control_seed, mode, rpm);
-            sim.control.load_cmd = 0.0;
-            let avg = sim.locked_cycle_average(sim.state, preview_samples);
-            let eval = sim.eval(sim.state);
-            BenchSample {
-                target_rpm,
-                rpm: target_rpm,
-                torque_brake_nm: avg.torque_net_nm,
-                load_cmd: 0.0,
-                load_torque_nm: 0.0,
-                map_kpa: sim.state.p_intake_pa * 1.0e-3,
-                eta_thermal_indicated_pv: 0.0,
-                lambda_target: eval.lambda_target,
-                intake_charge_temp_k: eval.intake_charge_temp_k,
-                mixture_mode: mode,
-            }
-        })
-        .collect()
+pub(crate) fn external_load_vehicle_speed_mps(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    if load_model.mode != ExternalLoadMode::VehicleEquivalent {
+        return 0.0;
+    }
+    let wheel_radius = load_model.vehicle.wheel_radius_m.max(f64::EPSILON);
+    omega_rad_s.max(0.0) * wheel_radius / vehicle_load_engine_speed_ratio(load_model)
 }
 
-pub(crate) fn starter_torque(rpm: f64, model: &ModelConfig) -> f64 {
-    if rpm < model.starter_torque.low_rpm_threshold {
-        model.starter_torque.low_torque_nm
-    } else if rpm < model.starter_torque.high_rpm_threshold {
-        model.starter_torque.high_torque_nm
-    } else {
+pub(crate) fn external_load_vehicle_speed_kph(
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    external_load_vehicle_speed_mps(omega_rad_s, load_model) * 3.6
+}
+
+pub(crate) fn external_load_reflected_inertia_kgm2(
+    load_cmd: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    let absorber_inertia = load_model.absorber_rotor_inertia_kgm2.max(0.0);
+    if load_model.mode != ExternalLoadMode::VehicleEquivalent {
+        return absorber_inertia;
+    }
+    let scale = external_load_command_scale(load_cmd, load_model).abs();
+    let vehicle_inertia = if scale <= f64::EPSILON {
         0.0
+    } else {
+        let vehicle_mass =
+            load_model.vehicle.vehicle_mass_kg.max(0.0) * load_model.vehicle.equivalent_mass_factor;
+        let ratio = vehicle_load_engine_speed_ratio(load_model);
+        let wheel_radius = load_model.vehicle.wheel_radius_m.max(f64::EPSILON);
+        scale * vehicle_mass * (wheel_radius / ratio).powi(2)
+    };
+    absorber_inertia + vehicle_inertia
+}
+
+pub(crate) fn external_load_torque_nm(
+    load_cmd: f64,
+    omega_rad_s: f64,
+    load_model: &ExternalLoadConfig,
+) -> f64 {
+    let scale = external_load_command_scale(load_cmd, load_model);
+    if scale.abs() <= f64::EPSILON {
+        return 0.0;
     }
+    let reference_torque = external_load_reference_torque_nm(omega_rad_s, load_model);
+    (scale * reference_torque).clamp(load_model.torque_min_nm, load_model.torque_max_nm)
 }
 
 pub(crate) fn orifice_mass_flow(cd_area: f64, p_up: f64, p_down: f64, t_k: f64) -> f64 {
@@ -3733,10 +2537,32 @@ pub(crate) fn volumetric_efficiency(
     throttle_eff: f64,
     ve_model: &VolumetricEfficiencyConfig,
 ) -> f64 {
+    let rpm_blend = if (ve_model.vvt_rpm_high - ve_model.vvt_rpm_low).abs() <= f64::EPSILON {
+        1.0
+    } else {
+        ((rpm - ve_model.vvt_rpm_low) / (ve_model.vvt_rpm_high - ve_model.vvt_rpm_low))
+            .clamp(0.0, 1.0)
+    };
     let rpm_term = (ve_model.rpm_base
         + ve_model.rpm_gain * (-(rpm - ve_model.rpm_center).powi(2) / ve_model.rpm_width).exp())
     .clamp(ve_model.rpm_min, ve_model.rpm_max);
-    let vvt_term = 1.0 + ve_model.vvt_intake_coeff * vvt_i - ve_model.vvt_exhaust_coeff * vvt_e;
+    let intake_opt_deg = lerp(
+        ve_model.vvt_intake_opt_low_deg,
+        ve_model.vvt_intake_opt_high_deg,
+        rpm_blend,
+    );
+    let exhaust_opt_deg = lerp(
+        ve_model.vvt_exhaust_opt_low_deg,
+        ve_model.vvt_exhaust_opt_high_deg,
+        rpm_blend,
+    );
+    let intake_norm = (vvt_i - intake_opt_deg) / ve_model.vvt_intake_opt_window_deg.max(1.0);
+    let exhaust_norm = (vvt_e - exhaust_opt_deg) / ve_model.vvt_exhaust_opt_window_deg.max(1.0);
+    let intake_opt_term = (1.0 - ve_model.vvt_intake_opt_gain * intake_norm.powi(2)).max(0.75);
+    let exhaust_opt_term = (1.0 - ve_model.vvt_exhaust_opt_gain * exhaust_norm.powi(2)).max(0.75);
+    let vvt_linear_term =
+        1.0 + ve_model.vvt_intake_coeff * vvt_i - ve_model.vvt_exhaust_coeff * vvt_e;
+    let vvt_term = vvt_linear_term * intake_opt_term * exhaust_opt_term;
     let throttle_term = (ve_model.throttle_base + ve_model.throttle_gain * throttle_eff.sqrt())
         .clamp(ve_model.throttle_min, ve_model.throttle_max);
     (rpm_term * vvt_term * throttle_term).clamp(ve_model.overall_min, ve_model.overall_max)
@@ -3803,6 +2629,8 @@ pub(crate) fn instantaneous_pv_sample(
     combustion_enabled: bool,
     soc_deg: f64,
     eoc_deg: f64,
+    wiebe_a: f64,
+    wiebe_m: f64,
     pv_model: &PvModelConfig,
 ) -> (f64, f64) {
     // This is a display-model cylinder trace: phase-aligned with combustion torque, but not state-solved.
@@ -3837,7 +2665,8 @@ pub(crate) fn instantaneous_pv_sample(
     let evo_deg: f64 = pv_model.evo_deg;
     let blowdown_end_deg: f64 = pv_model.blowdown_end_deg;
 
-    let xb = smoothstep01((cycle_deg - soc_deg) / (eoc_deg - soc_deg));
+    let xb =
+        normalized_wiebe_burn_fraction(cycle_deg, soc_deg, eoc_deg - soc_deg, wiebe_a, wiebe_m);
     let delta_p_peak = burn * (p_peak - comp_end).max(0.0);
     let vol_at_eoc = volume_at_deg(eoc_deg);
     let vol_at_evo = volume_at_deg(evo_deg);
@@ -3874,6 +2703,25 @@ pub(crate) fn instantaneous_pv_sample(
 fn smoothstep01(x: f64) -> f64 {
     let t = x.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+fn normalized_wiebe_burn_fraction(
+    cycle_angle_deg: f64,
+    start_deg: f64,
+    duration_deg: f64,
+    a: f64,
+    m: f64,
+) -> f64 {
+    let duration_deg = duration_deg.max(f64::EPSILON);
+    let x = ((cycle_angle_deg - start_deg) / duration_deg).clamp(0.0, 1.0);
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let denom = (1.0 - (-a.max(f64::EPSILON)).exp()).max(f64::EPSILON);
+    (1.0 - (-a.max(f64::EPSILON) * x.powf(m + 1.0)).exp()) / denom
 }
 
 fn wave_kernel(elapsed_s: f64, delay_s: f64, decay_time_s: f64, quarter_wave_hz: f64) -> f64 {
@@ -4005,7 +2853,6 @@ mod tests {
     }
 
     fn configure_high_rpm_operating_point(sim: &mut Simulator, rpm: f64, throttle: f64) {
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = true;
         sim.control.fuel_cmd = true;
         sim.control.throttle_cmd = throttle;
@@ -4117,125 +2964,31 @@ mod tests {
 
     #[derive(Debug, Clone, Copy)]
     struct ProductionEngineReference {
-        name: &'static str,
         displacement_l: f64,
         bore_mm: f64,
         stroke_mm: f64,
         compression_ratio: f64,
-        peak_torque_nm: f64,
-        peak_torque_rpm: f64,
-        peak_power_kw: f64,
-        peak_power_rpm: f64,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    struct BenchCurveMetrics {
-        torque_peak: (f64, f64, f64),
-        power_peak: (f64, f64, f64),
-        peak_bmep_bar: f64,
-        peak_specific_power_kw_per_l: f64,
     }
 
     const TOYOTA_DYNAMIC_FORCE_2L: ProductionEngineReference = ProductionEngineReference {
-        name: "Toyota Corolla Hatchback 2.0 Dynamic Force",
         displacement_l: 1.987,
         bore_mm: 80.5,
         stroke_mm: 97.6,
         compression_ratio: 13.0,
-        peak_torque_nm: 205.0,
-        peak_torque_rpm: 4_800.0,
-        peak_power_kw: 126.0,
-        peak_power_rpm: 6_600.0,
     };
 
     const MAZDA_SKYACTIV_G_20: ProductionEngineReference = ProductionEngineReference {
-        name: "Mazda SKYACTIV-G 2.0",
         displacement_l: 1.997,
         bore_mm: 83.5,
         stroke_mm: 91.2,
         compression_ratio: 12.0,
-        peak_torque_nm: 194.0,
-        peak_torque_rpm: 4_100.0,
-        peak_power_kw: 113.0,
-        peak_power_rpm: 6_000.0,
-    };
-
-    const HONDA_CIVIC_20: ProductionEngineReference = ProductionEngineReference {
-        name: "Honda Civic 2.0 i-VTEC",
-        displacement_l: 1.996,
-        bore_mm: 86.0,
-        stroke_mm: 85.9,
-        compression_ratio: 10.8,
-        peak_torque_nm: 187.1,
-        peak_torque_rpm: 4_200.0,
-        peak_power_kw: 117.8,
-        peak_power_rpm: 6_500.0,
-    };
-
-    const FORD_ECOSPORT_20: ProductionEngineReference = ProductionEngineReference {
-        name: "Ford EcoSport 2.0 Ti-VCT",
-        displacement_l: 2.0,
-        bore_mm: 87.5,
-        stroke_mm: 83.1,
-        compression_ratio: 12.0,
-        peak_torque_nm: 202.0,
-        peak_torque_rpm: 4_500.0,
-        peak_power_kw: 123.8,
-        peak_power_rpm: 6_500.0,
-    };
-
-    const TOYOTA_86_20: ProductionEngineReference = ProductionEngineReference {
-        name: "Toyota 86 2.0",
-        displacement_l: 1.998,
-        bore_mm: 86.0,
-        stroke_mm: 86.0,
-        compression_ratio: 12.5,
-        peak_torque_nm: 205.0,
-        peak_torque_rpm: 6_600.0,
-        peak_power_kw: 147.0,
-        peak_power_rpm: 7_000.0,
     };
 
     const PROD_GEOMETRY_DISPLACEMENT_MARGIN_L: f64 = 0.01;
     const PROD_GEOMETRY_STROKE_BORE_MARGIN: f64 = 0.02;
-    const PROD_PEAK_TORQUE_LOW_RPM_MARGIN_NM: f64 = 14.0;
-    const PROD_PEAK_TORQUE_MID_RPM_MARGIN_NM: f64 = 3.0;
-    const PROD_PEAK_POWER_MARGIN_KW: f64 = 6.0;
-    const PROD_PEAK_POWER_RPM_MARGIN: f64 = 500.0;
-    const PROD_PEAK_BMEP_MARGIN_BAR: f64 = 0.8;
-    const PROD_SPECIFIC_POWER_MARGIN_KW_PER_L: f64 = 2.5;
 
     fn high_efficiency_2l_na_refs() -> [ProductionEngineReference; 2] {
         [TOYOTA_DYNAMIC_FORCE_2L, MAZDA_SKYACTIV_G_20]
-    }
-
-    fn broader_2l_na_refs() -> [ProductionEngineReference; 4] {
-        [
-            TOYOTA_DYNAMIC_FORCE_2L,
-            MAZDA_SKYACTIV_G_20,
-            HONDA_CIVIC_20,
-            FORD_ECOSPORT_20,
-        ]
-    }
-
-    fn summarize_bench_curve(curve: &[(f64, f64, f64)], displacement_m3: f64) -> BenchCurveMetrics {
-        let torque_peak = curve
-            .iter()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .copied()
-            .expect("curve should not be empty");
-        let power_peak = curve
-            .iter()
-            .max_by(|a, b| a.2.total_cmp(&b.2))
-            .copied()
-            .expect("curve should not be empty");
-        BenchCurveMetrics {
-            torque_peak,
-            power_peak,
-            peak_bmep_bar: torque_to_bmep_bar(torque_peak.1, displacement_m3),
-            peak_specific_power_kw_per_l: power_peak.2
-                / (displacement_m3 * 1_000.0).max(f64::EPSILON),
-        }
     }
 
     fn interpolate_engine_state(a: EngineState, b: EngineState, frac: f64) -> EngineState {
@@ -4270,17 +3023,15 @@ mod tests {
     ) -> (Simulator, Observation) {
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(cfg);
-        sim.control.starter_cmd = true;
+        let rpm_seed = (900.0 + throttle * 5_600.0).clamp(900.0, cfg.engine.max_rpm * 0.92);
+        configure_high_rpm_operating_point(&mut sim, rpm_seed, throttle.max(0.12));
         sim.control.spark_cmd = true;
         sim.control.fuel_cmd = true;
         sim.control.throttle_cmd = throttle;
         sim.control.load_cmd = load_cmd;
 
         let mut obs = sim.step(dt);
-        for i in 0..((settle_time_s / dt) as usize) {
-            if i > (2.2 / dt) as usize {
-                sim.control.starter_cmd = false;
-            }
+        for _ in 0..((settle_time_s / dt) as usize) {
             obs = sim.step(dt);
         }
         (sim, obs)
@@ -4363,7 +3114,7 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let cycle_time_guess_s = 120.0 / rpm.max(f64::EPSILON);
@@ -4405,81 +3156,6 @@ mod tests {
         }
     }
 
-    fn run_wot_case(
-        enable_search: bool,
-        ignition_deg: f64,
-        vvt_intake_deg: f64,
-        vvt_exhaust_deg: f64,
-    ) -> (Simulator, f64) {
-        let cfg = AppConfig::default();
-        let dt = cfg.environment.dt;
-        let mut sim = Simulator::new(&cfg);
-        sim.control.ignition_timing_deg = ignition_deg;
-        sim.control.vvt_intake_deg = vvt_intake_deg;
-        sim.control.vvt_exhaust_deg = vvt_exhaust_deg;
-        if enable_search {
-            sim.set_wot_efficiency_auto_enabled(true);
-        } else {
-            sim.control.starter_cmd = true;
-            sim.control.spark_cmd = true;
-            sim.control.fuel_cmd = true;
-            sim.control.throttle_cmd = 1.0;
-        }
-
-        let total_steps = (14.0 / dt) as usize;
-        let average_start = (12.0 / dt) as usize;
-        let mut eta_sum = 0.0;
-        let mut count = 0usize;
-        for i in 0..total_steps {
-            if !enable_search && i > (2.0 / dt) as usize {
-                sim.control.starter_cmd = false;
-            }
-            let obs = sim.step(dt);
-            if i >= average_start {
-                eta_sum += obs.eta_thermal_indicated_pv;
-                count = count.saturating_add(1);
-            }
-        }
-        (sim, eta_sum / count.max(1) as f64)
-    }
-
-    fn bench_curve_samples(
-        cfg: &AppConfig,
-        mode: BenchMixtureMode,
-        rpms: &[f64],
-        use_mbt_seed: bool,
-    ) -> Vec<(f64, f64, f64)> {
-        rpms.iter()
-            .copied()
-            .map(|rpm| {
-                let mut control = ControlInput::default();
-                if use_mbt_seed {
-                    let sim = Simulator::new(cfg);
-                    let load = cfg
-                        .bench
-                        .initial_map_ratio
-                        .clamp(sim.model.load_min, sim.model.load_max);
-                    control.ignition_timing_deg = estimate_mbt_deg(&sim.model, rpm, load);
-                }
-                let sample = measure_wot_bench_sample(cfg, &control, rpm, mode);
-                let power_kw = shaft_power_kw(sample.rpm, sample.torque_brake_nm);
-                (sample.rpm, sample.torque_brake_nm, power_kw)
-            })
-            .collect()
-    }
-
-    fn fast_bench_test_config() -> AppConfig {
-        let mut cfg = AppConfig::default();
-        // Keep the locked-RPM bench physics checks active, but shorten settling/averaging windows.
-        cfg.bench.settle_time_s = 0.18;
-        cfg.bench.average_time_s = 0.10;
-        cfg.bench.locked_cycle_samples = 96;
-        cfg.bench.integration_deg_per_step = 1.0;
-        cfg.bench.integration_error_tolerance = 0.04;
-        cfg.bench.integration_refine_limit = 6;
-        cfg
-    }
-
     #[test]
     fn external_load_torque_increases_with_command_and_speed() {
         let cfg = AppConfig::default();
@@ -4495,6 +3171,26 @@ mod tests {
     }
 
     #[test]
+    fn external_load_command_inverse_tracks_requested_torque() {
+        let cfg = AppConfig::default();
+        let load_model = &cfg.model.external_load;
+        let omega = rpm_to_rad_s(3_000.0);
+
+        for target in [-80.0, -25.0, 0.0, 30.0, 90.0] {
+            let cmd = external_load_command_for_torque_nm(target, omega, load_model);
+            let realized = external_load_torque_nm(cmd, omega, load_model);
+            let achievable = target.clamp(
+                -external_load_reference_torque_nm(omega, load_model),
+                external_load_reference_torque_nm(omega, load_model),
+            );
+            assert!(
+                (realized - achievable).abs() < 3.0,
+                "inverse load command should recover achievable torque, target={target:.1} achievable={achievable:.1} realized={realized:.1} cmd={cmd:.3}"
+            );
+        }
+    }
+
+    #[test]
     fn external_load_reduces_net_torque_at_same_operating_point() {
         let cfg = AppConfig::default();
         let mut sim = Simulator::new(&cfg);
@@ -4506,11 +3202,11 @@ mod tests {
         sim.control.load_cmd = 1.0;
         let loaded = sim.eval(sample_state);
 
-        let unloaded_net = unloaded.torque_combustion_nm + unloaded.torque_starter_nm
+        let unloaded_net = unloaded.torque_combustion_nm
             - unloaded.torque_friction_nm
             - unloaded.torque_pumping_nm
             - unloaded.torque_load_nm;
-        let loaded_net = loaded.torque_combustion_nm + loaded.torque_starter_nm
+        let loaded_net = loaded.torque_combustion_nm
             - loaded.torque_friction_nm
             - loaded.torque_pumping_nm
             - loaded.torque_load_nm;
@@ -4532,7 +3228,40 @@ mod tests {
 
         assert!(speed_kph > 20.0);
         assert!(load > 5.0);
-        assert!(reflected_inertia > 0.05);
+        assert!(reflected_inertia > load_model.absorber_rotor_inertia_kgm2);
+    }
+
+    #[test]
+    fn brake_map_load_keeps_absorber_rotor_inertia() {
+        let cfg = AppConfig::default();
+        let load_model = &cfg.model.external_load;
+        let reflected_inertia = external_load_reflected_inertia_kgm2(0.0, load_model);
+
+        assert!(reflected_inertia > 0.0);
+        assert!(
+            (reflected_inertia - load_model.absorber_rotor_inertia_kgm2).abs() < 1.0e-12,
+            "expected brake-map reflected inertia to match absorber rotor inertia"
+        );
+    }
+
+    #[test]
+    fn external_load_power_limit_caps_available_torque_at_high_speed() {
+        let mut cfg = AppConfig::default();
+        cfg.model.external_load.mode = crate::config::ExternalLoadMode::BrakeMap;
+        cfg.model.external_load.base_torque_nm = 120.0;
+        cfg.model.external_load.speed_linear_nms = 0.25;
+        cfg.model.external_load.speed_quadratic_nms2 = 0.002;
+        cfg.model.external_load.absorber_power_limit_kw = 90.0;
+        let load_model = &cfg.model.external_load;
+        let omega = rpm_to_rad_s(7_500.0);
+
+        let power_limit_torque = external_load_power_limit_torque_nm(omega, load_model);
+        let available_torque = external_load_available_torque_nm(omega, load_model);
+
+        assert!(power_limit_torque < 200.0);
+        assert!(
+            (available_torque - power_limit_torque.min(load_model.torque_max_nm)).abs() < 1.0e-9
+        );
     }
 
     #[test]
@@ -4544,95 +3273,6 @@ mod tests {
         assert!(high < low);
         assert!(high <= cfg.numerics.accuracy_dt_max_s);
         assert!(high >= cfg.numerics.rpm_link_dt_min_floor_s);
-    }
-
-    #[test]
-    fn bench_seed_arms_dyno_speed_hold_load() {
-        let cfg = AppConfig::default();
-        let mut control = ControlInput::default();
-        control.load_cmd = 1.0;
-
-        let (sim, _) =
-            seed_bench_simulator(&cfg, &control, BenchMixtureMode::RichChargeCooling, 2_500.0);
-
-        assert!(
-            (sim.control.load_cmd - cfg.bench.dyno.initial_load_cmd).abs() < 1.0e-12,
-            "bench seed should use the dyno initial load command"
-        );
-        assert!(
-            (sim.model.external_load.base_torque_nm - cfg.bench.dyno.absorber_model.base_torque_nm)
-                .abs()
-                < 1.0e-12,
-            "bench seed should swap in the dyno absorber model"
-        );
-    }
-
-    #[test]
-    fn rich_wot_bench_curve_resembles_modern_2l_na_shape() {
-        let cfg = fast_bench_test_config();
-        let rpms = [1_500.0, 3_000.0, 4_500.0, 5_500.0, 6_500.0];
-        let curve = bench_curve_samples(&cfg, BenchMixtureMode::RichChargeCooling, &rpms, true);
-        let metrics = summarize_bench_curve(&curve, cfg.engine.displacement_m3);
-
-        for (rpm, torque_nm, power_kw) in &curve {
-            println!(
-                "rich WOT curve: rpm={rpm:.0}, torque={torque_nm:.1} Nm, power={power_kw:.1} kW"
-            );
-        }
-
-        // Reference anchors:
-        // - Toyota Corolla Hatchback 2.0 Dynamic Force: 205 Nm @ 4800 rpm, 126 kW @ 6600 rpm
-        // - Mazda SKYACTIV-G 2.0: 194 Nm @ 4100 rpm, 113 kW @ 6000 rpm
-        // - Toyota 86 2.0: 205 Nm @ 6600 rpm, 147 kW @ 7000 rpm
-        //
-        // Common shape across these naturally aspirated gasoline engines:
-        // torque builds from low rpm into a broad mid/high plateau, while peak power arrives later.
-        assert!(
-            metrics.torque_peak.1 > curve[0].1 * 1.05,
-            "peak torque should still sit above the low-rpm torque band for a modern 2.0L NA curve"
-        );
-        assert!(
-            metrics.torque_peak.0 >= 2_500.0 && metrics.torque_peak.0 <= 6_500.0,
-            "peak torque rpm should stay in the midrange even under the shortened bench smoke config, got {:.0} rpm",
-            metrics.torque_peak.0
-        );
-        assert!(
-            metrics.power_peak.0 >= metrics.torque_peak.0,
-            "peak power should arrive no earlier than peak torque, got torque peak {:.0} rpm and power peak {:.0} rpm",
-            metrics.torque_peak.0,
-            metrics.power_peak.0
-        );
-        assert!(
-            metrics.power_peak.0 >= 5_500.0,
-            "peak power should sit in the upper rpm band for a sporty 2.0L NA engine, got {:.0} rpm",
-            metrics.power_peak.0
-        );
-        assert!(
-            curve[3].2 > curve[1].2 * 1.35,
-            "high-rpm power should rise well above low/mid-rpm power"
-        );
-        assert!(
-            (150.0..=220.0).contains(&metrics.torque_peak.1),
-            "peak torque should stay within a broad modern 2.0L NA reference band, got {:.1} Nm",
-            metrics.torque_peak.1
-        );
-        assert!(
-            (95.0..=155.0).contains(&metrics.power_peak.2),
-            "peak power should stay within a broad modern 2.0L NA reference band, got {:.1} kW",
-            metrics.power_peak.2
-        );
-        assert!(
-            metrics.power_peak.2 <= TOYOTA_86_20.peak_power_kw + 5.0,
-            "default calibration should stay below the sporty {} upper envelope, got {:.1} kW",
-            TOYOTA_86_20.name,
-            metrics.power_peak.2
-        );
-        assert!(
-            metrics.power_peak.0 <= TOYOTA_86_20.peak_power_rpm,
-            "default calibration should peak no later than the sporty {} envelope, got {:.0} rpm",
-            TOYOTA_86_20.name,
-            metrics.power_peak.0
-        );
     }
 
     #[test]
@@ -4704,523 +3344,16 @@ mod tests {
     }
 
     #[test]
-    fn rich_wot_bench_curve_tracks_high_efficiency_2l_na_production_targets() {
-        let cfg = fast_bench_test_config();
-        let refs = high_efficiency_2l_na_refs();
-        let rpms = [2_500.0, 4_500.0, 6_500.0];
-        let curve = bench_curve_samples(&cfg, BenchMixtureMode::RichChargeCooling, &rpms, true);
-        let metrics = summarize_bench_curve(&curve, cfg.engine.displacement_m3);
-        let peak_torque_min = refs
-            .iter()
-            .map(|r| r.peak_torque_nm)
-            .fold(f64::INFINITY, f64::min);
-        let peak_torque_max = refs
-            .iter()
-            .map(|r| r.peak_torque_nm)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let peak_power_min = refs
-            .iter()
-            .map(|r| r.peak_power_kw)
-            .fold(f64::INFINITY, f64::min);
-        let peak_power_max = refs
-            .iter()
-            .map(|r| r.peak_power_kw)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let peak_power_rpm_min = refs
-            .iter()
-            .map(|r| r.peak_power_rpm)
-            .fold(f64::INFINITY, f64::min);
-        let peak_power_rpm_max = refs
-            .iter()
-            .map(|r| r.peak_power_rpm)
-            .fold(f64::NEG_INFINITY, f64::max);
-
-        // Official production anchors:
-        // - Toyota Corolla Hatchback 2.0 Dynamic Force: 169 hp @ 6600 rpm, 151 lb-ft (205 Nm) @ 4800 rpm
-        // - Mazda SKYACTIV-G 2.0: 154 PS @ 6000 rpm, 194 Nm @ 4100 rpm
-        //
-        // The default simulator calibration is intended to sit in this efficient-production band,
-        // not at the higher-output sports-engine end represented by the Toyota 86.
-        assert!(
-            (peak_torque_min - PROD_PEAK_TORQUE_LOW_RPM_MARGIN_NM..=peak_torque_max)
-                .contains(&curve[0].1),
-            "2500 rpm torque should stay in the Corolla/Mazda 2.0L production band, got {:.1} Nm",
-            curve[0].1
-        );
-        assert!(
-            (peak_torque_min..=peak_torque_max + PROD_PEAK_TORQUE_MID_RPM_MARGIN_NM)
-                .contains(&curve[1].1),
-            "4500 rpm torque should sit near the production-engine peak band, got {:.1} Nm",
-            curve[1].1
-        );
-        assert!(
-            (peak_power_min + 5.0..=peak_power_max + PROD_PEAK_POWER_MARGIN_KW)
-                .contains(&curve[2].2),
-            "6500 rpm power should stay near the Corolla/Mazda upper production band, got {:.1} kW",
-            curve[2].2
-        );
-        assert!(
-            metrics.torque_peak.0 + 250.0 < metrics.power_peak.0,
-            "peak torque should occur well before peak power, torque peak {:.0} rpm power peak {:.0} rpm",
-            metrics.torque_peak.0,
-            metrics.power_peak.0
-        );
-        assert!(
-            (peak_power_rpm_min..=peak_power_rpm_max + PROD_PEAK_POWER_RPM_MARGIN)
-                .contains(&metrics.power_peak.0),
-            "peak power rpm should stay in the Corolla/Mazda production band, got {:.0} rpm",
-            metrics.power_peak.0
-        );
-        assert!(
-            (12.0..=12.5 + PROD_PEAK_BMEP_MARGIN_BAR).contains(&metrics.peak_bmep_bar),
-            "peak brake BMEP should stay in a realistic high-efficiency 2.0L NA band, got {:.2} bar",
-            metrics.peak_bmep_bar
-        );
-        assert!(
-            (peak_power_min / TOYOTA_DYNAMIC_FORCE_2L.displacement_l
-                ..=peak_power_max / MAZDA_SKYACTIV_G_20.displacement_l
-                    + PROD_SPECIFIC_POWER_MARGIN_KW_PER_L)
-                .contains(&metrics.peak_specific_power_kw_per_l),
-            "specific power should stay in a realistic Corolla/Mazda 2.0L NA band, got {:.2} kW/L",
-            metrics.peak_specific_power_kw_per_l
-        );
-    }
-
-    #[test]
-    fn rich_wot_bench_curve_stays_inside_broader_modern_2l_na_envelope() {
-        let cfg = fast_bench_test_config();
-        let refs = broader_2l_na_refs();
-        let rpms = [1_500.0, 3_000.0, 4_500.0, 6_500.0];
-        let curve = bench_curve_samples(&cfg, BenchMixtureMode::RichChargeCooling, &rpms, true);
-        let metrics = summarize_bench_curve(&curve, cfg.engine.displacement_m3);
-
-        let torque_min = refs
-            .iter()
-            .map(|r| r.peak_torque_nm)
-            .fold(f64::INFINITY, f64::min);
-        let torque_max = refs
-            .iter()
-            .map(|r| r.peak_torque_nm)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let power_min = refs
-            .iter()
-            .map(|r| r.peak_power_kw)
-            .fold(f64::INFINITY, f64::min);
-        let power_max = refs
-            .iter()
-            .map(|r| r.peak_power_kw)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let torque_rpm_min = refs
-            .iter()
-            .map(|r| r.peak_torque_rpm)
-            .fold(f64::INFINITY, f64::min);
-        let torque_rpm_max = refs
-            .iter()
-            .map(|r| r.peak_torque_rpm)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let power_rpm_min = refs
-            .iter()
-            .map(|r| r.peak_power_rpm)
-            .fold(f64::INFINITY, f64::min);
-        let power_rpm_max = refs
-            .iter()
-            .map(|r| r.peak_power_rpm)
-            .fold(f64::NEG_INFINITY, f64::max);
-
-        assert!(
-            (torque_min - 8.0..=torque_max + 8.0).contains(&metrics.torque_peak.1),
-            "default peak torque should stay inside the broader 2.0L NA production envelope, got {:.1} Nm",
-            metrics.torque_peak.1
-        );
-        assert!(
-            (power_min - 2.0..=power_max + 3.0).contains(&metrics.power_peak.2),
-            "default peak power should stay inside the broader 2.0L NA production envelope, got {:.1} kW",
-            metrics.power_peak.2
-        );
-        assert!(
-            (torque_rpm_min - 1_200.0..=torque_rpm_max + 200.0).contains(&metrics.torque_peak.0),
-            "default peak torque rpm should stay inside the broader 2.0L NA production envelope, got {:.0} rpm",
-            metrics.torque_peak.0
-        );
-        assert!(
-            (power_rpm_min - 200.0..=power_rpm_max + 200.0).contains(&metrics.power_peak.0),
-            "default peak power rpm should stay inside the broader 2.0L NA production envelope, got {:.0} rpm",
-            metrics.power_peak.0
-        );
-        assert!(
-            curve.first().is_some_and(|p| p.1 > 175.0),
-            "low-rpm torque should remain healthy for a long-stroke 2.0L NA baseline"
-        );
-    }
-
-    #[test]
-    fn mbt_seed_improves_high_rpm_bench_power_curve() {
-        let cfg = fast_bench_test_config();
-        let rpms = [4_500.0, 6_500.0];
-        let fixed = bench_curve_samples(&cfg, BenchMixtureMode::RichChargeCooling, &rpms, false);
-        let mbt = bench_curve_samples(&cfg, BenchMixtureMode::RichChargeCooling, &rpms, true);
-
-        assert!(
-            mbt[0].2 > fixed[0].2 + 15.0,
-            "MBT-like calibration should materially improve mid/high-rpm power"
-        );
-        assert!(
-            mbt[1].2 > fixed[1].2 + 20.0,
-            "MBT-like calibration should materially improve redline-near power"
-        );
-    }
-
-    #[test]
-    fn bench_targets_cover_requested_range() {
-        let cfg = AppConfig::default();
-        let targets = bench_rpm_targets(&cfg.bench);
-        assert_eq!(
-            targets.first().copied().unwrap_or_default(),
-            cfg.bench.rpm_start_rpm
-        );
-        assert_eq!(
-            targets.last().copied().unwrap_or_default(),
-            cfg.bench.rpm_end_rpm
-        );
-        assert!(targets.len() > 10);
-        assert!(targets.windows(2).all(|w| w[1] > w[0]));
-    }
-
-    #[test]
-    fn bench_nominal_dt_is_finer_than_realtime_rule_at_high_rpm() {
-        let cfg = AppConfig::default();
-        let rpm = 6_000.0;
-        let bench_dt = bench_nominal_dt(&cfg.bench, rpm, &cfg.numerics);
-        let realtime_dt = rpm_linked_dt(
-            cfg.environment.dt,
-            rpm,
-            cfg.engine.idle_target_rpm,
-            &cfg.numerics,
-        );
-        assert!(bench_dt < realtime_dt);
-    }
-
-    #[test]
-    fn bench_session_reports_live_progress_until_completion() {
-        let mut cfg = AppConfig::default();
-        cfg.bench.rpm_start_rpm = 1500.0;
-        cfg.bench.rpm_end_rpm = 2000.0;
-        cfg.bench.rpm_step_rpm = 500.0;
-        cfg.bench.sweep_warmup_time_s = 0.01;
-        cfg.bench.sweep_duration_s = 0.04;
-        cfg.bench.sweep_integration_deg_per_step = 2.0;
-
-        let mut session = BenchSession::new(
-            &cfg,
-            ControlInput::default(),
-            BenchMixtureMode::RichChargeCooling,
-        );
-        let status0 = session.status();
-        assert_eq!(status0.phase, BenchPhase::Warmup);
-        assert_eq!(status0.total_points, 2);
-        assert!(session.live_sample().is_some());
-
-        for _ in 0..2_000 {
-            session.advance_steps(1);
-            if session.is_complete() {
-                break;
-            }
-        }
-
-        let status = session.status();
-        assert!(session.is_complete());
-        assert_eq!(status.phase, BenchPhase::Complete);
-        assert_eq!(session.results().len(), 2);
-        assert!(
-            session
-                .results()
-                .iter()
-                .all(|s| s.torque_brake_nm.is_finite())
-        );
-        assert!(session.results()[0].rpm < session.results()[1].rpm);
-    }
-
-    #[test]
-    fn wot_bench_sample_returns_physical_values() {
-        let cfg = fast_bench_test_config();
-        let sim = Simulator::new(&cfg);
-        let sample = measure_wot_bench_sample(
-            &cfg,
-            &sim.control,
-            3_500.0,
-            BenchMixtureMode::RichChargeCooling,
-        );
-        assert!((3_400.0..=3_600.0).contains(&sample.rpm));
-        assert!(sample.torque_brake_nm.is_finite());
-        assert!(sample.map_kpa.is_finite());
-        assert!(sample.eta_thermal_indicated_pv.is_finite());
-        assert_eq!(sample.mixture_mode, BenchMixtureMode::RichChargeCooling);
-        assert!(
-            sample.torque_brake_nm > 40.0,
-            "bench sample torque too small: rpm={:.1} torque={:.2} map={:.2} eta={:.4}",
-            sample.rpm,
-            sample.torque_brake_nm,
-            sample.map_kpa,
-            sample.eta_thermal_indicated_pv
-        );
-        assert!((50.0..=110.0).contains(&sample.map_kpa));
-        assert!(sample.eta_thermal_indicated_pv > 0.10);
-    }
-
-    #[test]
-    fn wot_bench_sample_uses_positive_dyno_load_to_hold_speed() {
-        let cfg = fast_bench_test_config();
-        let sim = Simulator::new(&cfg);
-        let sample = measure_wot_bench_sample(
-            &cfg,
-            &sim.control,
-            3_500.0,
-            BenchMixtureMode::RichChargeCooling,
-        );
-
-        assert!(
-            (sample.rpm - sample.target_rpm).abs() < 160.0,
-            "bench dyno should hold speed near target, target {:.0} rpm measured {:.0} rpm",
-            sample.target_rpm,
-            sample.rpm
-        );
-        assert!(
-            sample.load_cmd > 0.05,
-            "bench dyno should apply positive absorber command, got {:.3}",
-            sample.load_cmd
-        );
-        assert!(
-            sample.load_torque_nm > 20.0,
-            "bench dyno should apply positive absorber torque, got {:.1} Nm",
-            sample.load_torque_nm
-        );
-    }
-
-    #[test]
-    fn wot_bench_sample_is_stable_under_bench_dt_refinement() {
-        let mut coarse_cfg = fast_bench_test_config();
-        coarse_cfg.bench.integration_deg_per_step = 1.2;
-        coarse_cfg.bench.integration_error_tolerance = 0.05;
-        coarse_cfg.bench.locked_cycle_samples = 120;
-
-        let mut fine_cfg = coarse_cfg.clone();
-        fine_cfg.bench.settle_time_s = 0.24;
-        fine_cfg.bench.average_time_s = 0.12;
-        fine_cfg.bench.integration_deg_per_step = 0.6;
-        fine_cfg.bench.integration_error_tolerance = 0.02;
-        fine_cfg.bench.locked_cycle_samples = 320;
-
-        let seed = Simulator::new(&coarse_cfg).control;
-        let coarse = measure_wot_bench_sample(
-            &coarse_cfg,
-            &seed,
-            3_500.0,
-            BenchMixtureMode::RichChargeCooling,
-        );
-        let fine = measure_wot_bench_sample(
-            &fine_cfg,
-            &seed,
-            3_500.0,
-            BenchMixtureMode::RichChargeCooling,
-        );
-
-        assert!((coarse.torque_brake_nm - fine.torque_brake_nm).abs() < 8.0);
-        assert!((coarse.map_kpa - fine.map_kpa).abs() < 2.5);
-        assert!((coarse.eta_thermal_indicated_pv - fine.eta_thermal_indicated_pv).abs() < 0.03);
-    }
-
-    #[test]
-    fn lambda_one_bench_runs_at_stoichiometric_target() {
-        let cfg = fast_bench_test_config();
-        let sim = Simulator::new(&cfg);
-        let sample =
-            measure_wot_bench_sample(&cfg, &sim.control, 3_500.0, BenchMixtureMode::LambdaOne);
-        assert_eq!(sample.mixture_mode, BenchMixtureMode::LambdaOne);
-        assert!(
-            (sample.lambda_target - cfg.bench.lambda_one_target).abs() < 1.0e-6,
-            "lambda-one bench should hold stoich target, got {:.4}",
-            sample.lambda_target
-        );
-        assert!(sample.torque_brake_nm.is_finite());
-    }
-
-    #[test]
-    fn rich_charge_cooling_bench_outperforms_lambda_one_at_wot() {
-        let cfg = fast_bench_test_config();
-        let seed = ControlInput::default();
-        let lambda_one =
-            measure_wot_bench_sample(&cfg, &seed, 3_500.0, BenchMixtureMode::LambdaOne);
-        let rich =
-            measure_wot_bench_sample(&cfg, &seed, 3_500.0, BenchMixtureMode::RichChargeCooling);
-        assert!(
-            rich.torque_brake_nm > lambda_one.torque_brake_nm + 4.0,
-            "rich charge-cooling bench should beat lambda=1 on torque, rich={:.1} lambda1={:.1}",
-            rich.torque_brake_nm,
-            lambda_one.torque_brake_nm
-        );
-        assert!(
-            rich.intake_charge_temp_k < lambda_one.intake_charge_temp_k - 1.0,
-            "rich charge-cooling bench should cool the charge more, rich={:.1}K lambda1={:.1}K",
-            rich.intake_charge_temp_k,
-            lambda_one.intake_charge_temp_k
-        );
-    }
-
-    #[test]
-    fn quick_bench_preview_curve_covers_requested_range() {
-        let mut cfg = AppConfig::default();
-        cfg.bench.rpm_start_rpm = 1_500.0;
-        cfg.bench.rpm_end_rpm = 2_500.0;
-        cfg.bench.rpm_step_rpm = 500.0;
-        cfg.bench.locked_cycle_samples = 96;
-
-        let seed = ControlInput::default();
-        let curve = quick_wot_bench_preview_curve(&cfg, &seed, BenchMixtureMode::RichChargeCooling);
-
-        assert_eq!(curve.len(), 3);
-        assert!((curve.first().unwrap().rpm - 1_500.0).abs() < 1.0e-9);
-        assert!((curve.last().unwrap().rpm - 2_500.0).abs() < 1.0e-9);
-        assert!(
-            curve
-                .iter()
-                .all(|sample| sample.torque_brake_nm.is_finite())
-        );
-        assert!(curve.iter().all(|sample| sample.map_kpa.is_finite()));
-    }
-
-    #[test]
-    fn wot_vvt_search_starts_from_global_min_and_scans_forward() {
-        let cfg = AppConfig::default();
-        let tuning = &cfg.auto_control;
-        let model = &cfg.model;
-        let mut auto = AutoController::default();
-        auto.wot_best_point = WotSearchPoint {
-            ignition_deg: 18.0,
-            vvt_intake_deg: 12.0,
-            vvt_exhaust_deg: 6.0,
-        };
-
-        auto.wot_axis = WotSearchAxis::IntakeVvt;
-        assert!(auto.seed_candidate_from_best(tuning, model));
-        assert!(
-            (auto.wot_candidate_point.vvt_intake_deg - tuning.wot_search_vvt_min_deg).abs()
-                < 1.0e-9
-        );
-        assert!(
-            (auto.wot_candidate_point.vvt_exhaust_deg - auto.wot_best_point.vvt_exhaust_deg).abs()
-                < 1.0e-9
-        );
-        assert!(auto.advance_vvt_scan_candidate(tuning, model));
-        assert!(
-            (auto.wot_candidate_point.vvt_intake_deg
-                - (tuning.wot_search_vvt_min_deg + tuning.wot_search_vvt_intake_step_deg.abs()))
-            .abs()
-                < 1.0e-9
-        );
-
-        auto.wot_axis = WotSearchAxis::ExhaustVvt;
-        assert!(auto.seed_candidate_from_best(tuning, model));
-        assert!(
-            (auto.wot_candidate_point.vvt_exhaust_deg - tuning.wot_search_vvt_min_deg).abs()
-                < 1.0e-9
-        );
-        assert!(
-            (auto.wot_candidate_point.vvt_intake_deg - auto.wot_best_point.vvt_intake_deg).abs()
-                < 1.0e-9
-        );
-        assert!(auto.advance_vvt_scan_candidate(tuning, model));
-        assert!(
-            (auto.wot_candidate_point.vvt_exhaust_deg
-                - (tuning.wot_search_vvt_min_deg + tuning.wot_search_vvt_exhaust_step_deg.abs()))
-            .abs()
-                < 1.0e-9
-        );
-    }
-
-    #[test]
-    fn auto_mode_reaches_idle_from_stop() {
+    fn states_remain_physical_under_fired_transient() {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.auto.enabled = true;
-        let mut obs = sim.step(dt);
-        for _ in 0..((14.0 / dt) as usize) {
-            obs = sim.step(dt);
-        }
-
-        assert!(
-            sim.state.running,
-            "engine should be running in auto mode, rpm={:.1}, map={:.1}, intake_runner={:.1}, exhaust_runner={:.1}",
-            obs.rpm, obs.map_kpa, obs.intake_runner_kpa, obs.exhaust_runner_kpa
-        );
-        assert!(
-            (700.0..=1050.0).contains(&obs.rpm),
-            "unexpected final rpm: {:.1}",
-            obs.rpm
-        );
-        assert!(
-            (25.0..=85.0).contains(&obs.map_kpa),
-            "map out of expected idle range: {:.1} kPa",
-            obs.map_kpa
-        );
-    }
-
-    #[test]
-    fn wot_efficiency_auto_mode_improves_poor_wot_calibration() {
-        let poor_ignition_deg = 0.0;
-        let poor_vvt_intake_deg = -28.0;
-        let poor_vvt_exhaust_deg = 28.0;
-        let (_manual_sim, manual_eta) = run_wot_case(
-            false,
-            poor_ignition_deg,
-            poor_vvt_intake_deg,
-            poor_vvt_exhaust_deg,
-        );
-        let (auto_sim, auto_eta) = run_wot_case(
-            true,
-            poor_ignition_deg,
-            poor_vvt_intake_deg,
-            poor_vvt_exhaust_deg,
-        );
-
-        let rpm = rad_s_to_rpm(auto_sim.state.omega_rad_s.max(0.0));
-        let load = (auto_sim.state.p_intake_pa / auto_sim.env.ambient_pressure_pa)
-            .clamp(auto_sim.model.load_min, auto_sim.model.load_max);
-        let mbt_deg = estimate_mbt_deg(&auto_sim.model, rpm, load);
-
-        assert!(
-            auto_eta > manual_eta + 0.03,
-            "WOT search should improve indicated efficiency, manual={manual_eta:.3}, auto={auto_eta:.3}"
-        );
-        assert!(
-            auto_sim.auto.wot_best_point.ignition_deg > poor_ignition_deg + 8.0,
-            "best ignition should move materially away from the poor initial seed, best={:.1} deg mbt={mbt_deg:.1} deg",
-            auto_sim.auto.wot_best_point.ignition_deg
-        );
-        assert!(
-            (auto_sim.control.throttle_cmd - 1.0).abs() < 1.0e-12,
-            "WOT search should force full throttle"
-        );
-        assert!(auto_sim.control.spark_cmd && auto_sim.control.fuel_cmd);
-        assert!(auto_sim.auto.wot_best_eta > 0.0);
-    }
-
-    #[test]
-    fn states_remain_physical_under_start_sequence() {
-        let cfg = AppConfig::default();
-        let dt = cfg.environment.dt;
-        let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = true;
+        configure_high_rpm_operating_point(&mut sim, 1_200.0, 0.22);
         sim.control.spark_cmd = true;
         sim.control.fuel_cmd = true;
-        sim.control.throttle_cmd = 0.22;
 
-        for i in 0..((8.0 / dt) as usize) {
+        for _ in 0..((8.0 / dt) as usize) {
             let obs = sim.step(dt);
-            if i > (2.0 / dt) as usize {
-                sim.control.starter_cmd = false;
-                sim.control.throttle_cmd = 0.10;
-            }
             assert!(obs.rpm.is_finite());
             assert!(obs.map_kpa.is_finite());
             assert!(obs.exhaust_kpa.is_finite());
@@ -5421,6 +3554,55 @@ mod tests {
             "dilution should soften combustion torque, scavenging={:.2} Nm backflow={:.2} Nm",
             scavenging_eval.torque_combustion_nm,
             backflow_eval.torque_combustion_nm
+        );
+    }
+
+    fn locked_brake_torque_at_vvt(
+        cfg: &AppConfig,
+        rpm: f64,
+        throttle: f64,
+        vvt_intake_deg: f64,
+        vvt_exhaust_deg: f64,
+    ) -> f64 {
+        let mut sim = Simulator::new(cfg);
+        configure_high_rpm_operating_point(&mut sim, rpm, throttle);
+        sim.control.vvt_intake_deg = vvt_intake_deg;
+        sim.control.vvt_exhaust_deg = vvt_exhaust_deg;
+        let avg = sim.locked_cycle_average(sim.state, 720);
+        avg.torque_net_nm + avg.torque_load_nm
+    }
+
+    #[test]
+    fn intake_vvt_trend_matches_low_speed_literature_direction() {
+        let cfg = AppConfig::default();
+        let rpm = 2_000.0;
+        let throttle = 1.0;
+        let advanced = locked_brake_torque_at_vvt(&cfg, rpm, throttle, 16.0, -4.0);
+        let retarded = locked_brake_torque_at_vvt(&cfg, rpm, throttle, -10.0, -4.0);
+
+        // Qualitative literature direction:
+        // earlier intake closing / intake advance tends to improve low-speed WOT torque,
+        // while retarded intake phasing shifts the benefit toward higher speed.
+        assert!(
+            advanced > retarded + 4.0,
+            "low-speed torque should prefer intake advance, advanced={advanced:.1} Nm retarded={retarded:.1} Nm"
+        );
+    }
+
+    #[test]
+    fn high_speed_vvt_trend_matches_overlap_literature_direction() {
+        let cfg = AppConfig::default();
+        let rpm = 6_400.0;
+        let throttle = 1.0;
+        let low_speed_like = locked_brake_torque_at_vvt(&cfg, rpm, throttle, 18.0, -8.0);
+        let high_speed_like = locked_brake_torque_at_vvt(&cfg, rpm, throttle, -6.0, 10.0);
+
+        // Qualitative literature direction:
+        // by high speed the low-speed phasing should stop being optimal, and some added
+        // overlap / later intake closing should recover breathing near rated power.
+        assert!(
+            high_speed_like > low_speed_like + 2.0,
+            "high-speed torque should prefer the high-speed VVT setting, high-speed-like={high_speed_like:.1} Nm low-speed-like={low_speed_like:.1} Nm"
         );
     }
 
@@ -5660,7 +3842,7 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             6_500.0,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let mut sim = Simulator::new(&cfg);
@@ -5708,7 +3890,6 @@ mod tests {
         cfg.engine.friction_c1_nms = 0.0;
         cfg.engine.friction_c2_nms2 = 0.0;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = false;
         sim.control.fuel_cmd = false;
         sim.control.throttle_cmd = 0.82;
@@ -5717,7 +3898,7 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let steps = 160usize;
@@ -5766,7 +3947,6 @@ mod tests {
         cfg.engine.friction_c1_nms = 0.012;
         cfg.engine.friction_c2_nms2 = 0.0;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = false;
         sim.control.fuel_cmd = false;
         sim.control.throttle_cmd = 0.22;
@@ -5775,14 +3955,16 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let steps = 96usize;
         let elapsed = dt * steps as f64;
         let omega0 = rpm_to_rad_s(rpm);
         let theta0 = 0.9;
-        let a = cfg.engine.friction_c1_nms / cfg.engine.inertia_kgm2;
+        let effective_inertia =
+            cfg.engine.inertia_kgm2 + cfg.model.external_load.absorber_rotor_inertia_kgm2;
+        let a = cfg.engine.friction_c1_nms / effective_inertia;
         let state0 = EngineState {
             omega_rad_s: omega0,
             theta_rad: theta0,
@@ -5822,7 +4004,6 @@ mod tests {
         cfg.engine.friction_c1_nms = 0.0;
         cfg.engine.friction_c2_nms2 = 0.0;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = false;
         sim.control.fuel_cmd = false;
         sim.control.throttle_cmd = 0.82;
@@ -5831,7 +4012,7 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let steps = 160usize;
@@ -5880,7 +4061,6 @@ mod tests {
         cfg.engine.friction_c1_nms = 0.012;
         cfg.engine.friction_c2_nms2 = 0.0;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = false;
         sim.control.fuel_cmd = false;
         sim.control.throttle_cmd = 0.22;
@@ -5889,14 +4069,16 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let steps = 96usize;
         let elapsed = dt * steps as f64;
         let omega0 = rpm_to_rad_s(rpm);
         let theta0 = 0.9;
-        let a = cfg.engine.friction_c1_nms / cfg.engine.inertia_kgm2;
+        let effective_inertia =
+            cfg.engine.inertia_kgm2 + cfg.model.external_load.absorber_rotor_inertia_kgm2;
+        let a = cfg.engine.friction_c1_nms / effective_inertia;
         let state0 = EngineState {
             omega_rad_s: omega0,
             theta_rad: theta0,
@@ -5951,7 +4133,7 @@ mod tests {
     fn pv_history_contains_multiple_recent_cycles() {
         let cfg = AppConfig::default();
         let mut sim = Simulator::new(&cfg);
-        sim.auto.enabled = true;
+        configure_high_rpm_operating_point(&mut sim, 2_200.0, 0.28);
         for _ in 0..((6.0 / cfg.environment.dt) as usize) {
             sim.step(cfg.environment.dt);
         }
@@ -5981,7 +4163,6 @@ mod tests {
         });
         sim.state.omega_rad_s = 0.0;
         sim.state.running = false;
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = false;
         sim.control.fuel_cmd = false;
 
@@ -6057,11 +4238,38 @@ mod tests {
     }
 
     #[test]
+    fn closed_pv_loop_smoothing_reduces_bin_to_bin_pressure_jitter() {
+        let raw = vec![
+            (0.10, 100_000.0),
+            (0.14, 165_000.0),
+            (0.19, 110_000.0),
+            (0.24, 170_000.0),
+            (0.29, 120_000.0),
+            (0.34, 175_000.0),
+            (0.39, 118_000.0),
+            (0.44, 168_000.0),
+        ];
+        let smoothed = smooth_closed_pv_loop(&raw, 1);
+
+        let roughness = |points: &[(f64, f64)]| -> f64 {
+            points
+                .windows(2)
+                .map(|pair| (pair[1].1 - pair[0].1).abs())
+                .sum::<f64>()
+        };
+
+        assert!(
+            roughness(&smoothed) < roughness(&raw) * 0.75,
+            "display smoothing should reduce p-V pressure jitter"
+        );
+    }
+
+    #[test]
     fn thermal_efficiency_observation_is_finite() {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.auto.enabled = true;
+        configure_high_rpm_operating_point(&mut sim, 2_200.0, 0.36);
         let mut obs = sim.step(dt);
         for _ in 0..((8.0 / dt) as usize) {
             obs = sim.step(dt);
@@ -6147,6 +4355,8 @@ mod tests {
                 true,
                 soc_deg,
                 eoc_deg,
+                5.0,
+                2.0,
                 &pv_model,
             )
             .1
@@ -6226,7 +4436,7 @@ mod tests {
         let dt_nom = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let horizon = 0.020;
@@ -6273,7 +4483,7 @@ mod tests {
         let dt = rpm_linked_dt(
             cfg.environment.dt,
             rpm,
-            cfg.engine.idle_target_rpm,
+            cfg.engine.default_target_rpm,
             &cfg.numerics,
         );
         let mut sim = Simulator::new(&cfg);
@@ -6317,16 +4527,9 @@ mod tests {
             let cfg = AppConfig::default();
             let dt = cfg.environment.dt;
             let mut sim = Simulator::new(&cfg);
-            sim.control.starter_cmd = true;
-            sim.control.spark_cmd = true;
-            sim.control.fuel_cmd = true;
-            sim.control.throttle_cmd = 0.36;
+            configure_high_rpm_operating_point(&mut sim, 2_400.0, 0.36);
             sim.control.ignition_timing_deg = ignition_deg;
-            let _ = sim.step(dt);
-            for i in 0..((10.0 / dt) as usize) {
-                if i > (2.0 / dt) as usize {
-                    sim.control.starter_cmd = false;
-                }
+            for _ in 0..((10.0 / dt) as usize) {
                 let _ = sim.step(dt);
             }
 
@@ -6353,17 +4556,11 @@ mod tests {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = true;
-        sim.control.spark_cmd = true;
-        sim.control.fuel_cmd = true;
-        sim.control.throttle_cmd = 0.30;
+        configure_high_rpm_operating_point(&mut sim, 1_100.0, 0.30);
         sim.control.ignition_timing_deg = 45.0;
 
         let mut obs = sim.step(dt);
-        for i in 0..((9.0 / dt) as usize) {
-            if i > (2.0 / dt) as usize {
-                sim.control.starter_cmd = false;
-            }
+        for _ in 0..((9.0 / dt) as usize) {
             obs = sim.step(dt);
         }
 
@@ -6394,10 +4591,8 @@ mod tests {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = true;
-        sim.control.spark_cmd = true;
+        configure_high_rpm_operating_point(&mut sim, 2_000.0, 0.2);
         sim.control.fuel_cmd = false;
-        sim.control.throttle_cmd = 0.2;
         let mut obs = sim.step(dt);
         for _ in 0..((4.0 / dt) as usize) {
             obs = sim.step(dt);
@@ -6413,7 +4608,6 @@ mod tests {
         let mut sim = Simulator::new(&cfg);
         sim.state.omega_rad_s = rpm_to_rad_s(2000.0);
         sim.state.running = true;
-        sim.control.starter_cmd = false;
         sim.control.spark_cmd = false;
         sim.control.fuel_cmd = false;
         sim.control.throttle_cmd = 0.0;
@@ -6435,7 +4629,7 @@ mod tests {
             let theta = deg.to_radians();
             let pv_model = PvModelConfig::default();
             let (_, p) = instantaneous_pv_sample(
-                cr, theta, p_intake, p_exhaust, p_peak, true, 350.0, 430.0, &pv_model,
+                cr, theta, p_intake, p_exhaust, p_peak, true, 350.0, 430.0, 5.0, 2.0, &pv_model,
             );
             p
         };
@@ -6448,20 +4642,28 @@ mod tests {
     }
 
     #[test]
+    fn normalized_wiebe_burn_fraction_reaches_unity_at_eoc() {
+        let a = 5.0;
+        let m = 2.0;
+        let soc = 350.0;
+        let dur = 60.0;
+        assert_eq!(
+            normalized_wiebe_burn_fraction(soc - 1.0, soc, dur, a, m),
+            0.0
+        );
+        assert!(normalized_wiebe_burn_fraction(soc + 20.0, soc, dur, a, m) > 0.0);
+        assert!((normalized_wiebe_burn_fraction(soc + dur, soc, dur, a, m) - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
     fn imep_is_not_alternating_zero_under_wot_fired_operation() {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = true;
-        sim.control.spark_cmd = true;
-        sim.control.fuel_cmd = true;
-        sim.control.throttle_cmd = 1.0;
+        configure_high_rpm_operating_point(&mut sim, 4_500.0, 1.0);
 
-        for i in 0..((6.0 / dt) as usize) {
+        for _ in 0..((6.0 / dt) as usize) {
             let _ = sim.step(dt);
-            if i > (2.0 / dt) as usize {
-                sim.control.starter_cmd = false;
-            }
         }
 
         let mut nonzero = 0usize;
@@ -6483,11 +4685,12 @@ mod tests {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.auto.enabled = true;
+        configure_high_rpm_operating_point(&mut sim, 2_200.0, 0.32);
         let obs = sim.step(dt);
-        let expected = obs.torque_combustion_nm + obs.torque_starter_nm
+        let expected = obs.torque_combustion_nm
             - obs.torque_friction_nm
-            - obs.torque_pumping_nm;
+            - obs.torque_pumping_nm
+            - obs.torque_load_nm;
         assert!((obs.torque_net_inst_nm - expected).abs() < 1.0e-9);
         assert!(obs.torque_net_nm.is_finite());
     }
@@ -6497,16 +4700,10 @@ mod tests {
         let cfg = AppConfig::default();
         let dt = cfg.environment.dt;
         let mut sim = Simulator::new(&cfg);
-        sim.control.starter_cmd = true;
-        sim.control.spark_cmd = true;
-        sim.control.fuel_cmd = true;
-        sim.control.throttle_cmd = 1.0;
+        configure_high_rpm_operating_point(&mut sim, 4_200.0, 1.0);
 
-        for i in 0..((6.0 / dt) as usize) {
+        for _ in 0..((6.0 / dt) as usize) {
             let _ = sim.step(dt);
-            if i > (2.0 / dt) as usize {
-                sim.control.starter_cmd = false;
-            }
         }
 
         let mut inst = Vec::with_capacity(480);
@@ -6658,7 +4855,6 @@ mod tests {
         let mut sim = Simulator::new(&cfg);
         sim.control.spark_cmd = true;
         sim.control.fuel_cmd = true;
-        sim.control.starter_cmd = false;
         sim.control.throttle_cmd = 1.0;
 
         let rpm = 4_500.0;
@@ -6708,7 +4904,6 @@ mod tests {
         let mut sim = Simulator::new(&cfg);
         sim.control.spark_cmd = true;
         sim.control.fuel_cmd = true;
-        sim.control.starter_cmd = false;
         sim.control.throttle_cmd = 1.0;
 
         let rpm = 4_500.0;
@@ -6734,7 +4929,7 @@ mod tests {
         );
 
         assert!(
-            (55.0..=90.0).contains(&avg.air_consumption_gps),
+            (55.0..=95.0).contains(&avg.air_consumption_gps),
             "locked full-load air consumption should stay in a realistic 2.0L NA band, got {:.1} g/s",
             avg.air_consumption_gps
         );

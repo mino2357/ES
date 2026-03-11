@@ -52,7 +52,8 @@ pub(crate) struct EngineConfig {
     pub(crate) exhaust_runner_volume_m3: f64,
     pub(crate) throttle_area_max_m2: f64,
     pub(crate) tailpipe_area_m2: f64,
-    pub(crate) idle_target_rpm: f64,
+    #[serde(alias = "idle_target_rpm")]
+    pub(crate) default_target_rpm: f64,
     pub(crate) max_rpm: f64,
 }
 
@@ -73,7 +74,7 @@ impl Default for EngineConfig {
             exhaust_runner_volume_m3: 0.00055,
             throttle_area_max_m2: 3.0e-3,
             tailpipe_area_m2: 2.5e-3,
-            idle_target_rpm: 850.0,
+            default_target_rpm: 850.0,
             max_rpm: 7000.0,
         };
         cfg.sync_derived_geometry();
@@ -122,7 +123,6 @@ impl Default for CamConfig {
 pub(crate) struct ControlDefaults {
     pub(crate) throttle_cmd: f64,
     pub(crate) load_cmd: f64,
-    pub(crate) starter_cmd: bool,
     pub(crate) spark_cmd: bool,
     pub(crate) fuel_cmd: bool,
     #[serde(alias = "spark_timing_offset_deg")]
@@ -136,92 +136,11 @@ impl Default for ControlDefaults {
         Self {
             throttle_cmd: 0.05,
             load_cmd: 0.0,
-            starter_cmd: false,
             spark_cmd: false,
             fuel_cmd: false,
             ignition_timing_deg: 12.0,
             vvt_intake_deg: 0.0,
             vvt_exhaust_deg: 0.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub(crate) struct AutoControlConfig {
-    pub(crate) cranking_rpm_threshold: f64,
-    pub(crate) starter_cutoff_rpm: f64,
-    pub(crate) starter_target_rpm: f64,
-    pub(crate) starter_kp: f64,
-    pub(crate) starter_ki: f64,
-    pub(crate) starter_base_throttle: f64,
-    pub(crate) run_kp: f64,
-    pub(crate) run_ki: f64,
-    pub(crate) run_base_throttle: f64,
-    pub(crate) integral_min: f64,
-    pub(crate) integral_max: f64,
-    pub(crate) throttle_min: f64,
-    pub(crate) throttle_max: f64,
-    pub(crate) integral_relief_rpm_band: f64,
-    pub(crate) integral_relief_factor: f64,
-    pub(crate) wot_target_throttle: f64,
-    pub(crate) wot_search_min_rpm: f64,
-    pub(crate) wot_search_eval_time_s: f64,
-    pub(crate) wot_search_min_improvement: f64,
-    pub(crate) wot_search_ignition_step_deg: f64,
-    pub(crate) wot_search_vvt_intake_step_deg: f64,
-    pub(crate) wot_search_vvt_exhaust_step_deg: f64,
-    pub(crate) wot_search_vvt_min_deg: f64,
-    pub(crate) wot_search_vvt_max_deg: f64,
-}
-
-impl Default for AutoControlConfig {
-    fn default() -> Self {
-        Self {
-            cranking_rpm_threshold: 600.0,
-            starter_cutoff_rpm: 760.0,
-            starter_target_rpm: 620.0,
-            starter_kp: 0.00022,
-            starter_ki: 0.00008,
-            starter_base_throttle: 0.14,
-            run_kp: 0.00012,
-            run_ki: 0.00005,
-            run_base_throttle: 0.040,
-            integral_min: -600.0,
-            integral_max: 600.0,
-            throttle_min: 0.005,
-            throttle_max: 0.42,
-            integral_relief_rpm_band: 120.0,
-            integral_relief_factor: 0.85,
-            wot_target_throttle: 1.0,
-            wot_search_min_rpm: 900.0,
-            wot_search_eval_time_s: 0.20,
-            wot_search_min_improvement: 0.002,
-            wot_search_ignition_step_deg: 2.5,
-            wot_search_vvt_intake_step_deg: 4.0,
-            wot_search_vvt_exhaust_step_deg: 4.0,
-            wot_search_vvt_min_deg: -40.0,
-            wot_search_vvt_max_deg: 40.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub(crate) struct StarterTorqueConfig {
-    pub(crate) low_rpm_threshold: f64,
-    pub(crate) high_rpm_threshold: f64,
-    pub(crate) low_torque_nm: f64,
-    pub(crate) high_torque_nm: f64,
-}
-
-impl Default for StarterTorqueConfig {
-    fn default() -> Self {
-        Self {
-            low_rpm_threshold: 220.0,
-            high_rpm_threshold: 450.0,
-            low_torque_nm: 62.0,
-            high_torque_nm: 36.0,
         }
     }
 }
@@ -235,8 +154,18 @@ pub(crate) struct VolumetricEfficiencyConfig {
     pub(crate) rpm_width: f64,
     pub(crate) rpm_min: f64,
     pub(crate) rpm_max: f64,
+    pub(crate) vvt_rpm_low: f64,
+    pub(crate) vvt_rpm_high: f64,
     pub(crate) vvt_intake_coeff: f64,
     pub(crate) vvt_exhaust_coeff: f64,
+    pub(crate) vvt_intake_opt_low_deg: f64,
+    pub(crate) vvt_intake_opt_high_deg: f64,
+    pub(crate) vvt_intake_opt_window_deg: f64,
+    pub(crate) vvt_intake_opt_gain: f64,
+    pub(crate) vvt_exhaust_opt_low_deg: f64,
+    pub(crate) vvt_exhaust_opt_high_deg: f64,
+    pub(crate) vvt_exhaust_opt_window_deg: f64,
+    pub(crate) vvt_exhaust_opt_gain: f64,
     pub(crate) throttle_base: f64,
     pub(crate) throttle_gain: f64,
     pub(crate) throttle_min: f64,
@@ -254,8 +183,18 @@ impl Default for VolumetricEfficiencyConfig {
             rpm_width: 1.05e7,
             rpm_min: 0.62,
             rpm_max: 1.04,
+            vvt_rpm_low: 1_500.0,
+            vvt_rpm_high: 6_500.0,
             vvt_intake_coeff: 0.0022,
-            vvt_exhaust_coeff: 0.0016,
+            vvt_exhaust_coeff: 0.0008,
+            vvt_intake_opt_low_deg: 14.0,
+            vvt_intake_opt_high_deg: -10.0,
+            vvt_intake_opt_window_deg: 20.0,
+            vvt_intake_opt_gain: 0.08,
+            vvt_exhaust_opt_low_deg: -8.0,
+            vvt_exhaust_opt_high_deg: 12.0,
+            vvt_exhaust_opt_window_deg: 18.0,
+            vvt_exhaust_opt_gain: 0.08,
             throttle_base: 0.38,
             throttle_gain: 0.62,
             throttle_min: 0.38,
@@ -544,7 +483,7 @@ pub(crate) enum ExternalLoadMode {
 impl ExternalLoadMode {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::BrakeMap => "Brake map",
+            Self::BrakeMap => "Brake dyno",
             Self::VehicleEquivalent => "Vehicle equivalent",
         }
     }
@@ -600,6 +539,9 @@ pub(crate) struct ExternalLoadConfig {
     pub(crate) speed_quadratic_nms2: f64,
     pub(crate) torque_min_nm: f64,
     pub(crate) torque_max_nm: f64,
+    pub(crate) absorber_rotor_inertia_kgm2: f64,
+    pub(crate) absorber_power_limit_kw: f64,
+    pub(crate) absorber_speed_limit_rpm: f64,
     pub(crate) vehicle: VehicleLoadConfig,
 }
 
@@ -611,8 +553,11 @@ impl Default for ExternalLoadConfig {
             base_torque_nm: 14.0,
             speed_linear_nms: 0.012,
             speed_quadratic_nms2: 0.00018,
-            torque_min_nm: 0.0,
+            torque_min_nm: -220.0,
             torque_max_nm: 220.0,
+            absorber_rotor_inertia_kgm2: 0.24,
+            absorber_power_limit_kw: 170.0,
+            absorber_speed_limit_rpm: 8_000.0,
             vehicle: VehicleLoadConfig::default(),
         }
     }
@@ -706,14 +651,11 @@ pub(crate) struct ModelConfig {
     pub(crate) eta_indicated_min: f64,
     pub(crate) eta_indicated_max: f64,
     pub(crate) imep_swept_volume_floor_m3: f64,
-    pub(crate) stable_idle_rpm_band: f64,
-    pub(crate) stable_idle_throttle_max: f64,
     pub(crate) theoretical_efficiency_compression_floor: f64,
     pub(crate) cam_profile_samples: usize,
     pub(crate) cam_half_duration_min_deg: f64,
     pub(crate) cam_shape_exponent: f64,
     pub(crate) volumetric_efficiency: VolumetricEfficiencyConfig,
-    pub(crate) starter_torque: StarterTorqueConfig,
     pub(crate) pv_model: PvModelConfig,
     pub(crate) gas_path: GasPathConfig,
     pub(crate) wave_action: WaveActionConfig,
@@ -812,14 +754,11 @@ impl Default for ModelConfig {
             eta_indicated_min: -0.20,
             eta_indicated_max: 0.44,
             imep_swept_volume_floor_m3: 1.0e-9,
-            stable_idle_rpm_band: 90.0,
-            stable_idle_throttle_max: 0.20,
             theoretical_efficiency_compression_floor: 1.001,
             cam_profile_samples: 721,
             cam_half_duration_min_deg: 1.0,
             cam_shape_exponent: 1.2,
             volumetric_efficiency: VolumetricEfficiencyConfig::default(),
-            starter_torque: StarterTorqueConfig::default(),
             pv_model: PvModelConfig::default(),
             gas_path: GasPathConfig::default(),
             wave_action: WaveActionConfig::default(),
@@ -836,7 +775,8 @@ impl Default for ModelConfig {
 #[serde(default)]
 pub(crate) struct NumericsConfig {
     pub(crate) rpm_link_base_dt_min_s: f64,
-    pub(crate) rpm_link_idle_rpm_min: f64,
+    #[serde(alias = "rpm_link_idle_rpm_min")]
+    pub(crate) rpm_link_reference_rpm_min: f64,
     pub(crate) rpm_link_deg_per_step_min: f64,
     pub(crate) rpm_link_deg_per_step_max: f64,
     pub(crate) rpm_link_rpm_floor: f64,
@@ -873,7 +813,7 @@ impl Default for NumericsConfig {
     fn default() -> Self {
         Self {
             rpm_link_base_dt_min_s: 0.00005,
-            rpm_link_idle_rpm_min: 200.0,
+            rpm_link_reference_rpm_min: 200.0,
             rpm_link_deg_per_step_min: 1.0,
             rpm_link_deg_per_step_max: 12.0,
             rpm_link_rpm_floor: 80.0,
@@ -945,7 +885,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             sync_to_wall_clock: false,
-            simulated_time_per_frame_s: 0.012,
+            simulated_time_per_frame_s: 0.008,
             min_base_dt_s: 0.0002,
             realtime_dt_min_factor: 0.05,
             realtime_dt_max_factor: 3.0,
@@ -969,7 +909,7 @@ impl Default for UiConfig {
             trapped_air_headroom_ratio: 1.15,
             pv_headroom_ratio: 1.08,
             pv_min_headroom_kpa: 100.0,
-            repaint_hz: 20,
+            repaint_hz: 45,
             window_width_px: 1536.0,
             window_height_px: 900.0,
         }
@@ -1004,123 +944,6 @@ impl Default for PlotConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum BenchMixtureMode {
-    RichChargeCooling,
-    LambdaOne,
-}
-
-impl BenchMixtureMode {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::RichChargeCooling => "Rich + charge cooling",
-            Self::LambdaOne => "Lambda = 1",
-        }
-    }
-}
-
-impl Default for BenchMixtureMode {
-    fn default() -> Self {
-        Self::RichChargeCooling
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub(crate) struct BenchDynoConfig {
-    pub(crate) initial_load_cmd: f64,
-    pub(crate) speed_hold_kp: f64,
-    pub(crate) speed_hold_ki: f64,
-    pub(crate) integral_min: f64,
-    pub(crate) integral_max: f64,
-    pub(crate) absorber_model: ExternalLoadConfig,
-}
-
-impl Default for BenchDynoConfig {
-    fn default() -> Self {
-        Self {
-            initial_load_cmd: 0.55,
-            speed_hold_kp: 0.0035,
-            speed_hold_ki: 0.0025,
-            integral_min: -220.0,
-            integral_max: 220.0,
-            absorber_model: ExternalLoadConfig {
-                mode: ExternalLoadMode::BrakeMap,
-                command_exponent: 1.0,
-                base_torque_nm: 220.0,
-                speed_linear_nms: 0.040,
-                speed_quadratic_nms2: 0.00015,
-                torque_min_nm: 0.0,
-                torque_max_nm: 360.0,
-                vehicle: VehicleLoadConfig::default(),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub(crate) struct BenchConfig {
-    pub(crate) default_mode: BenchMixtureMode,
-    pub(crate) display_rpm_min: f64,
-    pub(crate) include_zero_rpm_anchor: bool,
-    pub(crate) rpm_start_rpm: f64,
-    pub(crate) rpm_end_rpm: f64,
-    pub(crate) rpm_step_rpm: f64,
-    pub(crate) sweep_warmup_time_s: f64,
-    pub(crate) sweep_duration_s: f64,
-    pub(crate) sweep_integration_deg_per_step: f64,
-    pub(crate) settle_time_s: f64,
-    pub(crate) average_time_s: f64,
-    pub(crate) locked_cycle_samples: usize,
-    pub(crate) initial_map_ratio: f64,
-    pub(crate) initial_exhaust_over_ambient_pa: f64,
-    pub(crate) lambda_one_target: f64,
-    pub(crate) rich_charge_cooling_lambda: f64,
-    pub(crate) integration_deg_per_step: f64,
-    pub(crate) integration_dt_min_s: f64,
-    pub(crate) integration_dt_max_s: f64,
-    pub(crate) integration_error_tolerance: f64,
-    pub(crate) integration_dt_growth: f64,
-    pub(crate) integration_refine_limit: usize,
-    pub(crate) steps_per_frame: usize,
-    pub(crate) frame_time_budget_ms: f64,
-    pub(crate) dyno: BenchDynoConfig,
-}
-
-impl Default for BenchConfig {
-    fn default() -> Self {
-        Self {
-            default_mode: BenchMixtureMode::default(),
-            display_rpm_min: 0.0,
-            include_zero_rpm_anchor: true,
-            rpm_start_rpm: 1_000.0,
-            rpm_end_rpm: 6_500.0,
-            rpm_step_rpm: 250.0,
-            sweep_warmup_time_s: 0.35,
-            sweep_duration_s: 4.0,
-            sweep_integration_deg_per_step: 2.4,
-            settle_time_s: 0.45,
-            average_time_s: 0.25,
-            locked_cycle_samples: 240,
-            initial_map_ratio: 0.95,
-            initial_exhaust_over_ambient_pa: 7_000.0,
-            lambda_one_target: 1.0,
-            rich_charge_cooling_lambda: 0.88,
-            integration_deg_per_step: 0.8,
-            integration_dt_min_s: 5.0e-6,
-            integration_dt_max_s: 2.0e-4,
-            integration_error_tolerance: 0.03,
-            integration_dt_growth: 1.25,
-            integration_refine_limit: 8,
-            steps_per_frame: 8_000,
-            frame_time_budget_ms: 18.0,
-            dyno: BenchDynoConfig::default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub(crate) struct AppConfig {
@@ -1128,12 +951,10 @@ pub(crate) struct AppConfig {
     pub(crate) engine: EngineConfig,
     pub(crate) cam: CamConfig,
     pub(crate) control_defaults: ControlDefaults,
-    pub(crate) auto_control: AutoControlConfig,
     pub(crate) model: ModelConfig,
     pub(crate) numerics: NumericsConfig,
     pub(crate) ui: UiConfig,
     pub(crate) plot: PlotConfig,
-    pub(crate) bench: BenchConfig,
 }
 
 impl Default for AppConfig {
@@ -1143,12 +964,10 @@ impl Default for AppConfig {
             engine: EngineConfig::default(),
             cam: CamConfig::default(),
             control_defaults: ControlDefaults::default(),
-            auto_control: AutoControlConfig::default(),
             model: ModelConfig::default(),
             numerics: NumericsConfig::default(),
             ui: UiConfig::default(),
             plot: PlotConfig::default(),
-            bench: BenchConfig::default(),
         }
     }
 }
@@ -1248,10 +1067,7 @@ fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> AppConfig {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{
-        BenchMixtureMode, ExternalLoadMode, config_candidate_paths, load_config,
-        validate_app_config,
-    };
+    use super::{ExternalLoadMode, config_candidate_paths, load_config, validate_app_config};
 
     #[test]
     fn checked_in_yaml_with_comments_parses() {
@@ -1280,27 +1096,14 @@ mod tests {
         assert!((cfg.model.external_load.torque_max_nm - 220.0).abs() < 1.0e-12);
         assert!((cfg.model.external_load.vehicle.vehicle_mass_kg - 1_450.0).abs() < 1.0e-12);
         assert!((cfg.model.fuel_evaporation.latent_heat_j_per_kg - 350_000.0).abs() < 1.0e-12);
-        assert!((cfg.auto_control.wot_target_throttle - 1.0).abs() < 1.0e-12);
         assert_eq!(cfg.plot.history_recent_cycles, 1);
         assert_eq!(cfg.plot.pv_recent_cycles, 4);
         assert!(!cfg.ui.sync_to_wall_clock);
-        assert!((cfg.ui.simulated_time_per_frame_s - 0.012).abs() < 1.0e-12);
+        assert!((cfg.ui.simulated_time_per_frame_s - 0.008).abs() < 1.0e-12);
+        assert_eq!(cfg.ui.repaint_hz, 45);
         assert!((cfg.ui.pv_plot_height_px - 290.0).abs() < 1.0e-12);
         assert!((cfg.ui.window_width_px - 1536.0).abs() < 1.0e-12);
         assert!((cfg.ui.window_height_px - 900.0).abs() < 1.0e-12);
-        assert_eq!(cfg.bench.locked_cycle_samples, 240);
-        assert!((cfg.bench.display_rpm_min - 0.0).abs() < 1.0e-12);
-        assert!(cfg.bench.include_zero_rpm_anchor);
-        assert!((cfg.bench.sweep_warmup_time_s - 0.35).abs() < 1.0e-12);
-        assert!((cfg.bench.sweep_duration_s - 4.0).abs() < 1.0e-12);
-        assert!((cfg.bench.sweep_integration_deg_per_step - 2.4).abs() < 1.0e-12);
-        assert!((cfg.bench.integration_deg_per_step - 0.8).abs() < 1.0e-12);
-        assert_eq!(cfg.bench.steps_per_frame, 8_000);
-        assert!((cfg.bench.frame_time_budget_ms - 18.0).abs() < 1.0e-12);
-        assert!((cfg.bench.dyno.initial_load_cmd - 0.55).abs() < 1.0e-12);
-        assert!((cfg.bench.dyno.speed_hold_kp - 0.0035).abs() < 1.0e-12);
-        assert!((cfg.bench.dyno.absorber_model.torque_max_nm - 360.0).abs() < 1.0e-12);
-        assert_eq!(cfg.bench.default_mode, BenchMixtureMode::RichChargeCooling);
     }
 
     #[test]

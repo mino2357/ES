@@ -30,6 +30,14 @@
 現在の solver は reduced-order の transient model です。
 engine 周辺の compact state を直接積分し、cylinder 表示量はその状態から再構成します。
 
+## 関連文書
+
+- [../README.ja.md](../README.ja.md): repository 全体の概要と文書構成
+- [USER_MANUAL.ja.md](USER_MANUAL.ja.md): GUI 操作と設定ファイルの使い方
+- [BENCH_CONSOLE_REFERENCE.ja.md](BENCH_CONSOLE_REFERENCE.ja.md): 出典付きの bench console / dyno load reference
+- [MODEL_REFERENCE.md](MODEL_REFERENCE.md): この model reference の英語版
+- [../ENGINE_MODEL_WORKLOG.md](../ENGINE_MODEL_WORKLOG.md): 実装変更の時系列ログ
+
 ## 状態の分け方
 
 ### 微分方程式として積分する状態
@@ -61,7 +69,7 @@ p_{er} &
 - charge temperature
 - 有効 `c_p` と `gamma`
 - combustion phasing と burn duration
-- combustion / friction / pumping / starter / load torque
+- combustion / friction / pumping / load torque
 - `p-V` と `p-theta`
 
 ## システム全体の ODE まとめ
@@ -86,7 +94,6 @@ u_{load} &
 \theta_{ign} &
 VVT_i &
 VVT_e &
-u_{starter} &
 u_{spark} &
 u_{fuel}
 \end{bmatrix}^{\mathsf T}
@@ -113,7 +120,7 @@ p_{er} \\
 \end{bmatrix}
 =
 \begin{bmatrix}
-\dfrac{\tau_{comb} + \tau_{starter} - \tau_{fric} - \tau_{pump} - \tau_{load}}{J_{eff}} \\
+\dfrac{\tau_{comb} - \tau_{fric} - \tau_{pump} - \tau_{load}}{J_{eff}} \\
 \omega \\
 \dfrac{R T_i}{V_{im}}\left(\dot m_{th} - \dot m_{ir}\right) \\
 \dfrac{R T_i}{V_{ir}}\left(\dot m_{ir} - \dot m_{cyl}\right) \\
@@ -138,7 +145,6 @@ p_{er} \\
 J_{eff}\frac{d\omega}{dt}
 =
 \tau_{comb}
-\tau_{starter}
 - \tau_{fric}
 - \tau_{pump}
 - \tau_{load}
@@ -258,12 +264,58 @@ VE_{base}
 \operatorname{clamp}
 \left(
 VE_{rpm}
-\left(
-1 + c_{vi}VVT_i - c_{ve}VVT_e
-\right)
+M_{vvt,lin}
+M_{vvt,opt}
 VE_{th},
 VE_{min},
 VE_{max}
+\right)
+```
+
+```math
+M_{vvt,lin}
+=
+1 + c_{vi}VVT_i - c_{ve}VVT_e
+```
+
+```math
+\beta_{vvt}
+=
+\operatorname{clamp}
+\left(
+\frac{rpm-rpm_{vvt,low}}{rpm_{vvt,high}-rpm_{vvt,low}},
+0,
+1
+\right)
+```
+
+```math
+VVT_{i,opt}
+=
+(1-\beta_{vvt})VVT_{i,low}
++
+\beta_{vvt}VVT_{i,high}
+```
+
+```math
+VVT_{e,opt}
+=
+(1-\beta_{vvt})VVT_{e,low}
++
+\beta_{vvt}VVT_{e,high}
+```
+
+```math
+M_{vvt,opt}
+=
+\max\left(
+0.75,
+\left(
+1 - g_i\left(\frac{VVT_i - VVT_{i,opt}}{w_i}\right)^2
+\right)
+\left(
+1 - g_e\left(\frac{VVT_e - VVT_{e,opt}}{w_e}\right)^2
+\right)
 \right)
 ```
 
@@ -588,18 +640,36 @@ W_{cyc,cyl} = m_{fuel}LHV\eta_{th}
 
 ## External load model
 
-### Brake-map mode
+### Brake dyno mode
 
 ```math
 s = u_{load}^{n_{load}}
 ```
 
 ```math
-\tau_{load}
 =
 s
+\tau_{avail}
+```
+
+with
+
+```math
+\tau_{ref}
+=
 \left(
 a_0 + a_1\omega + a_2\omega^2
+\right)
+```
+
+and
+
+```math
+\tau_{avail}
+=
+\min\left(
+\tau_{ref},
+\frac{P_{abs,max}}{\omega}
 \right)
 ```
 
@@ -629,15 +699,19 @@ F_{drag} = \frac{1}{2}\rho C_d A_f v^2
 \tau_{load}
 =
 s
-\left(
+\min\left(
 \frac{\tau_w}{i_{tot}\eta_d} + \tau_{acc}
+\;,\;
+\frac{P_{abs,max}}{\omega}
 \right)
 ```
 
 ```math
 J_{load,reflected}
 =
-s\,m_{eq}\left(\frac{r_w}{i_{tot}}\right)^2
+J_{abs}
++
+|s|\,m_{eq}\left(\frac{r_w}{i_{tot}}\right)^2
 ```
 
 ## 再構成 `p-V` / `p-theta`
@@ -682,6 +756,9 @@ IMEP = \frac{W_i}{V_{swept}}
 ## 数値積分
 
 ### RK3
+
+この simulator では、classical Kutta の three-stage, third-order explicit Runge-Kutta formula を使っています。
+Butcher tableau は `c = [0, 1/2, 1]`, `A = [[0], [1/2], [-1, 2]]`, `b = [1/6, 4/6, 1/6]` です。
 
 ```math
 k_1 = f(x_n)
@@ -765,8 +842,12 @@ x_n + \Delta t
   Hendricks and Sorenson, 1990; Hendricks and Vesterholm, 1992
 - reduced-order EGR / residual-gas:
   Fons et al., 1999
+- bench-console function と operator-side engine-dyno instrumentation:
+  HORIBA SPARC Engine; Froude Texcel V12 PRO; Froude InCell
 - single-zone combustion framing と Wiebe:
   Grau et al., 2002
+- low-speed / high-speed の VVT phasing trend を与える定性的 surrogate:
+  Ma et al., 2001; Lee and Min, 2010; Asmus, 1985
 - pressure-data heat-release interpretation:
   Gatowski et al., 1984
 - heat-transfer scaling:
@@ -779,7 +860,8 @@ x_n + \Delta t
 比較的 defensible なもの:
 
 - throttle、load、ignition、VVT に対する定性的な過渡応答
-- bench-style torque curve
+- 低速側と高速側での VVT torque trend の定性的な方向
+- transient load response の解析
 - vehicle-equivalent loading の解釈
 - manifold / runner / reconstructed cylinder behavior の reduced-order 可視化
 
@@ -808,3 +890,15 @@ x_n + \Delta t
 7. Rajamani, R., *Vehicle Dynamics and Control*, Springer. Book page: https://link.springer.com/book/10.1007/978-1-4614-1433-9
 
 8. Hellgren, J., and Larsson, E., "A Propulsion Energy Estimator for Road Vehicles," in *FISITA World Congress 2023*, Springer, 2024. Chapter page: https://link.springer.com/chapter/10.1007/978-3-031-70392-8_45
+
+9. Ma, T., Kuo, T.-W., Lin, C.-A., and Huang, Z.-Y., "Optimization of the Variable Valve Timing and Lift Profile for a SI Engine," SAE Technical Paper 2001-01-0247, 2001. https://doi.org/10.4271/2001-01-0247
+
+10. Lee, Y., and Min, K., "Effects of Variable Intake Valve Timing on Engine Performance in a Spark Ignition Engine," SAE Technical Paper 2010-01-1190, 2010. https://doi.org/10.4271/2010-01-1190
+
+11. Asmus, T., "Variable Valve Timing: A Valuable Means for Improving the Overall Engine Performance," SAE Technical Paper 850507, 1985. https://doi.org/10.4271/850507
+
+12. HORIBA, "SPARC Engine," official product page. https://www.horiba.com/usa/medical/products/detail/action/show/Product/sparc-95/
+
+13. Froude, "Texcel V12 PRO Controller," official product page. https://www.froudedyno.com/products/control-systems/texcel-v12-controller
+
+14. Froude, "InCell Control and Data Acquisition System," official product page. https://www.froudedyno.com/products/control-systems/incell-control-and-data-acquisition-system

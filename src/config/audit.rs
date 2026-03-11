@@ -40,7 +40,6 @@ pub(crate) fn audit_app_config(cfg: &AppConfig) -> ConfigAuditReport {
     audit_numerics(cfg, &mut report);
     audit_ui(cfg, &mut report);
     audit_plot(cfg, &mut report);
-    audit_bench(cfg, &mut report);
 
     report
 }
@@ -182,17 +181,17 @@ fn audit_engine(cfg: &AppConfig, report: &mut ConfigAuditReport) {
     );
     require_range(
         report,
-        engine.idle_target_rpm,
-        "engine.idle_target_rpm",
+        engine.default_target_rpm,
+        "engine.default_target_rpm",
         500.0,
         1_500.0,
     );
     require_range(report, engine.max_rpm, "engine.max_rpm", 2_000.0, 12_000.0);
     require_lt(
         report,
-        engine.idle_target_rpm,
+        engine.default_target_rpm,
         engine.max_rpm,
-        "engine.idle_target_rpm",
+        "engine.default_target_rpm",
         "engine.max_rpm",
     );
 
@@ -233,7 +232,11 @@ fn audit_engine(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         3.0,
         35.0,
     );
-    for rpm in [engine.idle_target_rpm.max(700.0), 3_000.0, engine.max_rpm] {
+    for rpm in [
+        engine.default_target_rpm.max(700.0),
+        3_000.0,
+        engine.max_rpm,
+    ] {
         let omega = rpm * PI / 30.0;
         let friction = engine.friction_c0_nm
             + engine.friction_c1_nms * omega
@@ -314,7 +317,13 @@ fn audit_controls(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         defaults.throttle_cmd,
         "control_defaults.throttle_cmd",
     );
-    require_unit_interval(report, defaults.load_cmd, "control_defaults.load_cmd");
+    require_range(
+        report,
+        defaults.load_cmd,
+        "control_defaults.load_cmd",
+        -1.0,
+        1.0,
+    );
     require_range(
         report,
         defaults.ignition_timing_deg,
@@ -336,194 +345,9 @@ fn audit_controls(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         -60.0,
         60.0,
     );
-
-    let auto = &cfg.auto_control;
-    for (value, path, min, max) in [
-        (
-            auto.cranking_rpm_threshold,
-            "auto_control.cranking_rpm_threshold",
-            100.0,
-            900.0,
-        ),
-        (
-            auto.starter_cutoff_rpm,
-            "auto_control.starter_cutoff_rpm",
-            200.0,
-            1_800.0,
-        ),
-        (
-            auto.starter_target_rpm,
-            "auto_control.starter_target_rpm",
-            200.0,
-            1_800.0,
-        ),
-        (auto.starter_kp, "auto_control.starter_kp", 0.0, 0.1),
-        (auto.starter_ki, "auto_control.starter_ki", 0.0, 1.0),
-        (
-            auto.starter_base_throttle,
-            "auto_control.starter_base_throttle",
-            0.0,
-            1.0,
-        ),
-        (auto.run_kp, "auto_control.run_kp", 0.0, 0.2),
-        (auto.run_ki, "auto_control.run_ki", 0.0, 2.0),
-        (
-            auto.run_base_throttle,
-            "auto_control.run_base_throttle",
-            0.0,
-            1.0,
-        ),
-        (
-            auto.integral_min,
-            "auto_control.integral_min",
-            -5_000.0,
-            5_000.0,
-        ),
-        (
-            auto.integral_max,
-            "auto_control.integral_max",
-            -5_000.0,
-            5_000.0,
-        ),
-        (auto.throttle_min, "auto_control.throttle_min", 0.0, 1.0),
-        (auto.throttle_max, "auto_control.throttle_max", 0.0, 1.0),
-        (
-            auto.integral_relief_rpm_band,
-            "auto_control.integral_relief_rpm_band",
-            1.0,
-            1_500.0,
-        ),
-        (
-            auto.integral_relief_factor,
-            "auto_control.integral_relief_factor",
-            0.0,
-            1.0,
-        ),
-        (
-            auto.wot_target_throttle,
-            "auto_control.wot_target_throttle",
-            0.7,
-            1.0,
-        ),
-        (
-            auto.wot_search_min_rpm,
-            "auto_control.wot_search_min_rpm",
-            500.0,
-            10_000.0,
-        ),
-        (
-            auto.wot_search_eval_time_s,
-            "auto_control.wot_search_eval_time_s",
-            0.05,
-            10.0,
-        ),
-        (
-            auto.wot_search_min_improvement,
-            "auto_control.wot_search_min_improvement",
-            0.0,
-            0.2,
-        ),
-        (
-            auto.wot_search_ignition_step_deg,
-            "auto_control.wot_search_ignition_step_deg",
-            0.1,
-            10.0,
-        ),
-        (
-            auto.wot_search_vvt_intake_step_deg,
-            "auto_control.wot_search_vvt_intake_step_deg",
-            0.1,
-            20.0,
-        ),
-        (
-            auto.wot_search_vvt_exhaust_step_deg,
-            "auto_control.wot_search_vvt_exhaust_step_deg",
-            0.1,
-            20.0,
-        ),
-        (
-            auto.wot_search_vvt_min_deg,
-            "auto_control.wot_search_vvt_min_deg",
-            -60.0,
-            60.0,
-        ),
-        (
-            auto.wot_search_vvt_max_deg,
-            "auto_control.wot_search_vvt_max_deg",
-            -60.0,
-            60.0,
-        ),
-    ] {
-        require_range(report, value, path, min, max);
-    }
-    require_lt(
-        report,
-        auto.cranking_rpm_threshold,
-        auto.starter_cutoff_rpm,
-        "auto_control.cranking_rpm_threshold",
-        "auto_control.starter_cutoff_rpm",
-    );
-    require_lt(
-        report,
-        auto.integral_min,
-        auto.integral_max,
-        "auto_control.integral_min",
-        "auto_control.integral_max",
-    );
-    require_lt(
-        report,
-        auto.throttle_min,
-        auto.throttle_max,
-        "auto_control.throttle_min",
-        "auto_control.throttle_max",
-    );
-    require_lt(
-        report,
-        auto.wot_search_vvt_min_deg,
-        auto.wot_search_vvt_max_deg,
-        "auto_control.wot_search_vvt_min_deg",
-        "auto_control.wot_search_vvt_max_deg",
-    );
 }
 
 fn audit_model(cfg: &AppConfig, report: &mut ConfigAuditReport) {
-    let starter = &cfg.model.starter_torque;
-    require_range(
-        report,
-        starter.low_rpm_threshold,
-        "model.starter_torque.low_rpm_threshold",
-        0.0,
-        1_000.0,
-    );
-    require_range(
-        report,
-        starter.high_rpm_threshold,
-        "model.starter_torque.high_rpm_threshold",
-        100.0,
-        3_000.0,
-    );
-    require_range(
-        report,
-        starter.low_torque_nm,
-        "model.starter_torque.low_torque_nm",
-        0.0,
-        250.0,
-    );
-    require_range(
-        report,
-        starter.high_torque_nm,
-        "model.starter_torque.high_torque_nm",
-        0.0,
-        250.0,
-    );
-    require_lt(
-        report,
-        starter.low_rpm_threshold,
-        starter.high_rpm_threshold,
-        "model.starter_torque.low_rpm_threshold",
-        "model.starter_torque.high_rpm_threshold",
-    );
-
     let ve = &cfg.model.volumetric_efficiency;
     for (value, path, min, max) in [
         (
@@ -553,6 +377,18 @@ fn audit_model(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         (ve.rpm_min, "model.volumetric_efficiency.rpm_min", 0.1, 2.0),
         (ve.rpm_max, "model.volumetric_efficiency.rpm_max", 0.2, 2.0),
         (
+            ve.vvt_rpm_low,
+            "model.volumetric_efficiency.vvt_rpm_low",
+            500.0,
+            6_000.0,
+        ),
+        (
+            ve.vvt_rpm_high,
+            "model.volumetric_efficiency.vvt_rpm_high",
+            1_500.0,
+            12_000.0,
+        ),
+        (
             ve.vvt_intake_coeff,
             "model.volumetric_efficiency.vvt_intake_coeff",
             -0.05,
@@ -563,6 +399,54 @@ fn audit_model(cfg: &AppConfig, report: &mut ConfigAuditReport) {
             "model.volumetric_efficiency.vvt_exhaust_coeff",
             -0.05,
             0.05,
+        ),
+        (
+            ve.vvt_intake_opt_low_deg,
+            "model.volumetric_efficiency.vvt_intake_opt_low_deg",
+            -50.0,
+            50.0,
+        ),
+        (
+            ve.vvt_intake_opt_high_deg,
+            "model.volumetric_efficiency.vvt_intake_opt_high_deg",
+            -50.0,
+            50.0,
+        ),
+        (
+            ve.vvt_intake_opt_window_deg,
+            "model.volumetric_efficiency.vvt_intake_opt_window_deg",
+            2.0,
+            60.0,
+        ),
+        (
+            ve.vvt_intake_opt_gain,
+            "model.volumetric_efficiency.vvt_intake_opt_gain",
+            0.0,
+            0.25,
+        ),
+        (
+            ve.vvt_exhaust_opt_low_deg,
+            "model.volumetric_efficiency.vvt_exhaust_opt_low_deg",
+            -50.0,
+            50.0,
+        ),
+        (
+            ve.vvt_exhaust_opt_high_deg,
+            "model.volumetric_efficiency.vvt_exhaust_opt_high_deg",
+            -50.0,
+            50.0,
+        ),
+        (
+            ve.vvt_exhaust_opt_window_deg,
+            "model.volumetric_efficiency.vvt_exhaust_opt_window_deg",
+            2.0,
+            60.0,
+        ),
+        (
+            ve.vvt_exhaust_opt_gain,
+            "model.volumetric_efficiency.vvt_exhaust_opt_gain",
+            0.0,
+            0.25,
         ),
         (
             ve.throttle_base,
@@ -609,6 +493,13 @@ fn audit_model(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         ve.rpm_max,
         "model.volumetric_efficiency.rpm_min",
         "model.volumetric_efficiency.rpm_max",
+    );
+    require_lt(
+        report,
+        ve.vvt_rpm_low,
+        ve.vvt_rpm_high,
+        "model.volumetric_efficiency.vvt_rpm_low",
+        "model.volumetric_efficiency.vvt_rpm_high",
     );
     require_lt(
         report,
@@ -1688,18 +1579,6 @@ fn audit_model(cfg: &AppConfig, report: &mut ConfigAuditReport) {
             1.0e-3,
         ),
         (
-            model.stable_idle_rpm_band,
-            "model.stable_idle_rpm_band",
-            1.0,
-            1_000.0,
-        ),
-        (
-            model.stable_idle_throttle_max,
-            "model.stable_idle_throttle_max",
-            0.0,
-            1.0,
-        ),
-        (
             model.theoretical_efficiency_compression_floor,
             "model.theoretical_efficiency_compression_floor",
             1.0,
@@ -1844,8 +1723,8 @@ fn audit_numerics(cfg: &AppConfig, report: &mut ConfigAuditReport) {
             0.05,
         ),
         (
-            n.rpm_link_idle_rpm_min,
-            "numerics.rpm_link_idle_rpm_min",
+            n.rpm_link_reference_rpm_min,
+            "numerics.rpm_link_reference_rpm_min",
             10.0,
             2_000.0,
         ),
@@ -2214,159 +2093,6 @@ fn audit_plot(cfg: &AppConfig, report: &mut ConfigAuditReport) {
     );
 }
 
-fn audit_bench(cfg: &AppConfig, report: &mut ConfigAuditReport) {
-    let bench = &cfg.bench;
-    for (value, path, min, max) in [
-        (bench.display_rpm_min, "bench.display_rpm_min", 0.0, 5_000.0),
-        (bench.rpm_start_rpm, "bench.rpm_start_rpm", 500.0, 10_000.0),
-        (bench.rpm_end_rpm, "bench.rpm_end_rpm", 500.0, 12_000.0),
-        (bench.rpm_step_rpm, "bench.rpm_step_rpm", 10.0, 2_000.0),
-        (
-            bench.sweep_warmup_time_s,
-            "bench.sweep_warmup_time_s",
-            0.0,
-            60.0,
-        ),
-        (bench.sweep_duration_s, "bench.sweep_duration_s", 0.1, 600.0),
-        (
-            bench.sweep_integration_deg_per_step,
-            "bench.sweep_integration_deg_per_step",
-            0.05,
-            30.0,
-        ),
-        (bench.settle_time_s, "bench.settle_time_s", 0.0, 60.0),
-        (bench.average_time_s, "bench.average_time_s", 0.01, 60.0),
-        (bench.initial_map_ratio, "bench.initial_map_ratio", 0.1, 2.0),
-        (
-            bench.initial_exhaust_over_ambient_pa,
-            "bench.initial_exhaust_over_ambient_pa",
-            0.0,
-            200_000.0,
-        ),
-        (bench.lambda_one_target, "bench.lambda_one_target", 0.7, 1.6),
-        (
-            bench.rich_charge_cooling_lambda,
-            "bench.rich_charge_cooling_lambda",
-            0.6,
-            1.2,
-        ),
-        (
-            bench.integration_deg_per_step,
-            "bench.integration_deg_per_step",
-            0.05,
-            20.0,
-        ),
-        (
-            bench.integration_dt_min_s,
-            "bench.integration_dt_min_s",
-            1.0e-7,
-            0.05,
-        ),
-        (
-            bench.integration_dt_max_s,
-            "bench.integration_dt_max_s",
-            1.0e-7,
-            0.2,
-        ),
-        (
-            bench.integration_error_tolerance,
-            "bench.integration_error_tolerance",
-            1.0e-6,
-            10.0,
-        ),
-        (
-            bench.integration_dt_growth,
-            "bench.integration_dt_growth",
-            1.0,
-            10.0,
-        ),
-        (
-            bench.frame_time_budget_ms,
-            "bench.frame_time_budget_ms",
-            1.0,
-            1_000.0,
-        ),
-    ] {
-        require_range(report, value, path, min, max);
-    }
-    require_usize_range(
-        report,
-        bench.locked_cycle_samples,
-        "bench.locked_cycle_samples",
-        1,
-        10_000,
-    );
-    require_usize_range(
-        report,
-        bench.integration_refine_limit,
-        "bench.integration_refine_limit",
-        0,
-        64,
-    );
-    require_usize_range(
-        report,
-        bench.steps_per_frame,
-        "bench.steps_per_frame",
-        1,
-        1_000_000,
-    );
-    require_lt(
-        report,
-        bench.rpm_start_rpm,
-        bench.rpm_end_rpm,
-        "bench.rpm_start_rpm",
-        "bench.rpm_end_rpm",
-    );
-    require_lt(
-        report,
-        bench.integration_dt_min_s,
-        bench.integration_dt_max_s,
-        "bench.integration_dt_min_s",
-        "bench.integration_dt_max_s",
-    );
-    require_lt(
-        report,
-        bench.rich_charge_cooling_lambda,
-        bench.lambda_one_target,
-        "bench.rich_charge_cooling_lambda",
-        "bench.lambda_one_target",
-    );
-
-    let dyno = &bench.dyno;
-    for (value, path, min, max) in [
-        (
-            dyno.initial_load_cmd,
-            "bench.dyno.initial_load_cmd",
-            0.0,
-            1.0,
-        ),
-        (dyno.speed_hold_kp, "bench.dyno.speed_hold_kp", 0.0, 1.0),
-        (dyno.speed_hold_ki, "bench.dyno.speed_hold_ki", 0.0, 10.0),
-        (
-            dyno.integral_min,
-            "bench.dyno.integral_min",
-            -10_000.0,
-            10_000.0,
-        ),
-        (
-            dyno.integral_max,
-            "bench.dyno.integral_max",
-            -10_000.0,
-            10_000.0,
-        ),
-    ] {
-        require_range(report, value, path, min, max);
-    }
-    require_lt(
-        report,
-        dyno.integral_min,
-        dyno.integral_max,
-        "bench.dyno.integral_min",
-        "bench.dyno.integral_max",
-    );
-    audit_external_load(&dyno.absorber_model, "bench.dyno.absorber_model", report);
-}
-
 fn require_range(report: &mut ConfigAuditReport, value: f64, path: &str, min: f64, max: f64) {
     if !value.is_finite() {
         report.error(format!("'{path}' must be finite"));
@@ -2460,7 +2186,7 @@ fn audit_external_load(load: &ExternalLoadConfig, prefix: &str, report: &mut Con
         (
             load.torque_min_nm,
             format!("{prefix}.torque_min_nm"),
-            0.0,
+            -5_000.0,
             2_000.0,
         ),
         (
@@ -2468,6 +2194,24 @@ fn audit_external_load(load: &ExternalLoadConfig, prefix: &str, report: &mut Con
             format!("{prefix}.torque_max_nm"),
             0.0,
             5_000.0,
+        ),
+        (
+            load.absorber_rotor_inertia_kgm2,
+            format!("{prefix}.absorber_rotor_inertia_kgm2"),
+            0.0,
+            20.0,
+        ),
+        (
+            load.absorber_power_limit_kw,
+            format!("{prefix}.absorber_power_limit_kw"),
+            1.0,
+            5_000.0,
+        ),
+        (
+            load.absorber_speed_limit_rpm,
+            format!("{prefix}.absorber_speed_limit_rpm"),
+            200.0,
+            50_000.0,
         ),
         (
             load.vehicle.vehicle_mass_kg,

@@ -42,8 +42,8 @@ engine:
   throttle_area_max_m2: 0.0030
   # Effective tailpipe flow area used in the exhaust discharge model [m^2].
   tailpipe_area_m2: 0.0025
-  # Idle target for auto-start / idle control and idle-state checks [rpm].
-  idle_target_rpm: 850.0
+  # Default target RPM shown on startup and used as the low-speed timestep reference [rpm].
+  default_target_rpm: 850.0
   # Fixed top of the RPM plot and overall operating-speed reference [rpm].
   max_rpm: 7000.0
 
@@ -68,10 +68,8 @@ cam:
 control_defaults:
   # Initial throttle command sent to the throttle actuator [0..1].
   throttle_cmd: 0.05
-  # Initial external-load command applied to the dyno / vehicle-load surrogate [0..1].
+  # Initial external-load command applied to the machine / vehicle-load surrogate [-1..1].
   load_cmd: 0.0
-  # Initial starter-motor command [bool].
-  starter_cmd: false
   # Initial ignition command [bool].
   spark_cmd: false
   # Initial fuel-enable command [bool].
@@ -82,57 +80,6 @@ control_defaults:
   vvt_intake_deg: 0.0
   # Initial exhaust-cam VVT offset [degCA].
   vvt_exhaust_deg: 0.0
-
-# Auto-start and idle-hold controller gains and limits.
-auto_control:
-  # RPM below which the controller treats the engine as cranking [rpm].
-  cranking_rpm_threshold: 600.0
-  # RPM above which the starter command is cut even in auto mode [rpm].
-  starter_cutoff_rpm: 760.0
-  # RPM target while the starter is still engaged [rpm].
-  starter_target_rpm: 620.0
-  # Proportional gain used while cranking [-].
-  starter_kp: 0.00022
-  # Integral gain used while cranking [-].
-  starter_ki: 0.00008
-  # Base throttle bias used while cranking [-].
-  starter_base_throttle: 0.14
-  # Proportional gain used after the engine is considered running [-].
-  run_kp: 0.00012
-  # Integral gain used after the engine is considered running [-].
-  run_ki: 0.00005
-  # Base throttle bias used during idle control [-].
-  run_base_throttle: 0.040
-  # Lower clamp on the auto-controller integral state [-].
-  integral_min: -600.0
-  # Upper clamp on the auto-controller integral state [-].
-  integral_max: 600.0
-  # Minimum throttle command the auto-controller may issue [-].
-  throttle_min: 0.005
-  # Maximum throttle command the auto-controller may issue [-].
-  throttle_max: 0.42
-  # RPM overshoot band that triggers integral relief [rpm].
-  integral_relief_rpm_band: 120.0
-  # Multiplier applied to the integral state when overspeed relief activates [-].
-  integral_relief_factor: 0.85
-  # Throttle command forced by the WOT thermal-efficiency search mode [-].
-  wot_target_throttle: 1.0
-  # Minimum RPM before the WOT search starts evaluating candidate points [rpm].
-  wot_search_min_rpm: 900.0
-  # Time spent averaging indicated efficiency at each candidate operating point [s].
-  wot_search_eval_time_s: 0.20
-  # Minimum indicated-efficiency gain required before a candidate point is accepted [-].
-  wot_search_min_improvement: 0.002
-  # Ignition timing step used by the WOT efficiency hill-climber [deg BTDC].
-  wot_search_ignition_step_deg: 2.5
-  # Intake-cam VVT step used by the WOT efficiency hill-climber [degCA].
-  wot_search_vvt_intake_step_deg: 4.0
-  # Exhaust-cam VVT step used by the WOT efficiency hill-climber [degCA].
-  wot_search_vvt_exhaust_step_deg: 4.0
-  # Lower clamp on VVT commands issued by the WOT efficiency hill-climber [degCA].
-  wot_search_vvt_min_deg: -40.0
-  # Upper clamp on VVT commands issued by the WOT efficiency hill-climber [degCA].
-  wot_search_vvt_max_deg: 40.0
 
 # Reduced-order engine-model coefficients and guards.
 model:
@@ -254,7 +201,7 @@ model:
   combustion_enable_rpm_min: 120.0
   # Minimum intake pressure required before combustion may be enabled [Pa].
   combustion_enable_intake_pressure_min_pa: 25000.0
-  # RPM threshold above which combustion may continue without starter support [rpm].
+  # RPM threshold above which combustion may continue once the engine is already running [rpm].
   combustion_enable_running_rpm_min: 450.0
   # Upper clamp on normalized combustion-rate output from the Wiebe model [-].
   combustion_rate_max: 5.5
@@ -274,7 +221,7 @@ model:
   exhaust_pressure_max_over_ambient_pa: 120000.0
   # RPM at which the running flag is latched true when spark and fuel are on [rpm].
   running_set_rpm: 520.0
-  # RPM below which the running flag is cleared if the starter is off [rpm].
+  # RPM below which the running flag is cleared [rpm].
   running_clear_rpm: 260.0
   # Number of completed cycles used to smooth displayed net torque [-].
   net_torque_smoothing_cycles: 4
@@ -306,10 +253,6 @@ model:
   eta_indicated_max: 0.44
   # Lower guard on swept volume when computing IMEP [m^3].
   imep_swept_volume_floor_m3: 1.0e-9
-  # RPM band around target used to declare stable idle [rpm].
-  stable_idle_rpm_band: 90.0
-  # Maximum throttle command allowed while declaring stable idle [-].
-  stable_idle_throttle_max: 0.20
   # Lower guard on compression ratio in theoretical Otto-efficiency calculation [-].
   theoretical_efficiency_compression_floor: 1.001
   # Number of points generated for the cam-profile plot [-].
@@ -332,10 +275,30 @@ model:
     rpm_min: 0.62
     # Upper clamp on the RPM-dependent VE factor [-].
     rpm_max: 1.04
+    # RPM below which the low-speed VVT optimum is used [rpm].
+    vvt_rpm_low: 1500.0
+    # RPM above which the high-speed VVT optimum is used [rpm].
+    vvt_rpm_high: 6500.0
     # Intake-VVT sensitivity of VE [- per deg].
     vvt_intake_coeff: 0.0022
     # Exhaust-VVT sensitivity of VE [- per deg].
-    vvt_exhaust_coeff: 0.0016
+    vvt_exhaust_coeff: 0.0008
+    # Intake-cam optimum at low speed; positive means advance [degCA].
+    vvt_intake_opt_low_deg: 14.0
+    # Intake-cam optimum at high speed; negative means retard [degCA].
+    vvt_intake_opt_high_deg: -10.0
+    # Width of the intake-VVT optimum envelope [degCA].
+    vvt_intake_opt_window_deg: 20.0
+    # Curvature of the intake-VVT penalty away from the rpm-dependent optimum [-].
+    vvt_intake_opt_gain: 0.08
+    # Exhaust-cam optimum at low speed; negative means reduced overlap [degCA].
+    vvt_exhaust_opt_low_deg: -8.0
+    # Exhaust-cam optimum at high speed; positive means increased overlap [degCA].
+    vvt_exhaust_opt_high_deg: 12.0
+    # Width of the exhaust-VVT optimum envelope [degCA].
+    vvt_exhaust_opt_window_deg: 18.0
+    # Curvature of the exhaust-VVT penalty away from the rpm-dependent optimum [-].
+    vvt_exhaust_opt_gain: 0.08
     # Baseline throttle contribution to VE at very low opening [-].
     throttle_base: 0.38
     # Additional throttle contribution to VE as opening increases [-].
@@ -348,16 +311,6 @@ model:
     overall_min: 0.30
     # Upper clamp on total VE after all multipliers [-].
     overall_max: 1.10
-  # Starter-motor torque map.
-  starter_torque:
-    # RPM threshold separating the low-speed starter torque plateau [rpm].
-    low_rpm_threshold: 220.0
-    # RPM threshold above which starter torque drops to zero [rpm].
-    high_rpm_threshold: 450.0
-    # Starter torque while below the low-RPM threshold [Nm].
-    low_torque_nm: 62.0
-    # Starter torque on the mid-RPM plateau before cutout [Nm].
-    high_torque_nm: 36.0
   # Display-only p-V reconstruction coefficients.
   pv_model:
     # Polytropic exponent used during the compression stroke [-].
@@ -510,7 +463,7 @@ model:
     heat_loss_fraction_max: 0.08
     # Exhaust-temperature reduction gain from the heat-loss fraction [-].
     exhaust_temp_cooling_gain: 0.35
-  # Fuel-evaporation / charge-cooling model used by the bench fueling modes.
+  # Fuel-evaporation / charge-cooling model used by the active fueling closure.
   fuel_evaporation:
     # Effective latent heat of the representative gasoline fuel [J/kg].
     latent_heat_j_per_kg: 350000.0
@@ -569,9 +522,15 @@ model:
     # Quadratic speed-dependent resisting torque coefficient [N m s^2 / rad^2].
     speed_quadratic_nms2: 0.00018
     # Lower clamp on the commanded external load torque [Nm].
-    torque_min_nm: 0.0
+    torque_min_nm: -220.0
     # Upper clamp on the commanded external load torque [Nm].
     torque_max_nm: 220.0
+    # Coupled dyno / absorber rotor inertia reflected directly at the engine shaft [kg m^2].
+    absorber_rotor_inertia_kgm2: 0.24
+    # Absorber power limit used to cap available torque at higher speed [kW].
+    absorber_power_limit_kw: 170.0
+    # Absorber overspeed threshold used by the bench console indicators [rpm].
+    absorber_speed_limit_rpm: 8000.0
     # Vehicle-equivalent road-load parameters reflected to the engine shaft.
     vehicle:
       # Vehicle test mass including driver and fuel [kg].
@@ -601,8 +560,8 @@ model:
 numerics:
   # Minimum base timestep admitted by the RPM-linked timestep rule [s].
   rpm_link_base_dt_min_s: 0.00005
-  # Minimum idle-speed reference admitted by the RPM-linked timestep rule [rpm].
-  rpm_link_idle_rpm_min: 200.0
+  # Minimum low-speed reference admitted by the RPM-linked timestep rule [rpm].
+  rpm_link_reference_rpm_min: 200.0
   # Lower clamp on the target crank-angle advance per integration step [deg/step].
   rpm_link_deg_per_step_min: 1.0
   # Upper clamp on the target crank-angle advance per integration step [deg/step].
@@ -669,7 +628,8 @@ ui:
   # If true, the dashboard tries to track wall-clock time. If false, it advances a fixed slice of simulated time every frame.
   sync_to_wall_clock: false
   # Simulated time advanced per rendered frame when wall-clock sync is disabled [s].
-  simulated_time_per_frame_s: 0.012
+  # Keep this modest so accuracy-first mode still looks visually smooth.
+  simulated_time_per_frame_s: 0.008
   # Minimum base dt the dashboard will accept even if the environment config is smaller [s].
   min_base_dt_s: 0.0002
   # Lower bound of dashboard dt relative to the base dt [-].
@@ -717,7 +677,7 @@ ui:
   # Minimum extra pressure headroom for p-V display calculations [kPa].
   pv_min_headroom_kpa: 100.0
   # Requested GUI repaint rate [Hz].
-  repaint_hz: 20
+  repaint_hz: 45
   # Initial application-window width [px]. Sized so the full dashboard fits on a typical FHD desktop.
   window_width_px: 1536.0
   # Initial application-window height [px].
@@ -741,80 +701,3 @@ plot:
   pv_y_min_kpa: 0.0
   # Upper y-axis limit of the displayed p-V plot [kPa].
   pv_y_max_kpa: 2500.0
-
-# Automatic bench sweep configuration for torque-vs-RPM curves.
-bench:
-  # Default bench mixture mode selected in the GUI and on the B shortcut.
-  default_mode: rich_charge_cooling
-  # Left x-axis limit of the displayed bench torque curve [rpm].
-  display_rpm_min: 0.0
-  # If true, prepend a synthetic 0 rpm / 0 Nm anchor so the curve starts from standstill [-].
-  include_zero_rpm_anchor: true
-  # First RPM point of the automatic torque-curve sweep [rpm].
-  rpm_start_rpm: 1000.0
-  # Last RPM point of the automatic torque-curve sweep [rpm].
-  rpm_end_rpm: 6500.0
-  # RPM increment between successive torque-curve samples [rpm].
-  rpm_step_rpm: 250.0
-  # Preconditioning time held at the sweep start RPM before the continuous bench ramp begins [s].
-  sweep_warmup_time_s: 0.35
-  # Total simulated time used to ramp continuously from start RPM to end RPM [s].
-  sweep_duration_s: 4.0
-  # Nominal crank-angle advance per accepted step during the continuous sweep [deg/step].
-  sweep_integration_deg_per_step: 2.4
-  # Stabilization time at each locked-RPM point before averaging [s].
-  settle_time_s: 0.45
-  # Averaging time used to smooth each locked-RPM bench point [s].
-  average_time_s: 0.25
-  # Number of crank-angle samples used in the locked-cycle average at each bench point [-].
-  locked_cycle_samples: 240
-  # Initial intake-pressure guess as a fraction of ambient when a new bench point starts [-].
-  initial_map_ratio: 0.95
-  # Initial exhaust pressure guess above ambient when a new bench point starts [Pa].
-  initial_exhaust_over_ambient_pa: 7000.0
-  # Lambda target used by the dedicated stoichiometric bench mode [-].
-  lambda_one_target: 1.0
-  # Lambda target used by the rich bench mode with charge cooling [-].
-  rich_charge_cooling_lambda: 0.88
-  # Target crank-angle advance per accepted bench integration step [deg/step].
-  integration_deg_per_step: 0.8
-  # Lower clamp on the adaptive bench integrator timestep [s].
-  integration_dt_min_s: 5.0e-6
-  # Upper clamp on the adaptive bench integrator timestep [s].
-  integration_dt_max_s: 2.0e-4
-  # Normalized local state-error tolerance used by step-doubling in bench mode [-].
-  integration_error_tolerance: 0.03
-  # Growth factor applied to the next bench timestep after a comfortably accepted step [-].
-  integration_dt_growth: 1.25
-  # Maximum number of timestep halvings attempted before a bench step is forcibly accepted [-].
-  integration_refine_limit: 8
-  # Maximum accepted bench integration steps processed per GUI frame [-].
-  steps_per_frame: 8000
-  # Wall-clock budget spent on bench integration inside one GUI frame [ms].
-  frame_time_budget_ms: 18.0
-  # Bench-only speed-hold dyno controller and absorber model.
-  dyno:
-    # Initial normalized absorber command used when a bench point starts [-].
-    initial_load_cmd: 0.55
-    # Proportional gain driving absorber command from RPM error during speed hold [-/rpm].
-    speed_hold_kp: 0.0035
-    # Integral gain driving absorber command from accumulated RPM error during speed hold [-/(rpm s)].
-    speed_hold_ki: 0.0025
-    # Lower clamp on the dyno speed-controller integral state [rpm s].
-    integral_min: -220.0
-    # Upper clamp on the dyno speed-controller integral state [rpm s].
-    integral_max: 220.0
-    # Absorber torque model used only by the automatic bench dyno.
-    absorber_model:
-      # Exponent shaping the dyno control command into absorber demand [-].
-      command_exponent: 1.0
-      # Base absorber torque available at full command [Nm].
-      base_torque_nm: 220.0
-      # Linear speed-dependent absorber torque gain [N m s/rad].
-      speed_linear_nms: 0.040
-      # Quadratic speed-dependent absorber torque gain [N m s^2/rad^2].
-      speed_quadratic_nms2: 0.00015
-      # Lower clamp on the absorber torque [Nm].
-      torque_min_nm: 0.0
-      # Upper clamp on the absorber torque [Nm].
-      torque_max_nm: 360.0

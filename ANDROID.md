@@ -3,6 +3,12 @@
 The Android target runs the same GUI simulator as desktop.
 There is no separate CLI path and there is no audio backend to configure.
 
+## Related Documents
+
+- [README.md](README.md): repository overview and documentation map
+- [docs/USER_MANUAL.md](docs/USER_MANUAL.md): GUI operation and configuration usage
+- [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): mathematical model and implementation mapping
+
 ## Requirements
 
 - Rust target for Android, for example `aarch64-linux-android`

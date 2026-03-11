@@ -2,186 +2,41 @@ mod theme;
 mod widgets;
 
 use std::time::{Duration, Instant};
-use std::{
-    fs::{self, File},
-    io::{BufWriter, Write},
-    path::PathBuf,
-};
 
 use eframe::egui;
-use egui_plot::{Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, VLine};
+use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoints, VLine};
 
 use self::theme::DashboardTheme;
 use self::widgets::{
     GaugeSpec, LinearMeterSpec, annunciator, digital_readout, gauge, linear_meter, metric_row,
     monitor_heading, section_label,
 };
-use crate::config::{AppConfig, BenchMixtureMode, ExternalLoadMode, UiConfig};
+use crate::config::{AppConfig, ExternalLoadMode, UiConfig};
 use crate::constants::FIXED_CYLINDER_COUNT;
 use crate::simulator::{
-    BenchSample, BenchSession, BenchStatus, ControlInput, CycleHistorySample, Simulator,
-    accuracy_priority_dt, cam_profile_points, estimate_realtime_performance,
-    external_load_reflected_inertia_kgm2, external_load_vehicle_speed_kph,
-    quick_wot_bench_preview_curve, rpm_linked_dt, shaft_power_hp, shaft_power_kw,
+    CycleHistorySample, Simulator, accuracy_priority_dt, cam_lift_mm, cam_profile_points,
+    estimate_realtime_performance, external_load_available_torque_nm,
+    external_load_command_for_torque_nm, external_load_power_limit_torque_nm,
+    external_load_reflected_inertia_kgm2, external_load_speed_limit_active,
+    external_load_vehicle_speed_kph, rad_s_to_rpm, rpm_linked_dt, shaft_power_hp, shaft_power_kw,
 };
-
-#[derive(Default)]
-struct BenchRunner {
-    session: Option<BenchSession>,
-    preview_results: Vec<BenchSample>,
-}
-
-impl BenchRunner {
-    fn start(&mut self, config: AppConfig, control_seed: ControlInput, mode: BenchMixtureMode) {
-        self.preview_results = quick_wot_bench_preview_curve(&config, &control_seed, mode);
-        self.session = Some(BenchSession::new(&config, control_seed, mode));
-    }
-
-    fn stop(&mut self) {
-        if let Some(session) = &mut self.session {
-            session.stop();
-        }
-        self.preview_results.clear();
-    }
-
-    fn status(&self) -> Option<BenchStatus> {
-        self.session.as_ref().map(BenchSession::status)
-    }
-
-    fn is_active(&self) -> bool {
-        self.session.as_ref().is_some_and(BenchSession::is_active)
-    }
-
-    fn is_complete(&self) -> bool {
-        self.session.as_ref().is_some_and(BenchSession::is_complete)
-    }
-
-    fn results(&self) -> &[BenchSample] {
-        self.session
-            .as_ref()
-            .map(BenchSession::results)
-            .unwrap_or(&[])
-    }
-
-    fn preview_results(&self) -> &[BenchSample] {
-        &self.preview_results
-    }
-
-    fn live_sample(&self) -> Option<BenchSample> {
-        self.session.as_ref().and_then(BenchSession::live_sample)
-    }
-
-    fn advance_steps(&mut self, max_steps: usize) {
-        if let Some(session) = &mut self.session {
-            session.advance_steps(max_steps);
-        }
-    }
-
-    fn advance_budgeted(&mut self, max_steps: usize, frame_time_budget_ms: f64) {
-        if max_steps == 0 || frame_time_budget_ms <= 0.0 || !self.is_active() {
-            return;
-        }
-        let t0 = Instant::now();
-        let budget_s = frame_time_budget_ms * 1.0e-3;
-        let mut steps = 0usize;
-        while steps < max_steps && self.is_active() && t0.elapsed().as_secs_f64() < budget_s {
-            self.advance_steps(1);
-            steps = steps.saturating_add(1);
-        }
-    }
-}
-
-fn bench_mode_slug(mode: BenchMixtureMode) -> &'static str {
-    match mode {
-        BenchMixtureMode::RichChargeCooling => "rich_charge_cooling",
-        BenchMixtureMode::LambdaOne => "lambda_one",
-    }
-}
-
-fn export_bench_results_csv(
-    results: &[BenchSample],
-    mode: BenchMixtureMode,
-) -> Result<PathBuf, String> {
-    let output_dir = PathBuf::from("dist").join("bench");
-    fs::create_dir_all(&output_dir)
-        .map_err(|err| format!("failed to create '{}': {err}", output_dir.display()))?;
-    let path = output_dir.join(format!("bench-{}-latest.csv", bench_mode_slug(mode)));
-    let file = File::create(&path)
-        .map_err(|err| format!("failed to create '{}': {err}", path.display()))?;
-    let mut writer = BufWriter::new(file);
-    writeln!(
-        writer,
-        "target_rpm,measured_rpm,brake_torque_nm,brake_power_kw,dyno_load_cmd,dyno_load_torque_nm,map_kpa,eta_thermal_indicated_pv,lambda_target,intake_charge_temp_k,mixture_mode"
-    )
-    .map_err(|err| format!("failed to write '{}': {err}", path.display()))?;
-    for sample in results {
-        writeln!(
-            writer,
-            "{:.1},{:.1},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
-            sample.target_rpm,
-            sample.rpm,
-            sample.torque_brake_nm,
-            shaft_power_kw(sample.rpm, sample.torque_brake_nm),
-            sample.load_cmd,
-            sample.load_torque_nm,
-            sample.map_kpa,
-            sample.eta_thermal_indicated_pv,
-            sample.lambda_target,
-            sample.intake_charge_temp_k,
-            bench_mode_slug(sample.mixture_mode),
-        )
-        .map_err(|err| format!("failed to write '{}': {err}", path.display()))?;
-    }
-    Ok(path)
-}
-
-#[derive(Debug, Clone)]
-struct BenchCurvePlotData {
-    summary: String,
-    label: String,
-    curve_line_points: Vec<[f64; 2]>,
-    preview_curve_points: Vec<[f64; 2]>,
-    completed_points: Vec<[f64; 2]>,
-    origin_anchor: Option<[f64; 2]>,
-    peak_torque_point: Option<[f64; 2]>,
-    live_point: Option<[f64; 2]>,
-    power_curve_line_points: Vec<[f64; 2]>,
-    preview_power_curve_points: Vec<[f64; 2]>,
-    completed_power_points: Vec<[f64; 2]>,
-    peak_power_point: Option<[f64; 2]>,
-    live_power_point: Option<[f64; 2]>,
-    x_min: f64,
-    x_max: f64,
-    y_min: f64,
-    y_max: f64,
-    power_y_min: f64,
-    power_y_max: f64,
-}
 
 #[derive(Debug, Clone, Copy)]
 struct GraphLayoutHeights {
     standard_plot_px: f32,
     pv_plot_px: f32,
-    bench_torque_plot_px: f32,
-    bench_power_plot_px: f32,
     section_spacing_px: f32,
 }
 
-fn graph_layout_heights(ui_config: &UiConfig, bench_visible: bool) -> GraphLayoutHeights {
-    let scale = if bench_visible { 0.72 } else { 0.92 };
+fn graph_layout_heights(ui_config: &UiConfig) -> GraphLayoutHeights {
+    let scale = 0.92;
     let standard_plot_px = (ui_config.plot_height_px * scale).max(72.0);
     let pv_plot_px = (ui_config.pv_plot_height_px * scale).max(standard_plot_px * 1.55);
-    let bench_torque_multiplier = if bench_visible { 1.2 } else { 1.55 };
-    let bench_power_multiplier = if bench_visible { 1.2 } else { 1.25 };
 
     GraphLayoutHeights {
         standard_plot_px,
         pv_plot_px,
-        bench_torque_plot_px: (ui_config.plot_height_px * bench_torque_multiplier * scale)
-            .max(standard_plot_px * 1.15),
-        bench_power_plot_px: (ui_config.plot_height_px * bench_power_multiplier * scale)
-            .max(standard_plot_px),
-        section_spacing_px: if bench_visible { 4.0 } else { 6.0 },
+        section_spacing_px: 6.0,
     }
 }
 
@@ -195,224 +50,6 @@ fn responsive_card_width(available_width: f32, columns: usize) -> f32 {
     let spacing = 8.0;
     let total_spacing = spacing * columns.saturating_sub(1) as f32;
     ((available_width - total_spacing) / columns.max(1) as f32).max(96.0)
-}
-
-fn bench_curve_plot_data(
-    bench_results: &[BenchSample],
-    preview_results: &[BenchSample],
-    live_bench: Option<BenchSample>,
-    bench_config: &crate::config::BenchConfig,
-    ui_config: &UiConfig,
-) -> BenchCurvePlotData {
-    fn sort_points(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
-        points.sort_by(|a, b| a[0].total_cmp(&b[0]));
-        points
-    }
-
-    let axis_x_min = bench_config
-        .display_rpm_min
-        .max(0.0)
-        .min(bench_config.rpm_end_rpm.max(0.0));
-
-    let completed_points: Vec<[f64; 2]> = sort_points(
-        bench_results
-            .iter()
-            .map(|sample| [sample.rpm, sample.torque_brake_nm])
-            .collect(),
-    );
-    let preview_curve_points: Vec<[f64; 2]> = sort_points(
-        preview_results
-            .iter()
-            .map(|sample| [sample.rpm, sample.torque_brake_nm])
-            .collect(),
-    );
-    let completed_power_points: Vec<[f64; 2]> = sort_points(
-        bench_results
-            .iter()
-            .map(|sample| {
-                [
-                    sample.rpm,
-                    shaft_power_kw(sample.rpm, sample.torque_brake_nm),
-                ]
-            })
-            .collect(),
-    );
-    let preview_power_curve_points: Vec<[f64; 2]> = sort_points(
-        preview_results
-            .iter()
-            .map(|sample| {
-                [
-                    sample.rpm,
-                    shaft_power_kw(sample.rpm, sample.torque_brake_nm),
-                ]
-            })
-            .collect(),
-    );
-
-    let live_point = live_bench.map(|sample| [sample.rpm, sample.torque_brake_nm]);
-    let live_power_point = live_bench.map(|sample| {
-        [
-            sample.rpm,
-            shaft_power_kw(sample.rpm, sample.torque_brake_nm),
-        ]
-    });
-    let has_curve_data =
-        !completed_points.is_empty() || !preview_curve_points.is_empty() || live_point.is_some();
-    let origin_anchor =
-        (bench_config.include_zero_rpm_anchor && axis_x_min <= f64::EPSILON && has_curve_data)
-            .then_some([0.0, 0.0]);
-    // Keep anchors and live points as markers only so the chart never implies a measured slope
-    // that the bench solver has not actually sampled yet.
-    let mut curve_line_points = Vec::with_capacity(
-        completed_points.len()
-            + usize::from(origin_anchor.is_some() && !completed_points.is_empty()),
-    );
-    let mut power_curve_line_points = Vec::with_capacity(
-        completed_power_points.len()
-            + usize::from(origin_anchor.is_some() && !completed_power_points.is_empty()),
-    );
-    if let Some(anchor) = origin_anchor.filter(|_| !completed_points.is_empty()) {
-        curve_line_points.push(anchor);
-        power_curve_line_points.push(anchor);
-    }
-    curve_line_points.extend(completed_points.iter().copied());
-    power_curve_line_points.extend(completed_power_points.iter().copied());
-
-    let peak_torque_sample = bench_results
-        .iter()
-        .max_by(|a, b| a.torque_brake_nm.total_cmp(&b.torque_brake_nm))
-        .copied();
-    let peak_power_sample = bench_results
-        .iter()
-        .max_by(|a, b| {
-            shaft_power_kw(a.rpm, a.torque_brake_nm)
-                .total_cmp(&shaft_power_kw(b.rpm, b.torque_brake_nm))
-        })
-        .copied();
-    let preview_peak_torque_sample = preview_results
-        .iter()
-        .max_by(|a, b| a.torque_brake_nm.total_cmp(&b.torque_brake_nm))
-        .copied();
-    let preview_peak_power_sample = preview_results
-        .iter()
-        .max_by(|a, b| {
-            shaft_power_kw(a.rpm, a.torque_brake_nm)
-                .total_cmp(&shaft_power_kw(b.rpm, b.torque_brake_nm))
-        })
-        .copied();
-    let peak_torque_point = peak_torque_sample
-        .or(preview_peak_torque_sample)
-        .map(|sample| [sample.rpm, sample.torque_brake_nm]);
-    let peak_power_point = peak_power_sample
-        .or(preview_peak_power_sample)
-        .map(|sample| {
-            [
-                sample.rpm,
-                shaft_power_kw(sample.rpm, sample.torque_brake_nm),
-            ]
-        });
-
-    let summary = if let (Some(peak_torque), Some(peak_power)) =
-        (peak_torque_sample, peak_power_sample)
-    {
-        format!(
-            "Dyno curves: peak torque {:.1} Nm @ {:.0} rpm, peak power {:.1} kW ({:.1} hp) @ {:.0} rpm ({})",
-            peak_torque.torque_brake_nm,
-            peak_torque.rpm,
-            shaft_power_kw(peak_power.rpm, peak_power.torque_brake_nm),
-            shaft_power_hp(peak_power.rpm, peak_power.torque_brake_nm),
-            peak_power.rpm,
-            peak_torque.mixture_mode.label()
-        )
-    } else if let (Some(peak_torque), Some(peak_power)) =
-        (preview_peak_torque_sample, preview_peak_power_sample)
-    {
-        format!(
-            "Dyno preview: peak torque {:.1} Nm @ {:.0} rpm, peak power {:.1} kW ({:.1} hp) @ {:.0} rpm ({})",
-            peak_torque.torque_brake_nm,
-            peak_torque.rpm,
-            shaft_power_kw(peak_power.rpm, peak_power.torque_brake_nm),
-            shaft_power_hp(peak_power.rpm, peak_power.torque_brake_nm),
-            peak_power.rpm,
-            peak_torque.mixture_mode.label()
-        )
-    } else if let Some(sample) = live_bench {
-        format!(
-            "Dyno curves: measuring {:.0} rpm (target {:.0}) / {:.1} Nm / {:.1} kW ({})",
-            sample.rpm,
-            sample.target_rpm,
-            sample.torque_brake_nm,
-            shaft_power_kw(sample.rpm, sample.torque_brake_nm),
-            sample.mixture_mode.label()
-        )
-    } else {
-        "Dyno curves: run bench to populate".to_owned()
-    };
-
-    let label = bench_results
-        .first()
-        .map(|sample| sample.mixture_mode.label())
-        .or_else(|| {
-            preview_results
-                .first()
-                .map(|sample| sample.mixture_mode.label())
-        })
-        .or_else(|| live_bench.map(|sample| sample.mixture_mode.label()))
-        .unwrap_or("no data")
-        .to_owned();
-
-    let mut torque_min = 0.0_f64;
-    let mut torque_max = 0.0_f64;
-    for point in completed_points
-        .iter()
-        .copied()
-        .chain(preview_curve_points.iter().copied())
-        .chain(live_point)
-    {
-        torque_min = torque_min.min(point[1]);
-        torque_max = torque_max.max(point[1]);
-    }
-    let torque_span = (torque_max - torque_min).max(ui_config.torque_min_span_nm);
-    let y_min = if torque_min >= 0.0 {
-        0.0
-    } else {
-        torque_min - ui_config.torque_margin_ratio * torque_span
-    };
-    let y_max = (torque_max + ui_config.torque_margin_ratio * torque_span)
-        .max(ui_config.torque_floor_abs_nm);
-
-    let x_min = axis_x_min;
-    let x_max = bench_config.rpm_end_rpm.max(x_min + 1.0);
-    let power_max = completed_power_points
-        .iter()
-        .chain(preview_power_curve_points.iter())
-        .chain(live_power_point.iter())
-        .map(|point| point[1])
-        .fold(0.0_f64, f64::max);
-    let power_y_max =
-        (power_max * (1.0 + ui_config.torque_margin_ratio)).max(ui_config.torque_floor_abs_nm);
-
-    BenchCurvePlotData {
-        summary,
-        label,
-        curve_line_points,
-        preview_curve_points,
-        completed_points,
-        origin_anchor,
-        peak_torque_point,
-        live_point,
-        power_curve_line_points,
-        preview_power_curve_points,
-        completed_power_points,
-        peak_power_point,
-        live_power_point,
-        x_min,
-        x_max,
-        y_min,
-        y_max,
-        power_y_min: 0.0,
-        power_y_max,
-    }
 }
 
 fn recent_cycle_plot_lines(
@@ -523,6 +160,21 @@ fn combine_min_max(a: Option<(f64, f64)>, b: Option<(f64, f64)>) -> Option<(f64,
     }
 }
 
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp_channel = |lhs: u8, rhs: u8| -> u8 {
+        (lhs as f32 + (rhs as f32 - lhs as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    egui::Color32::from_rgba_unmultiplied(
+        lerp_channel(a.r(), b.r()),
+        lerp_channel(a.g(), b.g()),
+        lerp_channel(a.b(), b.b()),
+        lerp_channel(a.a(), b.a()),
+    )
+}
+
 fn cylinder_trace_color(index: usize) -> egui::Color32 {
     const COLORS: [egui::Color32; 4] = [
         egui::Color32::from_rgb(255, 170, 40),
@@ -531,6 +183,16 @@ fn cylinder_trace_color(index: usize) -> egui::Color32 {
         egui::Color32::from_rgb(255, 105, 125),
     ];
     COLORS[index % COLORS.len()]
+}
+
+fn wrap_cycle_deg(value: f64) -> f64 {
+    value.rem_euclid(720.0)
+}
+
+fn speed_hold_desired_net_torque_nm(error_rpm: f64, integral_state: f64) -> f64 {
+    const KP_NM_PER_RPM: f64 = 0.26;
+    const KI_NM_PER_RPM_S: f64 = 0.06;
+    KP_NM_PER_RPM * error_rpm + KI_NM_PER_RPM_S * integral_state
 }
 
 fn show_collapsible_module(
@@ -567,7 +229,6 @@ fn show_collapsible_module(
 
 // The dashboard owns real-time pacing, user controls, and fixed-range plots.
 struct DashboardApp {
-    config: AppConfig,
     sim: Simulator,
     theme: DashboardTheme,
     ui_config: UiConfig,
@@ -578,51 +239,56 @@ struct DashboardApp {
     dt_min_bound: f64,
     dt_max_bound: f64,
     realtime_fixed_dt_s: Option<f64>,
-    bench: BenchRunner,
-    bench_mode_selected: BenchMixtureMode,
-    bench_export_note: Option<String>,
-    bench_exported_complete: bool,
+    load_target_rpm: f64,
+    load_speed_integral: f64,
+    required_brake_torque_nm: f64,
+    schematic_cycle_deg: f64,
+    bench_estop: bool,
+    bench_dyno_enabled: bool,
+    bench_cell_vent: bool,
+    bench_coolant_conditioning: bool,
 }
 
 impl DashboardApp {
     fn new(config: AppConfig) -> Self {
         let theme = DashboardTheme::default();
         let ui_config = config.ui.clone();
-        let bench_mode_selected = config.bench.default_mode;
         let dt = config.environment.dt.max(ui_config.min_base_dt_s);
-        let (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next) =
-            if ui_config.sync_to_wall_clock {
-                // Benchmark a safe realtime floor once at startup and keep fixed dt when headroom is ample.
-                let realtime_perf = estimate_realtime_performance(&config, dt);
-                let dt_min_bound = realtime_perf
-                    .floor_dt_s
-                    .max(dt * ui_config.realtime_dt_min_factor);
-                let dt_max_bound = (dt * ui_config.realtime_dt_max_factor)
-                    .max(dt_min_bound * ui_config.realtime_dt_max_over_min_factor);
-                let realtime_fixed_dt_s = (realtime_perf.fixed_dt_headroom_ratio
-                    >= config.numerics.realtime_fixed_dt_headroom_ratio)
-                    .then_some(
-                        realtime_perf
-                            .fixed_dt_candidate_s
-                            .clamp(dt_min_bound, dt_max_bound),
-                    );
-                let dt_next =
-                    realtime_fixed_dt_s.unwrap_or_else(|| dt.clamp(dt_min_bound, dt_max_bound));
-                (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next)
-            } else {
-                let dt_min_bound = config
-                    .numerics
-                    .rpm_link_dt_min_floor_s
-                    .max(ui_config.dt_epsilon_s);
-                let dt_max_bound = config.numerics.accuracy_dt_max_s.max(dt_min_bound);
-                let dt_next = accuracy_priority_dt(config.engine.idle_target_rpm, &config.numerics)
-                    .clamp(dt_min_bound, dt_max_bound);
-                (dt_min_bound, dt_max_bound, None, dt_next)
-            };
+        let (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next) = if ui_config
+            .sync_to_wall_clock
+        {
+            // Benchmark a safe realtime floor once at startup and keep fixed dt when headroom is ample.
+            let realtime_perf = estimate_realtime_performance(&config, dt);
+            let dt_min_bound = realtime_perf
+                .floor_dt_s
+                .max(dt * ui_config.realtime_dt_min_factor);
+            let dt_max_bound = (dt * ui_config.realtime_dt_max_factor)
+                .max(dt_min_bound * ui_config.realtime_dt_max_over_min_factor);
+            let realtime_fixed_dt_s = (realtime_perf.fixed_dt_headroom_ratio
+                >= config.numerics.realtime_fixed_dt_headroom_ratio)
+                .then_some(
+                    realtime_perf
+                        .fixed_dt_candidate_s
+                        .clamp(dt_min_bound, dt_max_bound),
+                );
+            let dt_next =
+                realtime_fixed_dt_s.unwrap_or_else(|| dt.clamp(dt_min_bound, dt_max_bound));
+            (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next)
+        } else {
+            let dt_min_bound = config
+                .numerics
+                .rpm_link_dt_min_floor_s
+                .max(ui_config.dt_epsilon_s);
+            let dt_max_bound = config.numerics.accuracy_dt_max_s.max(dt_min_bound);
+            let dt_next = accuracy_priority_dt(config.engine.default_target_rpm, &config.numerics)
+                .clamp(dt_min_bound, dt_max_bound);
+            (dt_min_bound, dt_max_bound, None, dt_next)
+        };
         let mut sim = Simulator::new(&config);
         let latest = sim.step(dt_next);
+        let required_brake_torque_nm = latest.torque_net_nm + latest.torque_load_nm;
+        let schematic_cycle_deg = wrap_cycle_deg(latest.cycle_deg);
         Self {
-            config,
             sim,
             theme,
             ui_config,
@@ -633,30 +299,118 @@ impl DashboardApp {
             dt_min_bound,
             dt_max_bound,
             realtime_fixed_dt_s,
-            bench: BenchRunner::default(),
-            bench_mode_selected,
-            bench_export_note: None,
-            bench_exported_complete: false,
+            load_target_rpm: config.engine.default_target_rpm,
+            load_speed_integral: 0.0,
+            required_brake_torque_nm,
+            schematic_cycle_deg,
+            bench_estop: false,
+            bench_dyno_enabled: true,
+            bench_cell_vent: true,
+            bench_coolant_conditioning: true,
         }
     }
 
-    fn bench_control_seed(&self) -> ControlInput {
-        let mut seed = self.sim.control.clone();
-        if self.sim.auto.wot_best_eta > 0.0 {
-            seed.ignition_timing_deg = self.sim.auto.wot_best_point.ignition_deg;
-            seed.vvt_intake_deg = self.sim.auto.wot_best_point.vvt_intake_deg;
-            seed.vvt_exhaust_deg = self.sim.auto.wot_best_point.vvt_exhaust_deg;
-        }
-        seed
+    fn sync_required_brake_torque(&mut self) {
+        let combustion_ready = self.sim.control.spark_cmd
+            && self.sim.control.fuel_cmd
+            && self.latest.rpm > self.sim.model.combustion_enable_rpm_min
+            && self.latest.map_kpa * 1.0e3
+                > self.sim.model.combustion_enable_intake_pressure_min_pa;
+        let brake_output_nm = self.latest.torque_net_nm + self.latest.torque_load_nm;
+        self.required_brake_torque_nm = if combustion_ready {
+            brake_output_nm.max(0.0)
+        } else {
+            0.0
+        };
     }
 
-    fn start_bench(&mut self, mode: BenchMixtureMode) {
-        let mut cfg = self.config.clone();
-        cfg.engine.max_rpm = self.sim.params.max_rpm;
-        cfg.model.external_load = self.sim.model.external_load.clone();
-        self.bench.start(cfg, self.bench_control_seed(), mode);
-        self.bench_export_note = None;
-        self.bench_exported_complete = false;
+    fn rpm_error(&self) -> f64 {
+        self.load_target_rpm - self.latest.rpm
+    }
+
+    fn shaft_torque_estimate_nm(&self) -> f64 {
+        self.latest.torque_combustion_cycle_nm
+            - self.latest.torque_friction_nm
+            - self.latest.torque_pumping_nm
+    }
+
+    fn bench_interlock_ok(&self) -> bool {
+        self.bench_dyno_enabled
+            && self.bench_cell_vent
+            && self.bench_coolant_conditioning
+            && !self.bench_estop
+    }
+
+    fn bench_firing_permitted(&self) -> bool {
+        self.bench_cell_vent && self.bench_coolant_conditioning && !self.bench_estop
+    }
+
+    fn dyno_available_torque_nm(&self) -> f64 {
+        external_load_available_torque_nm(self.sim.state.omega_rad_s, &self.sim.model.external_load)
+    }
+
+    fn dyno_power_limit_torque_nm(&self) -> f64 {
+        external_load_power_limit_torque_nm(
+            self.sim.state.omega_rad_s,
+            &self.sim.model.external_load,
+        )
+    }
+
+    fn dyno_power_limit_active(&self) -> bool {
+        let applied_power_kw = shaft_power_kw(self.latest.rpm, self.latest.torque_load_nm.abs());
+        applied_power_kw >= self.sim.model.external_load.absorber_power_limit_kw * 0.98
+    }
+
+    fn apply_bench_console_interlocks(&mut self) {
+        if self.bench_estop {
+            self.sim.control.throttle_cmd = 0.0;
+            self.sim.control.spark_cmd = false;
+            self.sim.control.fuel_cmd = false;
+            self.load_target_rpm = 0.0;
+            self.load_speed_integral = 0.0;
+        } else if !self.bench_firing_permitted() {
+            self.sim.control.spark_cmd = false;
+            self.sim.control.fuel_cmd = false;
+        }
+        if !self.bench_dyno_enabled {
+            self.sim.control.load_cmd = 0.0;
+            self.load_speed_integral = 0.0;
+        }
+    }
+
+    fn update_schematic_phase(&mut self, wall_dt_s: f64) {
+        let wall_dt_s = wall_dt_s.max(1.0 / 240.0);
+        let running = self.sim.state.running || self.latest.rpm > 120.0;
+        if !running {
+            return;
+        }
+
+        let slowmo_cycle_deg_per_s = 180.0;
+        self.schematic_cycle_deg =
+            wrap_cycle_deg(self.schematic_cycle_deg + slowmo_cycle_deg_per_s * wall_dt_s);
+    }
+
+    fn apply_load_input(&mut self, dt: f64) {
+        if !self.bench_dyno_enabled || self.bench_estop {
+            self.sim.control.load_cmd = 0.0;
+            return;
+        }
+        let rpm = rad_s_to_rpm(self.sim.state.omega_rad_s.max(0.0));
+        let error_rpm = self.load_target_rpm - rpm;
+        self.load_speed_integral =
+            (self.load_speed_integral + error_rpm * dt).clamp(-6_000.0, 6_000.0);
+        let desired_net_torque_nm =
+            speed_hold_desired_net_torque_nm(error_rpm, self.load_speed_integral);
+        let target_machine_torque_nm = (self.shaft_torque_estimate_nm() - desired_net_torque_nm)
+            .clamp(
+                self.sim.model.external_load.torque_min_nm,
+                self.sim.model.external_load.torque_max_nm,
+            );
+        self.sim.control.load_cmd = external_load_command_for_torque_nm(
+            target_machine_torque_nm,
+            self.sim.state.omega_rad_s,
+            &self.sim.model.external_load,
+        );
     }
 
     fn apply_shortcuts(&mut self, ctx: &egui::Context) {
@@ -664,49 +418,21 @@ impl DashboardApp {
             if i.key_pressed(egui::Key::Q) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            if i.key_pressed(egui::Key::A) {
-                let next = !self.sim.auto.enabled;
-                self.sim.set_idle_auto_enabled(next);
-            }
-            if i.key_pressed(egui::Key::O) {
-                let next = !self.sim.auto.wot_efficiency_enabled;
-                self.sim.set_wot_efficiency_auto_enabled(next);
-            }
-            if i.key_pressed(egui::Key::B) {
-                if self.bench.is_active() {
-                    self.bench.stop();
-                } else {
-                    self.start_bench(self.bench_mode_selected);
-                }
-            }
-            if i.key_pressed(egui::Key::L) {
-                self.bench_mode_selected = BenchMixtureMode::LambdaOne;
-                if self.bench.is_active() {
-                    self.bench.stop();
-                } else {
-                    self.start_bench(BenchMixtureMode::LambdaOne);
-                }
-            }
-            if i.key_pressed(egui::Key::S) {
-                self.sim.disable_auto_modes();
-                self.sim.control.starter_cmd = !self.sim.control.starter_cmd;
-            }
             if i.key_pressed(egui::Key::I) {
-                self.sim.disable_auto_modes();
                 self.sim.control.spark_cmd = !self.sim.control.spark_cmd;
             }
             if i.key_pressed(egui::Key::F) {
-                self.sim.disable_auto_modes();
                 self.sim.control.fuel_cmd = !self.sim.control.fuel_cmd;
             }
+            if i.key_pressed(egui::Key::E) {
+                self.bench_estop = !self.bench_estop;
+            }
             if i.key_pressed(egui::Key::W) {
-                self.sim.disable_auto_modes();
                 self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
                     + self.ui_config.throttle_key_step)
                     .clamp(0.0, 1.0);
             }
             if i.key_pressed(egui::Key::X) {
-                self.sim.disable_auto_modes();
                 self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
                     - self.ui_config.throttle_key_step)
                     .clamp(0.0, 1.0);
@@ -716,8 +442,10 @@ impl DashboardApp {
 
     fn advance_simulation(&mut self) {
         let now = Instant::now();
+        let wall_dt_s = (now - self.last_tick).as_secs_f64();
+        self.apply_bench_console_interlocks();
         let target_time = if self.ui_config.sync_to_wall_clock {
-            (now - self.last_tick).as_secs_f64().max(self.dt_base)
+            wall_dt_s.max(self.dt_base)
         } else {
             self.ui_config.simulated_time_per_frame_s.max(self.dt_base)
         };
@@ -735,7 +463,7 @@ impl DashboardApp {
                     let dt_nom = rpm_linked_dt(
                         self.dt_base,
                         self.latest.rpm,
-                        self.sim.params.idle_target_rpm,
+                        self.sim.params.default_target_rpm,
                         &self.sim.numerics,
                     );
                     let dt_target = dt_nom.clamp(self.dt_min_bound, self.dt_max_bound);
@@ -751,6 +479,7 @@ impl DashboardApp {
 
             let remaining = target_time - simulated;
             let dt_step = dt_target.min(remaining).max(self.ui_config.dt_epsilon_s);
+            self.apply_load_input(dt_step);
             self.latest = self.sim.step(dt_step);
             simulated += dt_step;
             steps = steps.saturating_add(1);
@@ -761,60 +490,15 @@ impl DashboardApp {
             let dt_tail = (target_time - simulated)
                 .max(self.ui_config.dt_epsilon_s)
                 .min(self.dt_max_bound);
+            self.apply_load_input(dt_tail);
             self.latest = self.sim.step(dt_tail);
             self.dt_next = self
                 .realtime_fixed_dt_s
                 .unwrap_or_else(|| dt_tail.clamp(self.dt_min_bound, self.dt_max_bound));
         }
+        self.sync_required_brake_torque();
+        self.update_schematic_phase(wall_dt_s);
         self.last_tick = now;
-    }
-
-    fn advance_bench(&mut self) {
-        let was_complete = self.bench.is_complete();
-        if self.bench.is_active() {
-            self.bench.advance_budgeted(
-                self.config.bench.steps_per_frame.max(1),
-                self.config.bench.frame_time_budget_ms,
-            );
-        }
-        if self.bench.is_complete() && !was_complete && !self.bench_exported_complete {
-            self.bench_export_note = match self.bench.status() {
-                Some(status) => export_bench_results_csv(self.bench.results(), status.mode)
-                    .map(|path| format!("{}", path.display()))
-                    .map_err(|err| err)
-                    .ok(),
-                None => None,
-            };
-            self.bench_exported_complete = true;
-        }
-    }
-
-    fn bench_curve_visible(&self) -> bool {
-        !self.bench.results().is_empty()
-            || !self.bench.preview_results().is_empty()
-            || self.bench.live_sample().is_some()
-    }
-
-    fn bench_status_summary(&self) -> String {
-        match self.bench.status() {
-            Some(status) if self.bench.is_active() => format!(
-                "{} / {} / {:.0}->{:.0} rpm / {}/{}",
-                status.mode.label(),
-                status.phase.label(),
-                status.live_rpm,
-                status.target_rpm,
-                status.completed_points,
-                status.total_points
-            ),
-            Some(status) if self.bench.is_complete() => {
-                format!(
-                    "{} / complete / {} pts",
-                    status.mode.label(),
-                    status.total_points
-                )
-            }
-            _ => "bench idle".to_owned(),
-        }
     }
 
     fn render_header_panel(&self, ctx: &egui::Context) {
@@ -830,13 +514,11 @@ impl DashboardApp {
                                 .size(26.0),
                         );
                         ui.label(
-                            egui::RichText::new(
-                                if self.ui_config.sync_to_wall_clock {
-                                    "Wall-clock synchronized console with dyno sweep and p-V / p-theta monitoring"
-                                } else {
-                                    "Accuracy-first transient console with dyno sweep and p-V / p-theta monitoring"
-                                },
-                            )
+                            egui::RichText::new(if self.ui_config.sync_to_wall_clock {
+                                "Wall-clock synchronized console with p-V / p-theta monitoring"
+                            } else {
+                                "Accuracy-first transient console with p-V / p-theta monitoring"
+                            })
                             .color(self.theme.text_soft)
                             .size(12.0),
                         );
@@ -847,20 +529,53 @@ impl DashboardApp {
                             self.theme,
                             self.theme.cyan,
                             "CELL STATUS",
-                            if self.latest.stable_idle { "STABLE" } else { "LIVE" },
+                            if self.required_brake_torque_nm > 0.5 {
+                                "FIRED"
+                            } else {
+                                "MOTOR"
+                            },
                             "",
-                            &self.bench_status_summary(),
+                            self.sim.model.external_load.mode.label(),
                             160.0,
                         );
                     });
                 });
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
+                    annunciator(ui, self.theme, "E-STOP", self.bench_estop, self.theme.red);
+                    annunciator(
+                        ui,
+                        self.theme,
+                        "INTERLOCK",
+                        self.bench_interlock_ok(),
+                        self.theme.green,
+                    );
+                    annunciator(
+                        ui,
+                        self.theme,
+                        "DYNO EN",
+                        self.bench_dyno_enabled,
+                        self.theme.cyan,
+                    );
+                    annunciator(
+                        ui,
+                        self.theme,
+                        "VENT",
+                        self.bench_cell_vent,
+                        self.theme.cyan,
+                    );
+                    annunciator(
+                        ui,
+                        self.theme,
+                        "COOLING",
+                        self.bench_coolant_conditioning,
+                        self.theme.cyan,
+                    );
                     annunciator(
                         ui,
                         self.theme,
                         "RUN",
-                        self.sim.state.running,
+                        self.latest.rpm > 120.0,
                         self.theme.green,
                     );
                     annunciator(
@@ -880,30 +595,30 @@ impl DashboardApp {
                     annunciator(
                         ui,
                         self.theme,
-                        "STARTER",
-                        self.sim.control.starter_cmd,
+                        "MOTOR",
+                        self.sim.control.load_cmd < -0.02,
                         self.theme.red,
                     );
                     annunciator(
                         ui,
                         self.theme,
-                        "AUTO IDLE",
-                        self.sim.auto.enabled,
+                        "FIRING",
+                        self.required_brake_torque_nm > 0.5,
                         self.theme.green,
                     );
                     annunciator(
                         ui,
                         self.theme,
-                        "WOT SEARCH",
-                        self.sim.auto.wot_efficiency_enabled,
+                        "SPD CTRL",
+                        self.bench_dyno_enabled && !self.bench_estop,
                         self.theme.amber,
                     );
                     annunciator(
                         ui,
                         self.theme,
-                        "BENCH",
-                        self.bench.is_active() || self.bench.is_complete(),
-                        self.theme.cyan,
+                        "PWR LIM",
+                        self.dyno_power_limit_active(),
+                        self.theme.red,
                     );
                     annunciator(
                         ui,
@@ -927,273 +642,326 @@ impl DashboardApp {
                     .show(ui, |ui| {
                         section_label(ui, self.theme, "OPERATOR RACK", self.theme.amber);
 
-                show_collapsible_module(
-                    ui,
-                    self.theme,
-                    "rack_automation",
-                    "Automation",
-                    "IDLE / WOT supervisor",
-                    self.theme.green,
-                    true,
-                    |ui| {
-                    let mut idle_auto = self.sim.auto.enabled;
-                    if ui.checkbox(&mut idle_auto, "Auto Start + Idle").changed() {
-                        self.sim.set_idle_auto_enabled(idle_auto);
-                    }
-                    let mut wot_auto = self.sim.auto.wot_efficiency_enabled;
-                    if ui
-                        .checkbox(&mut wot_auto, "Auto WOT Efficiency Search")
-                        .changed()
-                    {
-                        self.sim.set_wot_efficiency_auto_enabled(wot_auto);
-                    }
-                    if self.sim.auto.wot_efficiency_enabled {
-                        ui.label(format!(
-                            "WOT search: {} / {}",
-                            self.sim.auto.wot_phase.label(),
-                            self.sim.auto.wot_axis.label()
-                        ));
-                        ui.label(format!(
-                            "Best eta: {:.1}% @ ign {:.1} / VVTi {:.1} / VVTe {:.1}",
-                            self.sim.auto.wot_best_eta * 100.0,
-                            self.sim.auto.wot_best_point.ignition_deg,
-                            self.sim.auto.wot_best_point.vvt_intake_deg,
-                            self.sim.auto.wot_best_point.vvt_exhaust_deg
-                        ));
-                    }
-                    },
-                );
+                        show_collapsible_module(
+                            ui,
+                            self.theme,
+                            "rack_bench_console",
+                            "Bench Console",
+                            "interlocks, dyno coupling, and absorber limits",
+                            self.theme.cyan,
+                            true,
+                            |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.toggle_value(&mut self.bench_estop, "E-STOP");
+                                    ui.toggle_value(&mut self.bench_dyno_enabled, "Dyno enable");
+                                    ui.toggle_value(&mut self.bench_cell_vent, "Cell vent");
+                                    ui.toggle_value(
+                                        &mut self.bench_coolant_conditioning,
+                                        "Cooling cond",
+                                    );
+                                });
+                                ui.add_space(6.0);
+                                egui::Grid::new("bench_console_grid")
+                                    .num_columns(2)
+                                    .spacing(egui::vec2(16.0, 6.0))
+                                    .show(ui, |ui| {
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Interlock",
+                                            if self.bench_interlock_ok() {
+                                                "closed".to_owned()
+                                            } else {
+                                                "open".to_owned()
+                                            },
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Control mode",
+                                            if self.bench_dyno_enabled {
+                                                "speed control".to_owned()
+                                            } else {
+                                                "dyno uncoupled".to_owned()
+                                            },
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Absorber torque act",
+                                            format!("{:+.1} Nm", self.latest.torque_load_nm),
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Absorber power",
+                                            format!(
+                                                "{:.1} / {:.0} kW",
+                                                shaft_power_kw(
+                                                    self.latest.rpm,
+                                                    self.latest.torque_load_nm.abs()
+                                                ),
+                                                self.sim
+                                                    .model
+                                                    .external_load
+                                                    .absorber_power_limit_kw
+                                            ),
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Available torque",
+                                            format!("{:.1} Nm", self.dyno_available_torque_nm()),
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Speed limit",
+                                            format!(
+                                                "{:.0} rpm{}",
+                                                self.sim
+                                                    .model
+                                                    .external_load
+                                                    .absorber_speed_limit_rpm,
+                                                if external_load_speed_limit_active(
+                                                    self.sim.state.omega_rad_s,
+                                                    &self.sim.model.external_load
+                                                ) {
+                                                    " trip"
+                                                } else {
+                                                    ""
+                                                }
+                                            ),
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Rotor inertia",
+                                            format!(
+                                                "{:.3} kg m^2",
+                                                self.sim
+                                                    .model
+                                                    .external_load
+                                                    .absorber_rotor_inertia_kgm2
+                                            ),
+                                        );
+                                        metric_row(
+                                            ui,
+                                            self.theme,
+                                            "Power-limit torque",
+                                            format!("{:.1} Nm", self.dyno_power_limit_torque_nm()),
+                                        );
+                                    });
+                            },
+                        );
 
-                ui.add_space(8.0);
-                show_collapsible_module(
-                    ui,
-                    self.theme,
-                    "rack_bench",
-                    "Bench Sequencer",
-                    "preview + continuous sweep",
-                    self.theme.cyan,
-                    true,
-                    |ui| {
-                    egui::ComboBox::from_label("Bench mode")
-                        .selected_text(self.bench_mode_selected.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.bench_mode_selected,
-                                BenchMixtureMode::RichChargeCooling,
-                                BenchMixtureMode::RichChargeCooling.label(),
-                            );
-                            ui.selectable_value(
-                                &mut self.bench_mode_selected,
-                                BenchMixtureMode::LambdaOne,
-                                BenchMixtureMode::LambdaOne.label(),
-                            );
-                        });
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_sized([126.0, 34.0], egui::Button::new("Run Bench"))
-                            .clicked()
-                        {
-                            self.start_bench(self.bench_mode_selected);
-                        }
-                        if ui
-                            .add_enabled(
-                                self.bench.is_active(),
-                                egui::Button::new("Stop Bench").min_size(egui::vec2(126.0, 34.0)),
-                            )
-                            .clicked()
-                        {
-                            self.bench.stop();
-                        }
-                    });
+                        ui.add_space(8.0);
+                        show_collapsible_module(
+                            ui,
+                            self.theme,
+                            "rack_actuator",
+                            "Actuator Deck",
+                            "speed-control console with throttle, ignition, and VVT inputs",
+                            self.theme.amber,
+                            true,
+                            |ui| {
+                                let mut load_mode = self.sim.model.external_load.mode;
 
-                    if let Some(status) = self.bench.status() {
-                        if status.total_points > 0 {
-                            let overall_progress =
-                                status.completed_points as f32 / status.total_points as f32;
-                            ui.add(
-                                egui::ProgressBar::new(overall_progress.clamp(0.0, 1.0))
-                                    .text(format!("overall {:.0}%", overall_progress * 100.0)),
-                            );
-                        }
-                        if self.bench.is_active() && status.phase_total_s > 0.0 {
-                            let phase_progress = (status.phase_elapsed_s / status.phase_total_s)
-                                .clamp(0.0, 1.0)
-                                as f32;
-                            ui.add(
-                                egui::ProgressBar::new(phase_progress)
-                                    .text(format!("phase {:.0}%", phase_progress * 100.0)),
-                            );
-                            ui.label(format!(
-                                "Live: {:.0}->{:.0} rpm / {:.1} Nm / load {:.3} ({:.1} Nm) / MAP {:.1} kPa / eta {:.1}% / lambda {:.2} / Tcharge {:.1} K",
-                                status.live_rpm,
-                                status.target_rpm,
-                                status.live_torque_brake_nm,
-                                status.live_load_cmd,
-                                status.live_load_torque_nm,
-                                status.live_map_kpa,
-                                status.live_eta_thermal_indicated_pv * 100.0,
-                                status.live_lambda_target,
-                                status.live_intake_charge_temp_k
-                            ));
-                        }
-                        ui.label(format!("Bench status: {}", self.bench_status_summary()));
-                        if let Some(path) = &self.bench_export_note {
-                            ui.label(format!("Bench CSV: {path}"));
-                        }
-                    }
-                    },
-                );
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut self.sim.control.throttle_cmd,
+                                        0.0..=1.0,
+                                    )
+                                    .text("Throttle cmd"),
+                                );
+                                let target_rpm_before = self.load_target_rpm;
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut self.load_target_rpm,
+                                        0.0..=self.sim.params.max_rpm,
+                                    )
+                                    .text("Target RPM"),
+                                );
+                                if (self.load_target_rpm - target_rpm_before).abs() > f64::EPSILON {
+                                    self.load_speed_integral = 0.0;
+                                }
+                                ui.label(format!(
+                                    "Required brake torque: {:.1} Nm",
+                                    self.required_brake_torque_nm
+                                ));
+                                ui.label(format!(
+                                    "Required brake power: {:.1} kW",
+                                    shaft_power_kw(self.latest.rpm, self.required_brake_torque_nm)
+                                ));
+                                ui.label(format!(
+                                    "RPM error: {:+.0} rpm / absorber torque {:.1} Nm",
+                                    self.rpm_error(),
+                                    self.latest.torque_load_nm
+                                ));
+                                egui::ComboBox::from_label("Load model")
+                                    .selected_text(load_mode.label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut load_mode,
+                                            ExternalLoadMode::BrakeMap,
+                                            ExternalLoadMode::BrakeMap.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut load_mode,
+                                            ExternalLoadMode::VehicleEquivalent,
+                                            ExternalLoadMode::VehicleEquivalent.label(),
+                                        );
+                                    });
+                                if load_mode != self.sim.model.external_load.mode {
+                                    self.sim.model.external_load.mode = load_mode;
+                                }
+                                ui.label(format!(
+                                    "Absorber command: {:+.3}",
+                                    self.sim.control.load_cmd
+                                ));
+                                ui.add_enabled_ui(self.bench_firing_permitted(), |ui| {
+                                    ui.checkbox(&mut self.sim.control.spark_cmd, "Spark");
+                                    ui.checkbox(&mut self.sim.control.fuel_cmd, "Fuel");
+                                });
+                                if !self.bench_firing_permitted() {
+                                    ui.label(
+                                        egui::RichText::new("Firing inhibited by bench interlock")
+                                            .color(self.theme.red)
+                                            .monospace(),
+                                    );
+                                }
+                                ui.separator();
+                                ui.add_enabled(
+                                    true,
+                                    egui::Slider::new(
+                                        &mut self.sim.control.vvt_intake_deg,
+                                        self.ui_config.vvt_slider_min_deg
+                                            ..=self.ui_config.vvt_slider_max_deg,
+                                    )
+                                    .text("VVT Intake [deg]"),
+                                );
+                                ui.add_enabled(
+                                    true,
+                                    egui::Slider::new(
+                                        &mut self.sim.control.vvt_exhaust_deg,
+                                        self.ui_config.vvt_slider_min_deg
+                                            ..=self.ui_config.vvt_slider_max_deg,
+                                    )
+                                    .text("VVT Exhaust [deg]"),
+                                );
+                                ui.add_enabled(
+                                    true,
+                                    egui::Slider::new(
+                                        &mut self.sim.control.ignition_timing_deg,
+                                        self.ui_config.ignition_slider_min_deg
+                                            ..=self.ui_config.ignition_slider_max_deg,
+                                    )
+                                    .text("Ignition [deg BTDC]"),
+                                );
+                            },
+                        );
 
-                ui.add_space(8.0);
-                show_collapsible_module(
-                    ui,
-                    self.theme,
-                    "rack_actuator",
-                    "Actuator Deck",
-                    "manual command surface",
-                    self.theme.amber,
-                    true,
-                    |ui| {
-                    let auto_actuator_locked =
-                        self.sim.auto.enabled || self.sim.auto.wot_efficiency_enabled;
-                    let calibration_locked = self.sim.auto.wot_efficiency_enabled;
-                    let mut load_mode = self.sim.model.external_load.mode;
-
-                    ui.add_enabled(
-                        !auto_actuator_locked,
-                        egui::Slider::new(&mut self.sim.control.throttle_cmd, 0.0..=1.0)
-                            .text("Throttle cmd"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut self.sim.control.load_cmd, 0.0..=1.0)
-                            .text("Load cmd"),
-                    );
-                    egui::ComboBox::from_label("Load model")
-                        .selected_text(load_mode.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut load_mode,
-                                ExternalLoadMode::BrakeMap,
-                                ExternalLoadMode::BrakeMap.label(),
-                            );
-                            ui.selectable_value(
-                                &mut load_mode,
-                                ExternalLoadMode::VehicleEquivalent,
-                                ExternalLoadMode::VehicleEquivalent.label(),
-                            );
-                        });
-                    if load_mode != self.sim.model.external_load.mode {
-                        self.sim.model.external_load.mode = load_mode;
-                    }
-                    ui.add_enabled(
-                        !auto_actuator_locked,
-                        egui::Checkbox::new(&mut self.sim.control.starter_cmd, "Starter"),
-                    );
-                    ui.add_enabled(
-                        !auto_actuator_locked,
-                        egui::Checkbox::new(&mut self.sim.control.spark_cmd, "Spark"),
-                    );
-                    ui.add_enabled(
-                        !auto_actuator_locked,
-                        egui::Checkbox::new(&mut self.sim.control.fuel_cmd, "Fuel"),
-                    );
-                    ui.separator();
-                    ui.add_enabled(
-                        !calibration_locked,
-                        egui::Slider::new(
-                            &mut self.sim.control.vvt_intake_deg,
-                            self.ui_config.vvt_slider_min_deg..=self.ui_config.vvt_slider_max_deg,
-                        )
-                        .text("VVT Intake [deg]"),
-                    );
-                    ui.add_enabled(
-                        !calibration_locked,
-                        egui::Slider::new(
-                            &mut self.sim.control.vvt_exhaust_deg,
-                            self.ui_config.vvt_slider_min_deg..=self.ui_config.vvt_slider_max_deg,
-                        )
-                        .text("VVT Exhaust [deg]"),
-                    );
-                    ui.add_enabled(
-                        !calibration_locked,
-                        egui::Slider::new(
-                            &mut self.sim.control.ignition_timing_deg,
-                            self.ui_config.ignition_slider_min_deg
-                                ..=self.ui_config.ignition_slider_max_deg,
-                        )
-                        .text("Ignition [deg BTDC]"),
-                    );
-                    },
-                );
-
-                ui.add_space(8.0);
-                show_collapsible_module(
-                    ui,
-                    self.theme,
-                    "rack_status",
-                    "Status Bus",
-                    "cell and runtime telemetry",
-                    self.theme.green,
-                    false,
-                    |ui| {
-                    let load_model = &self.sim.model.external_load;
-                    ui.label(format!(
-                        "Engine layout: fixed {}-cylinder",
-                        FIXED_CYLINDER_COUNT
-                    ));
-                    ui.label(format!("Throttle eff: {:.3}", self.sim.state.throttle_eff));
-                    ui.label(format!("Load cmd: {:.3}", self.sim.control.load_cmd));
-                    ui.label(format!("Load model: {}", load_model.mode.label()));
-                    if load_model.mode == ExternalLoadMode::VehicleEquivalent {
-                        ui.label(format!(
-                            "Vehicle eq: {:.1} km/h / Jref {:.3} kg m^2",
-                            external_load_vehicle_speed_kph(
-                                self.sim.state.omega_rad_s,
-                                load_model,
-                            ),
-                            external_load_reflected_inertia_kgm2(self.sim.control.load_cmd, load_model)
-                        ));
-                    }
-                    ui.label(if self.ui_config.sync_to_wall_clock {
-                        "Solver mode: wall-clock synchronized"
-                    } else {
-                        "Solver mode: accuracy first"
-                    });
-                    ui.label(if self.latest.stable_idle {
-                        "State: IDLE STABLE"
-                    } else {
-                        "State: TRANSIENT"
-                    });
-                    ui.label(if self.sim.auto.enabled {
-                        "Auto mode: IDLE"
-                    } else if self.sim.auto.wot_efficiency_enabled {
-                        "Auto mode: WOT efficiency"
-                    } else {
-                        "Auto mode: OFF"
-                    });
-                    if let Some(last) = self.bench.results().last() {
-                        ui.label(format!(
-                            "Last bench: {} / {:.0} rpm (target {:.0}) / {:.1} Nm / load {:.3} / lambda {:.2}",
-                            last.mixture_mode.label(),
-                            last.rpm,
-                            last.target_rpm,
-                            last.torque_brake_nm,
-                            last.load_cmd,
-                            last.lambda_target
-                        ));
-                    }
-                    },
-                );
-                ui.add_space(8.0);
-                self.render_state_bus(ui);
+                        ui.add_space(8.0);
+                        show_collapsible_module(
+                            ui,
+                            self.theme,
+                            "rack_status",
+                            "Status Bus",
+                            "cell and runtime telemetry",
+                            self.theme.green,
+                            false,
+                            |ui| {
+                                let load_model = &self.sim.model.external_load;
+                                ui.label(format!(
+                                    "Engine layout: fixed {}-cylinder",
+                                    FIXED_CYLINDER_COUNT
+                                ));
+                                ui.label(format!(
+                                    "Throttle eff: {:.3}",
+                                    self.sim.state.throttle_eff
+                                ));
+                                ui.label("Operator input: Throttle cmd + Target RPM");
+                                ui.label(format!("Target RPM: {:.0}", self.load_target_rpm));
+                                ui.label(format!(
+                                    "Required brake torque: {:.1} Nm",
+                                    self.required_brake_torque_nm
+                                ));
+                                ui.label(format!(
+                                    "Required brake power: {:.1} kW",
+                                    shaft_power_kw(self.latest.rpm, self.required_brake_torque_nm)
+                                ));
+                                ui.label(format!("RPM error: {:+.0} rpm", self.rpm_error()));
+                                ui.label(format!(
+                                    "Absorber command: {:+.3}",
+                                    self.sim.control.load_cmd
+                                ));
+                                ui.label(format!(
+                                    "Absorber torque act / shaft est: {:+.1} / {:+.1} Nm",
+                                    self.latest.torque_load_nm,
+                                    self.shaft_torque_estimate_nm()
+                                ));
+                                ui.label(format!("Load model: {}", load_model.mode.label()));
+                                ui.label(format!(
+                                    "Bench interlock: {} / dyno {}",
+                                    if self.bench_interlock_ok() {
+                                        "closed"
+                                    } else {
+                                        "open"
+                                    },
+                                    if self.bench_dyno_enabled {
+                                        "enabled"
+                                    } else {
+                                        "disabled"
+                                    }
+                                ));
+                                ui.label(format!(
+                                    "Absorber limit: {:.0} kW / {:.0} rpm",
+                                    load_model.absorber_power_limit_kw,
+                                    load_model.absorber_speed_limit_rpm
+                                ));
+                                if load_model.mode == ExternalLoadMode::VehicleEquivalent {
+                                    ui.label(format!(
+                                        "Vehicle eq: {:.1} km/h / Jref {:.3} kg m^2",
+                                        external_load_vehicle_speed_kph(
+                                            self.sim.state.omega_rad_s,
+                                            load_model,
+                                        ),
+                                        external_load_reflected_inertia_kgm2(
+                                            self.sim.control.load_cmd,
+                                            load_model
+                                        )
+                                    ));
+                                }
+                                ui.label(if self.ui_config.sync_to_wall_clock {
+                                    "Solver mode: wall-clock synchronized"
+                                } else {
+                                    "Solver mode: accuracy first"
+                                });
+                                ui.label(if self.required_brake_torque_nm > 0.5 {
+                                    "State: FIRED"
+                                } else {
+                                    "State: MOTORING"
+                                });
+                                ui.label(if !self.bench_dyno_enabled {
+                                    "Machine mode: DYNO DISABLED"
+                                } else if self.sim.control.load_cmd < -0.02 {
+                                    "Machine mode: SPEED HOLD / MOTOR"
+                                } else {
+                                    "Machine mode: SPEED HOLD / ABSORB"
+                                });
+                            },
+                        );
+                        ui.add_space(8.0);
+                        self.render_state_bus(ui);
                     });
             });
     }
 
     fn render_console_overview(&self, ui: &mut egui::Ui) {
-        let combustion_power_kw =
-            shaft_power_kw(self.latest.rpm, self.latest.torque_combustion_cycle_nm);
-        let brake_power_kw = shaft_power_kw(self.latest.rpm, self.latest.torque_net_nm);
+        let brake_torque_out_nm = self.required_brake_torque_nm;
+        let brake_power_kw = shaft_power_kw(self.latest.rpm, brake_torque_out_nm);
+        let absorber_torque_nm = self.latest.torque_load_nm.abs();
+        let absorber_power_kw = shaft_power_kw(self.latest.rpm, absorber_torque_nm);
         let panel_width = ui.available_width().max(320.0);
         let readout_columns = responsive_card_columns(panel_width, 190.0, 6);
         let readout_width = responsive_card_width(panel_width, readout_columns).min(248.0);
@@ -1220,12 +988,12 @@ impl DashboardApp {
                 self.theme.amber,
             );
             let mut readout_index = 0usize;
-            while readout_index < 6 {
+            while readout_index < 8 {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     for slot in 0..readout_columns {
                         let idx = readout_index + slot;
-                        if idx >= 6 {
+                        if idx >= 8 {
                             break;
                         }
                         match idx {
@@ -1236,10 +1004,10 @@ impl DashboardApp {
                                 "ENGINE SPEED",
                                 &format!("{:.0}", self.latest.rpm),
                                 "rpm",
-                                if self.latest.stable_idle {
-                                    "idle stable"
+                                if self.required_brake_torque_nm > 0.5 {
+                                    "fired operating point"
                                 } else {
-                                    "dynamic state"
+                                    "motoring operating point"
                                 },
                                 readout_width,
                             ),
@@ -1247,10 +1015,10 @@ impl DashboardApp {
                                 ui,
                                 self.theme,
                                 self.theme.red,
-                                "NET TORQUE FILT",
-                                &format!("{:.1}", self.latest.torque_net_nm),
+                                "BRAKE TORQUE",
+                                &format!("{:.1}", brake_torque_out_nm),
                                 "Nm",
-                                &format!("inst {:.1} Nm", self.latest.torque_net_inst_nm),
+                                &format!("net {:.1} Nm", self.latest.torque_net_nm),
                                 readout_width,
                             ),
                             2 => digital_readout(
@@ -1262,11 +1030,21 @@ impl DashboardApp {
                                 "kW",
                                 &format!(
                                     "{:.1} hp",
-                                    shaft_power_hp(self.latest.rpm, self.latest.torque_net_nm)
+                                    shaft_power_hp(self.latest.rpm, brake_torque_out_nm)
                                 ),
                                 readout_width,
                             ),
                             3 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.red,
+                                "ABSORBER TORQUE",
+                                &format!("{:+.1}", self.latest.torque_load_nm),
+                                "Nm",
+                                &format!("{:.1} kW", absorber_power_kw),
+                                readout_width,
+                            ),
+                            4 => digital_readout(
                                 ui,
                                 self.theme,
                                 self.theme.green,
@@ -1276,7 +1054,7 @@ impl DashboardApp {
                                 &format!("VE {:.1}%", self.latest.volumetric_efficiency * 100.0),
                                 readout_width,
                             ),
-                            4 => digital_readout(
+                            5 => digital_readout(
                                 ui,
                                 self.theme,
                                 self.theme.amber,
@@ -1286,7 +1064,21 @@ impl DashboardApp {
                                 &intake_state,
                                 readout_width,
                             ),
-                            5 => digital_readout(
+                            6 => digital_readout(
+                                ui,
+                                self.theme,
+                                self.theme.green,
+                                "DYNO LIMIT",
+                                &format!("{:.0}", self.dyno_available_torque_nm()),
+                                "Nm",
+                                &format!(
+                                    "{:.0} kW / {:.0} rpm",
+                                    self.sim.model.external_load.absorber_power_limit_kw,
+                                    self.sim.model.external_load.absorber_speed_limit_rpm
+                                ),
+                                readout_width,
+                            ),
+                            7 => digital_readout(
                                 ui,
                                 self.theme,
                                 self.theme.cyan,
@@ -1305,12 +1097,12 @@ impl DashboardApp {
 
             ui.add_space(6.0);
             let mut gauge_index = 0usize;
-            while gauge_index < 6 {
+            while gauge_index < 7 {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     for slot in 0..gauge_columns {
                         let idx = gauge_index + slot;
-                        if idx >= 6 {
+                        if idx >= 7 {
                             break;
                         }
                         let spec = match idx {
@@ -1370,13 +1162,24 @@ impl DashboardApp {
                                 height: 112.0,
                             },
                             5 => GaugeSpec {
-                                label: "COMB PWR",
-                                value: combustion_power_kw,
+                                label: "ABS TORQ",
+                                value: absorber_torque_nm,
                                 min: 0.0,
-                                max: 160.0,
-                                unit: "kW",
-                                accent: self.theme.cyan,
-                                footer: "gross combustion",
+                                max: self.sim.model.external_load.torque_max_nm.max(1.0),
+                                unit: "Nm",
+                                accent: self.theme.red,
+                                footer: "absorber applied torque",
+                                width: gauge_width,
+                                height: 112.0,
+                            },
+                            6 => GaugeSpec {
+                                label: "INT EGR",
+                                value: self.latest.internal_egr_fraction * 100.0,
+                                min: 0.0,
+                                max: 30.0,
+                                unit: "%",
+                                accent: self.theme.green,
+                                footer: "internal residual fraction",
                                 width: gauge_width,
                                 height: 112.0,
                             },
@@ -1390,12 +1193,12 @@ impl DashboardApp {
 
             ui.add_space(6.0);
             let mut meter_index = 0usize;
-            while meter_index < 6 {
+            while meter_index < 7 {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     for slot in 0..meter_columns {
                         let idx = meter_index + slot;
-                        if idx >= 6 {
+                        if idx >= 7 {
                             break;
                         }
                         let spec = match idx {
@@ -1418,12 +1221,16 @@ impl DashboardApp {
                                 width: meter_width,
                             },
                             2 => LinearMeterSpec {
-                                label: "LOAD CMD",
-                                value: self.sim.control.load_cmd,
+                                label: "TARGET RPM",
+                                value: self.load_target_rpm,
                                 min: 0.0,
-                                max: 1.0,
+                                max: self.sim.params.max_rpm,
                                 accent: self.theme.red,
-                                value_text: format!("{:.3}", self.sim.control.load_cmd),
+                                value_text: format!(
+                                    "{:.0} rpm / err {:+.0}",
+                                    self.load_target_rpm,
+                                    self.rpm_error()
+                                ),
                                 width: meter_width,
                             },
                             3 => LinearMeterSpec {
@@ -1456,6 +1263,15 @@ impl DashboardApp {
                                 value_text: format!("{:.1} deg", self.sim.control.vvt_exhaust_deg),
                                 width: meter_width,
                             },
+                            6 => LinearMeterSpec {
+                                label: "BRAKE POWER",
+                                value: brake_power_kw,
+                                min: 0.0,
+                                max: 160.0,
+                                accent: self.theme.cyan,
+                                value_text: format!("{:.1} kW", brake_power_kw),
+                                width: meter_width,
+                            },
                             _ => unreachable!(),
                         };
                         linear_meter(ui, self.theme, spec);
@@ -1481,6 +1297,28 @@ impl DashboardApp {
                     .num_columns(2)
                     .spacing(egui::vec2(16.0, 6.0))
                     .show(ui, |ui| {
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Absorber torque act",
+                            format!("{:+.1} Nm", self.latest.torque_load_nm),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Absorber torque avail",
+                            format!("{:.1} Nm", self.dyno_available_torque_nm()),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
+                            "Absorber power",
+                            format!(
+                                "{:.1} / {:.0} kW",
+                                shaft_power_kw(self.latest.rpm, self.latest.torque_load_nm.abs()),
+                                self.sim.model.external_load.absorber_power_limit_kw
+                            ),
+                        );
                         metric_row(
                             ui,
                             self.theme,
@@ -1534,6 +1372,12 @@ impl DashboardApp {
                         metric_row(
                             ui,
                             self.theme,
+                            "Internal EGR",
+                            format!("{:.1} %", self.latest.internal_egr_fraction * 100.0),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
                             "Ignition timing",
                             format!("{:.1} deg BTDC", self.latest.ignition_timing_deg),
                         );
@@ -1567,6 +1411,15 @@ impl DashboardApp {
                         metric_row(
                             ui,
                             self.theme,
+                            "Net torque inst / filt",
+                            format!(
+                                "{:+.2} / {:+.2} Nm",
+                                self.latest.torque_net_inst_nm, self.latest.torque_net_nm
+                            ),
+                        );
+                        metric_row(
+                            ui,
+                            self.theme,
                             "Torque comb inst / cycle mean",
                             format!(
                                 "{:.2} / {:.2} Nm",
@@ -1586,203 +1439,26 @@ impl DashboardApp {
                         metric_row(
                             ui,
                             self.theme,
-                            "Starter / load torque",
+                            "Shaft est / machine torque",
                             format!(
-                                "{:.2} / {:.2} Nm",
-                                self.latest.torque_starter_nm, self.latest.torque_load_nm
+                                "{:+.2} / {:+.2} Nm",
+                                self.shaft_torque_estimate_nm(),
+                                self.latest.torque_load_nm
                             ),
                         );
                         metric_row(
                             ui,
                             self.theme,
-                            "Brake power filt / load power",
+                            "Brake power / load power",
                             format!(
                                 "{:.2} / {:.2} kW",
-                                shaft_power_kw(self.latest.rpm, self.latest.torque_net_nm),
+                                shaft_power_kw(self.latest.rpm, self.required_brake_torque_nm),
                                 shaft_power_kw(self.latest.rpm, self.latest.torque_load_nm)
                             ),
                         );
                     });
             },
         );
-    }
-
-    fn render_bench_curve(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
-        let bench_results = self.bench.results();
-        let bench_preview = self.bench.preview_results();
-        let live_bench = self.bench.live_sample();
-        if bench_results.is_empty() && bench_preview.is_empty() && live_bench.is_none() {
-            return;
-        }
-        let plot = bench_curve_plot_data(
-            bench_results,
-            bench_preview,
-            live_bench,
-            &self.config.bench,
-            &self.ui_config,
-        );
-
-        self.theme.monitor_frame().show(ui, |ui| {
-            monitor_heading(
-                ui,
-                self.theme,
-                "Dyno Monitor",
-                &plot.summary,
-                self.theme.cyan,
-            );
-            ui.columns(2, |columns| {
-                Plot::new("bench_torque_curve_plot")
-                    .height(graph_heights.bench_torque_plot_px)
-                    .allow_scroll(false)
-                    .allow_drag(false)
-                    .allow_zoom(false)
-                    .include_x(plot.x_min)
-                    .include_y(0.0)
-                    .legend(Legend::default())
-                    .x_axis_label("Engine speed [rpm]")
-                    .y_axis_label("Brake torque [Nm]")
-                    .show(&mut columns[0], |plot_ui| {
-                        plot_ui.set_auto_bounds(false);
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [plot.x_min, plot.y_min],
-                            [plot.x_max, plot.y_max],
-                        ));
-
-                        if plot.preview_curve_points.len() >= 2 {
-                            plot_ui.line(
-                                Line::new(plot.preview_curve_points.clone())
-                                    .name(format!("Preview torque [{}]", plot.label))
-                                    .color(egui::Color32::from_gray(120))
-                                    .width(self.ui_config.line_width_px),
-                            );
-                        }
-
-                        if plot.curve_line_points.len() >= 2 {
-                            plot_ui.line(
-                                Line::new(plot.curve_line_points.clone())
-                                    .name(format!("Torque curve [{}]", plot.label))
-                                    .color(egui::Color32::from_rgb(255, 200, 80))
-                                    .width(self.ui_config.line_width_px + 0.5),
-                            );
-                        }
-
-                        if !plot.completed_points.is_empty() {
-                            plot_ui.points(
-                                Points::new(plot.completed_points.clone())
-                                    .name("Bench curve points")
-                                    .shape(MarkerShape::Circle)
-                                    .radius(3.5)
-                                    .color(egui::Color32::from_rgb(255, 200, 80)),
-                            );
-                        }
-
-                        if let Some(anchor) = plot.origin_anchor {
-                            plot_ui.points(
-                                Points::new(vec![anchor])
-                                    .name("0 rpm anchor")
-                                    .shape(MarkerShape::Circle)
-                                    .radius(2.5)
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                        }
-
-                        if let Some(peak_point) = plot.peak_torque_point {
-                            let peak_point = Points::new(vec![peak_point])
-                                .name("Peak torque")
-                                .shape(MarkerShape::Diamond)
-                                .radius(5.5)
-                                .color(egui::Color32::from_rgb(255, 235, 140));
-                            plot_ui.points(peak_point);
-                        }
-
-                        if let Some(live_point) = plot.live_point {
-                            plot_ui.vline(
-                                VLine::new(live_point[0])
-                                    .name("Current RPM")
-                                    .color(egui::Color32::from_rgb(255, 120, 40)),
-                            );
-                            let live_point = Points::new(vec![live_point])
-                                .name("Current point")
-                                .shape(MarkerShape::Circle)
-                                .radius(5.0)
-                                .color(egui::Color32::from_rgb(255, 120, 40));
-                            plot_ui.points(live_point);
-                        }
-                    });
-
-                Plot::new("bench_power_curve_plot")
-                    .height(graph_heights.bench_power_plot_px)
-                    .allow_scroll(false)
-                    .allow_drag(false)
-                    .allow_zoom(false)
-                    .include_x(plot.x_min)
-                    .include_y(0.0)
-                    .legend(Legend::default())
-                    .x_axis_label("Engine speed [rpm]")
-                    .y_axis_label("Brake power [kW]")
-                    .show(&mut columns[1], |plot_ui| {
-                        plot_ui.set_auto_bounds(false);
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [plot.x_min, plot.power_y_min],
-                            [plot.x_max, plot.power_y_max],
-                        ));
-
-                        if plot.preview_power_curve_points.len() >= 2 {
-                            plot_ui.line(
-                                Line::new(plot.preview_power_curve_points.clone())
-                                    .name(format!("Preview power [{}]", plot.label))
-                                    .color(egui::Color32::from_gray(120))
-                                    .width(self.ui_config.line_width_px),
-                            );
-                        }
-
-                        if plot.power_curve_line_points.len() >= 2 {
-                            plot_ui.line(
-                                Line::new(plot.power_curve_line_points.clone())
-                                    .name(format!("Power curve [{}]", plot.label))
-                                    .color(egui::Color32::from_rgb(120, 210, 255))
-                                    .width(self.ui_config.line_width_px + 0.5),
-                            );
-                        }
-
-                        if !plot.completed_power_points.is_empty() {
-                            plot_ui.points(
-                                Points::new(plot.completed_power_points.clone())
-                                    .name("Bench power points")
-                                    .shape(MarkerShape::Circle)
-                                    .radius(3.5)
-                                    .color(egui::Color32::from_rgb(120, 210, 255)),
-                            );
-                        }
-
-                        if let Some(peak_power_point) = plot.peak_power_point {
-                            plot_ui.points(
-                                Points::new(vec![peak_power_point])
-                                    .name("Peak power")
-                                    .shape(MarkerShape::Diamond)
-                                    .radius(5.5)
-                                    .color(egui::Color32::from_rgb(170, 240, 255)),
-                            );
-                        }
-
-                        if let Some(live_power_point) = plot.live_power_point {
-                            plot_ui.vline(
-                                VLine::new(live_power_point[0])
-                                    .name("Current RPM")
-                                    .color(egui::Color32::from_rgb(80, 170, 255)),
-                            );
-                            plot_ui.points(
-                                Points::new(vec![live_power_point])
-                                    .name("Current power")
-                                    .shape(MarkerShape::Circle)
-                                    .radius(5.0)
-                                    .color(egui::Color32::from_rgb(80, 170, 255)),
-                            );
-                        }
-                    });
-            });
-        });
-        ui.add_space(graph_heights.section_spacing_px);
     }
 
     fn render_pv_plot(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
@@ -1824,7 +1500,6 @@ impl DashboardApp {
                 .x_axis_label("Normalized volume [-]")
                 .y_axis_label("Pressure [kPa]")
                 .show(ui, |plot_ui| {
-                    // Keep the configured p-V window visible, but allow extra headroom for peaks.
                     plot_ui.set_auto_bounds(false);
                     plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                         [self.sim.plot.pv_x_min, self.sim.plot.pv_y_min_kpa],
@@ -2095,8 +1770,455 @@ impl DashboardApp {
                             plot_ui.vline(crank_cursor);
                         });
                 });
+
+                ui.add_space(graph_heights.section_spacing_px);
+                self.render_engine_motion_schematic(ui, graph_heights);
             },
         );
+    }
+
+    fn render_engine_motion_schematic(&self, ui: &mut egui::Ui, graph_heights: GraphLayoutHeights) {
+        self.theme.monitor_frame().show(ui, |ui| {
+            monitor_heading(
+                ui,
+                self.theme,
+                "Engine Motion Schematic",
+                "single-cylinder cutaway showing piston, crank, poppet valves, tent-roof chamber, and flame travel from current bore, stroke, ignition, and VVT",
+                self.theme.green,
+            );
+
+            let desired_height = (graph_heights.standard_plot_px * 3.4).clamp(360.0, 460.0);
+            let desired_width = ui.available_width().min(460.0).max(340.0);
+            let desired_size = egui::vec2(desired_width, desired_height);
+
+            let local_cycle_deg = self.schematic_cycle_deg;
+            let intake_center_deg =
+                self.sim.cam.intake_centerline_deg - self.sim.control.vvt_intake_deg;
+            let exhaust_center_deg =
+                self.sim.cam.exhaust_centerline_deg + self.sim.control.vvt_exhaust_deg;
+            let intake_lift_mm = cam_lift_mm(
+                local_cycle_deg,
+                intake_center_deg,
+                self.sim.cam.intake_duration_deg,
+                self.sim.cam.intake_max_lift_mm,
+                &self.sim.model,
+            )
+            .max(0.0);
+            let exhaust_lift_mm = cam_lift_mm(
+                local_cycle_deg,
+                exhaust_center_deg,
+                self.sim.cam.exhaust_duration_deg,
+                self.sim.cam.exhaust_max_lift_mm,
+                &self.sim.model,
+            )
+            .max(0.0);
+
+            let spark_event_deg = (360.0 - self.latest.ignition_timing_deg).rem_euclid(720.0);
+            let spark_rel_deg = (local_cycle_deg - spark_event_deg).rem_euclid(720.0);
+            let burn_duration_deg = self.latest.burn_duration_deg.max(1.0);
+            let burn_rel_deg =
+                (local_cycle_deg - self.latest.burn_start_deg.rem_euclid(720.0)).rem_euclid(720.0);
+            let ignition_flash = self.sim.control.spark_cmd
+                && self.sim.control.fuel_cmd
+                && spark_rel_deg <= 12.0;
+            let burn_active = self.sim.control.spark_cmd
+                && self.sim.control.fuel_cmd
+                && burn_rel_deg <= burn_duration_deg + 18.0;
+            let flame_progress = if burn_active {
+                (burn_rel_deg / burn_duration_deg).clamp(0.0, 1.0) as f32
+            } else {
+                0.0
+            };
+            let chamber_base = if self.sim.control.fuel_cmd {
+                self.theme.cyan.gamma_multiply(0.14)
+            } else {
+                self.theme.panel_bg
+            };
+            let chamber_hot = self.theme.red.gamma_multiply(0.34);
+            let chamber_fill = if burn_active || ignition_flash {
+                lerp_color(chamber_base, chamber_hot, flame_progress.max(0.25))
+            } else {
+                chamber_base
+            };
+
+            ui.vertical_centered(|ui| {
+                let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 12.0, self.theme.panel_alt_bg);
+                painter.rect_stroke(
+                    rect,
+                    12.0,
+                    egui::Stroke::new(1.0, self.theme.bezel),
+                    egui::epaint::StrokeKind::Inside,
+                );
+
+                let center_x = rect.center().x;
+                let top_y = rect.top() + 26.0;
+                let deck_y = rect.top() + 112.0;
+                let max_geom = self.sim.params.stroke_m.max(self.sim.params.bore_m * 0.92);
+                let bore_ratio = (self.sim.params.bore_m / max_geom.max(f64::EPSILON)) as f32;
+                let stroke_ratio = (self.sim.params.stroke_m / max_geom.max(f64::EPSILON)) as f32;
+                let bore_px = (136.0 + 38.0 * bore_ratio).clamp(126.0, 176.0);
+                let stroke_px = (168.0 + 64.0 * stroke_ratio).clamp(170.0, 240.0);
+                let bore_left = center_x - bore_px * 0.5;
+                let bore_right = center_x + bore_px * 0.5;
+                let cylinder_bottom = deck_y + stroke_px;
+                let cylinder_rect = egui::Rect::from_min_max(
+                    egui::pos2(bore_left, deck_y - 12.0),
+                    egui::pos2(bore_right, cylinder_bottom),
+                );
+                let chamber_apex = egui::pos2(center_x, deck_y - 38.0);
+                let intake_port_rect = egui::Rect::from_min_max(
+                    egui::pos2(bore_left - 98.0, top_y + 8.0),
+                    egui::pos2(center_x - 18.0, top_y + 44.0),
+                );
+                let exhaust_port_rect = egui::Rect::from_min_max(
+                    egui::pos2(center_x + 18.0, top_y + 8.0),
+                    egui::pos2(bore_right + 98.0, top_y + 44.0),
+                );
+                let intake_stem_x = bore_left + bore_px * 0.33;
+                let exhaust_stem_x = bore_right - bore_px * 0.33;
+                let seat_y = deck_y - 5.0;
+                let valve_max_lift_mm = self
+                    .sim
+                    .cam
+                    .intake_max_lift_mm
+                    .max(self.sim.cam.exhaust_max_lift_mm)
+                    .max(1.0);
+                let lift_scale = 32.0 / valve_max_lift_mm as f32;
+                let intake_lift_px = intake_lift_mm as f32 * lift_scale;
+                let exhaust_lift_px = exhaust_lift_mm as f32 * lift_scale;
+                let valve_closed_head_y = seat_y + 5.0;
+                let intake_head_y = valve_closed_head_y + intake_lift_px;
+                let exhaust_head_y = valve_closed_head_y + exhaust_lift_px;
+                let piston_phase = local_cycle_deg.to_radians().rem_euclid(std::f64::consts::TAU);
+                let piston_frac = 0.5 * (1.0 - piston_phase.cos());
+                let piston_h = 26.0;
+                let piston_y = deck_y + (stroke_px - piston_h - 8.0) * piston_frac as f32;
+                let piston_rect = egui::Rect::from_min_max(
+                    egui::pos2(bore_left + 6.0, piston_y),
+                    egui::pos2(bore_right - 6.0, piston_y + piston_h),
+                );
+                let crank_center = egui::pos2(center_x, cylinder_bottom + 46.0);
+                let crank_radius = 28.0;
+                let crank_pin = egui::pos2(
+                    center_x + crank_radius * (piston_phase.sin() as f32),
+                    crank_center.y - crank_radius * (piston_phase.cos() as f32),
+                );
+                let rod_top = piston_rect.center_bottom();
+                let chamber_poly = vec![
+                    egui::pos2(bore_left, deck_y),
+                    egui::pos2(bore_left + 20.0, deck_y - 10.0),
+                    chamber_apex,
+                    egui::pos2(bore_right - 20.0, deck_y - 10.0),
+                    egui::pos2(bore_right, deck_y),
+                ];
+
+                painter.rect_filled(cylinder_rect, 10.0, chamber_fill);
+                painter.add(egui::Shape::convex_polygon(
+                    chamber_poly.clone(),
+                    chamber_fill,
+                    egui::Stroke::NONE,
+                ));
+                painter.rect_stroke(
+                    cylinder_rect,
+                    10.0,
+                    egui::Stroke::new(1.4, self.theme.chrome),
+                    egui::epaint::StrokeKind::Inside,
+                );
+                painter.add(egui::Shape::closed_line(
+                    chamber_poly,
+                    egui::Stroke::new(2.0, self.theme.bezel),
+                ));
+
+                painter.rect_filled(intake_port_rect, 8.0, self.theme.cyan.gamma_multiply(0.14));
+                painter.rect_stroke(
+                    intake_port_rect,
+                    8.0,
+                    egui::Stroke::new(1.2, self.theme.cyan),
+                    egui::epaint::StrokeKind::Inside,
+                );
+                painter.rect_filled(exhaust_port_rect, 8.0, self.theme.red.gamma_multiply(0.14));
+                painter.rect_stroke(
+                    exhaust_port_rect,
+                    8.0,
+                    egui::Stroke::new(1.2, self.theme.red),
+                    egui::epaint::StrokeKind::Inside,
+                );
+                painter.text(
+                    intake_port_rect.center_top() + egui::vec2(0.0, 6.0),
+                    egui::Align2::CENTER_TOP,
+                    "INTAKE",
+                    egui::FontId::monospace(10.0),
+                    self.theme.cyan,
+                );
+                painter.text(
+                    exhaust_port_rect.center_top() + egui::vec2(0.0, 6.0),
+                    egui::Align2::CENTER_TOP,
+                    "EXHAUST",
+                    egui::FontId::monospace(10.0),
+                    self.theme.red,
+                );
+                painter.line_segment(
+                    [intake_port_rect.center_bottom(), egui::pos2(intake_stem_x - 12.0, seat_y - 20.0)],
+                    egui::Stroke::new(1.6, self.theme.cyan),
+                );
+                painter.line_segment(
+                    [exhaust_port_rect.center_bottom(), egui::pos2(exhaust_stem_x + 12.0, seat_y - 20.0)],
+                    egui::Stroke::new(1.6, self.theme.red),
+                );
+
+                let guide_top_y = top_y + 18.0;
+                let guide_bottom_y = seat_y - 18.0;
+                painter.line_segment(
+                    [
+                        egui::pos2(intake_stem_x, guide_top_y),
+                        egui::pos2(intake_stem_x, intake_head_y),
+                    ],
+                    egui::Stroke::new(2.2, self.theme.cyan),
+                );
+                painter.line_segment(
+                    [
+                        egui::pos2(exhaust_stem_x, guide_top_y),
+                        egui::pos2(exhaust_stem_x, exhaust_head_y),
+                    ],
+                    egui::Stroke::new(2.2, self.theme.red),
+                );
+                painter.rect_filled(
+                    egui::Rect::from_center_size(
+                        egui::pos2(intake_stem_x, guide_top_y - 4.0),
+                        egui::vec2(18.0, 8.0),
+                    ),
+                    2.0,
+                    self.theme.cyan.gamma_multiply(0.25),
+                );
+                painter.rect_filled(
+                    egui::Rect::from_center_size(
+                        egui::pos2(exhaust_stem_x, guide_top_y - 4.0),
+                        egui::vec2(18.0, 8.0),
+                    ),
+                    2.0,
+                    self.theme.red.gamma_multiply(0.25),
+                );
+                painter.line_segment(
+                    [egui::pos2(intake_stem_x, guide_top_y), egui::pos2(intake_stem_x, guide_bottom_y)],
+                    egui::Stroke::new(1.0, self.theme.chrome.gamma_multiply(0.55)),
+                );
+                painter.line_segment(
+                    [egui::pos2(exhaust_stem_x, guide_top_y), egui::pos2(exhaust_stem_x, guide_bottom_y)],
+                    egui::Stroke::new(1.0, self.theme.chrome.gamma_multiply(0.55)),
+                );
+
+                painter.line_segment(
+                    [egui::pos2(intake_stem_x - 15.0, seat_y), egui::pos2(intake_stem_x - 4.0, seat_y + 8.0)],
+                    egui::Stroke::new(1.5, self.theme.chrome),
+                );
+                painter.line_segment(
+                    [egui::pos2(intake_stem_x + 15.0, seat_y), egui::pos2(intake_stem_x + 4.0, seat_y + 8.0)],
+                    egui::Stroke::new(1.5, self.theme.chrome),
+                );
+                painter.line_segment(
+                    [egui::pos2(exhaust_stem_x - 15.0, seat_y), egui::pos2(exhaust_stem_x - 4.0, seat_y + 8.0)],
+                    egui::Stroke::new(1.5, self.theme.chrome),
+                );
+                painter.line_segment(
+                    [egui::pos2(exhaust_stem_x + 15.0, seat_y), egui::pos2(exhaust_stem_x + 4.0, seat_y + 8.0)],
+                    egui::Stroke::new(1.5, self.theme.chrome),
+                );
+                painter.line_segment(
+                    [egui::pos2(intake_stem_x - 12.0, intake_head_y), egui::pos2(intake_stem_x + 12.0, intake_head_y)],
+                    egui::Stroke::new(4.0, self.theme.cyan),
+                );
+                painter.line_segment(
+                    [egui::pos2(exhaust_stem_x - 12.0, exhaust_head_y), egui::pos2(exhaust_stem_x + 12.0, exhaust_head_y)],
+                    egui::Stroke::new(4.0, self.theme.red),
+                );
+
+                painter.rect_filled(piston_rect, 5.0, self.theme.amber.gamma_multiply(0.90));
+                painter.rect_stroke(
+                    piston_rect,
+                    5.0,
+                    egui::Stroke::new(1.0, self.theme.amber),
+                    egui::epaint::StrokeKind::Inside,
+                );
+                painter.line_segment([rod_top, crank_pin], egui::Stroke::new(2.6, self.theme.text_main));
+                painter.circle_stroke(
+                    crank_center,
+                    crank_radius,
+                    egui::Stroke::new(1.6, self.theme.chrome),
+                );
+                painter.line_segment([crank_center, crank_pin], egui::Stroke::new(2.2, self.theme.text_main));
+                painter.circle_filled(crank_pin, 4.4, self.theme.text_main);
+                painter.circle_filled(crank_center, 3.8, self.theme.chrome);
+                painter.line_segment(
+                    [
+                        egui::pos2(center_x - 42.0, crank_center.y + 30.0),
+                        egui::pos2(center_x + 42.0, crank_center.y + 30.0),
+                    ],
+                    egui::Stroke::new(1.2, self.theme.bezel),
+                );
+
+                let spark_plug_pos = egui::pos2(center_x, chamber_apex.y + 10.0);
+                painter.line_segment(
+                    [
+                        egui::pos2(center_x, chamber_apex.y - 18.0),
+                        egui::pos2(center_x, chamber_apex.y + 2.0),
+                    ],
+                    egui::Stroke::new(2.0, self.theme.text_soft),
+                );
+                painter.line_segment(
+                    [
+                        egui::pos2(center_x - 5.0, chamber_apex.y - 12.0),
+                        egui::pos2(center_x + 5.0, chamber_apex.y - 12.0),
+                    ],
+                    egui::Stroke::new(1.2, self.theme.text_soft),
+                );
+                painter.circle_filled(spark_plug_pos, 3.0, self.theme.text_main);
+
+                let chamber_clip = egui::Rect::from_min_max(
+                    egui::pos2(bore_left + 2.0, chamber_apex.y - 4.0),
+                    egui::pos2(bore_right - 2.0, piston_rect.top() - 2.0),
+                );
+                let chamber_painter = painter.with_clip_rect(chamber_clip);
+                if ignition_flash {
+                    for (angle_deg, length) in [
+                        (-55.0_f32, 16.0_f32),
+                        (-18.0_f32, 18.0_f32),
+                        (20.0_f32, 18.0_f32),
+                        (54.0_f32, 16.0_f32),
+                    ] {
+                        let angle = angle_deg.to_radians();
+                        let tip = egui::pos2(
+                            spark_plug_pos.x + length * angle.cos() as f32,
+                            spark_plug_pos.y + length * angle.sin() as f32,
+                        );
+                        chamber_painter.line_segment(
+                            [spark_plug_pos, tip],
+                            egui::Stroke::new(1.8, self.theme.red),
+                        );
+                    }
+                }
+                if burn_active {
+                    let max_radius = bore_px * 0.58;
+                    let radius = egui::lerp(12.0..=max_radius, flame_progress);
+                    chamber_painter.circle_filled(
+                        spark_plug_pos,
+                        radius,
+                        self.theme.red.gamma_multiply(0.10 + 0.18 * (1.0 - flame_progress)),
+                    );
+                    chamber_painter.circle_stroke(
+                        spark_plug_pos,
+                        radius,
+                        egui::Stroke::new(2.0, self.theme.amber.gamma_multiply(0.95)),
+                    );
+                    chamber_painter.circle_stroke(
+                        spark_plug_pos,
+                        radius * 0.62,
+                        egui::Stroke::new(1.2, self.theme.red.gamma_multiply(0.75)),
+                    );
+                }
+
+                painter.text(
+                    rect.left_top() + egui::vec2(18.0, 14.0),
+                    egui::Align2::LEFT_TOP,
+                    "CYL 1 CUTAWAY",
+                    egui::FontId::monospace(10.5),
+                    self.theme.amber,
+                );
+                painter.text(
+                    egui::pos2(bore_left - 18.0, seat_y + 18.0),
+                    egui::Align2::RIGHT_TOP,
+                    "intake valve",
+                    egui::FontId::monospace(10.0),
+                    self.theme.cyan,
+                );
+                painter.text(
+                    egui::pos2(bore_right + 18.0, seat_y + 18.0),
+                    egui::Align2::LEFT_TOP,
+                    "exhaust valve",
+                    egui::FontId::monospace(10.0),
+                    self.theme.red,
+                );
+                painter.text(
+                    egui::pos2(center_x, piston_rect.bottom() + 12.0),
+                    egui::Align2::CENTER_TOP,
+                    "piston",
+                    egui::FontId::monospace(10.0),
+                    self.theme.amber,
+                );
+                painter.text(
+                    egui::pos2(center_x, crank_center.y + 36.0),
+                    egui::Align2::CENTER_TOP,
+                    "crank",
+                    egui::FontId::monospace(10.0),
+                    self.theme.text_soft,
+                );
+            });
+
+            ui.add_space(6.0);
+            egui::Grid::new("engine_motion_metrics")
+                .num_columns(2)
+                .spacing(egui::vec2(16.0, 4.0))
+                .show(ui, |ui| {
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Display phase",
+                        format!("{:.0} degCA", local_cycle_deg),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Bore / Stroke",
+                        format!(
+                            "{:.1} mm / {:.1} mm",
+                            self.sim.params.bore_m * 1.0e3,
+                            self.sim.params.stroke_m * 1.0e3
+                        ),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Intake / Exhaust lift",
+                        format!("{:.1} mm / {:.1} mm", intake_lift_mm, exhaust_lift_mm),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Intake / Exhaust VVT",
+                        format!(
+                            "{:.1} deg / {:.1} deg",
+                            self.sim.control.vvt_intake_deg, self.sim.control.vvt_exhaust_deg
+                        ),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Spark / Burn start",
+                        format!("{:.0} / {:.0} degCA", spark_event_deg, self.latest.burn_start_deg),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Animation / RPM",
+                        format!("180 degCA/s / {:.0}", self.latest.rpm),
+                    );
+                    metric_row(
+                        ui,
+                        self.theme,
+                        "Combustion",
+                        if burn_active {
+                            format!("flame front {:.0} %", flame_progress * 100.0)
+                        } else if ignition_flash {
+                            "spark discharge".to_owned()
+                        } else if self.sim.control.fuel_cmd {
+                            "fresh charge".to_owned()
+                        } else {
+                            "motoring".to_owned()
+                        },
+                    );
+                });
+        });
     }
 }
 
@@ -2105,124 +2227,20 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        adaptive_plot_y_range, bench_curve_plot_data, export_bench_results_csv,
-        graph_layout_heights, recent_cycle_plot_lines,
+        adaptive_plot_y_range, graph_layout_heights, recent_cycle_plot_lines,
+        speed_hold_desired_net_torque_nm, wrap_cycle_deg,
     };
-    use crate::config::{AppConfig, BenchMixtureMode};
-    use crate::simulator::{BenchSample, BenchSession, ControlInput, CycleHistorySample};
-
-    fn sample(rpm: f64, torque_brake_nm: f64, mode: BenchMixtureMode) -> BenchSample {
-        BenchSample {
-            target_rpm: rpm,
-            rpm,
-            torque_brake_nm,
-            load_cmd: 0.55,
-            load_torque_nm: torque_brake_nm,
-            map_kpa: 95.0,
-            eta_thermal_indicated_pv: 0.30,
-            lambda_target: 1.0,
-            intake_charge_temp_k: 300.0,
-            mixture_mode: mode,
-        }
-    }
+    use crate::config::AppConfig;
+    use crate::simulator::CycleHistorySample;
 
     #[test]
-    fn bench_curve_plot_uses_live_point_before_first_completed_sample() {
+    fn graph_layout_uses_positive_sizes() {
         let cfg = AppConfig::default();
-        let live = sample(3_500.0, 152.0, BenchMixtureMode::LambdaOne);
+        let layout = graph_layout_heights(&cfg.ui);
 
-        let plot = bench_curve_plot_data(&[], &[], Some(live), &cfg.bench, &cfg.ui);
-
-        assert_eq!(plot.live_point, Some([3_500.0, 152.0]));
-        assert!(plot.completed_points.is_empty());
-        assert_eq!(plot.origin_anchor, Some([0.0, 0.0]));
-        assert!(plot.curve_line_points.is_empty());
-        assert!(plot.power_curve_line_points.is_empty());
-        assert!(plot.y_max > 152.0);
-        assert_eq!(plot.x_min, 0.0);
-        assert_eq!(plot.x_max, cfg.bench.rpm_end_rpm);
-    }
-
-    #[test]
-    fn bench_curve_plot_sorts_samples_and_marks_peak() {
-        let cfg = AppConfig::default();
-        let results = vec![
-            sample(4_000.0, 188.0, BenchMixtureMode::RichChargeCooling),
-            sample(2_000.0, 142.0, BenchMixtureMode::RichChargeCooling),
-            sample(3_000.0, 171.0, BenchMixtureMode::RichChargeCooling),
-        ];
-
-        let plot = bench_curve_plot_data(&results, &[], None, &cfg.bench, &cfg.ui);
-        let rpms: Vec<f64> = plot
-            .curve_line_points
-            .iter()
-            .map(|point| point[0])
-            .collect();
-
-        assert_eq!(rpms, vec![0.0, 2_000.0, 3_000.0, 4_000.0]);
-        assert_eq!(plot.peak_torque_point, Some([4_000.0, 188.0]));
-        assert!(plot.peak_power_point.is_some());
-        assert_eq!(plot.completed_points.len(), 3);
-        assert_eq!(plot.origin_anchor, Some([0.0, 0.0]));
-    }
-
-    #[test]
-    fn bench_session_feeds_visible_curve_plot_data() {
-        let mut cfg = AppConfig::default();
-        cfg.bench.rpm_start_rpm = 1_500.0;
-        cfg.bench.rpm_end_rpm = 2_000.0;
-        cfg.bench.rpm_step_rpm = 500.0;
-        cfg.bench.settle_time_s = 0.01;
-        cfg.bench.average_time_s = 0.01;
-        cfg.bench.locked_cycle_samples = 64;
-
-        let mut session =
-            BenchSession::new(&cfg, ControlInput::default(), BenchMixtureMode::LambdaOne);
-
-        session.advance_steps(64);
-        let plot = bench_curve_plot_data(
-            session.results(),
-            &[],
-            session.live_sample(),
-            &cfg.bench,
-            &cfg.ui,
-        );
-
-        assert!(
-            plot.live_point.is_some() || !plot.completed_points.is_empty(),
-            "bench plot should have a live or completed point while session has started"
-        );
-        assert!(plot.y_max >= cfg.ui.torque_floor_abs_nm);
-        assert!(plot.x_max > plot.x_min);
-    }
-
-    #[test]
-    fn bench_export_writes_csv_with_brake_torque_columns() {
-        let results = vec![
-            sample(2_000.0, 150.0, BenchMixtureMode::RichChargeCooling),
-            sample(3_000.0, 180.0, BenchMixtureMode::RichChargeCooling),
-        ];
-
-        let path = export_bench_results_csv(&results, BenchMixtureMode::RichChargeCooling).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-
-        assert!(text.contains("brake_torque_nm"));
-        assert!(text.contains("dyno_load_torque_nm"));
-        assert!(text.contains("rich_charge_cooling"));
-    }
-
-    #[test]
-    fn graph_layout_compacts_when_bench_is_visible() {
-        let cfg = AppConfig::default();
-
-        let normal = graph_layout_heights(&cfg.ui, false);
-        let compact = graph_layout_heights(&cfg.ui, true);
-
-        assert!(compact.standard_plot_px < normal.standard_plot_px);
-        assert!(compact.pv_plot_px < normal.pv_plot_px);
-        assert!(compact.bench_torque_plot_px < normal.bench_torque_plot_px);
-        assert!(compact.bench_power_plot_px < normal.bench_power_plot_px);
-        assert!(compact.section_spacing_px < normal.section_spacing_px);
+        assert!(layout.standard_plot_px >= 72.0);
+        assert!(layout.pv_plot_px > layout.standard_plot_px);
+        assert!(layout.section_spacing_px > 0.0);
     }
 
     #[test]
@@ -2311,13 +2329,29 @@ mod tests {
 
         assert_eq!(lines, vec![vec![[10.0, 100.0]], vec![[20.0, 200.0]]]);
     }
+
+    #[test]
+    fn cycle_wrap_helpers_follow_shortest_direction() {
+        assert!((wrap_cycle_deg(725.0) - 5.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn speed_hold_target_matches_shaft_torque_at_zero_error() {
+        let desired = speed_hold_desired_net_torque_nm(0.0, 0.0);
+        assert!(desired.abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn speed_hold_requests_positive_net_torque_below_target_speed() {
+        let desired = speed_hold_desired_net_torque_nm(250.0, 120.0);
+        assert!(desired > 0.0);
+    }
 }
 
 impl eframe::App for DashboardApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_shortcuts(ctx);
         self.advance_simulation();
-        self.advance_bench();
 
         self.render_header_panel(ctx);
         self.render_control_rack(ctx);
@@ -2327,12 +2361,10 @@ impl eframe::App for DashboardApp {
                 .id_salt("dashboard_main_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let graph_heights =
-                        graph_layout_heights(&self.ui_config, self.bench_curve_visible());
+                    let graph_heights = graph_layout_heights(&self.ui_config);
 
                     self.render_console_overview(ui);
                     self.render_pressure_plots(ui, graph_heights);
-                    self.render_bench_curve(ui, graph_heights);
                     self.render_cycle_monitors(ui, graph_heights);
                 });
         });
