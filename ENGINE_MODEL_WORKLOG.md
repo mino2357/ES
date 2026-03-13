@@ -76,3 +76,12 @@
 
 - Added `docs/BENCH_CONSOLE_REFERENCE.md` and `docs/BENCH_CONSOLE_REFERENCE.ja.md` as self-contained references for the bench-side UI rationale and load-model simplifications.
 - Updated the user manual and model reference so the new bench-side switches, annunciators, and reduced-order absorber model are tied back to the implementation and to public sources.
+
+## 2026-03-13
+
+### Development Mode Shift
+
+- Up to this point, much of the code and experimentation had been aimed at exploring what AI-assisted development could do in this repository.
+- From here on, development is no longer framed as open-ended exploration of AI capability.
+- Added `docs/IMPLEMENTATION_DIRECTION.ja.md` as the default implementation charter for architecture, calibration workflow, educational goals, numerical credibility, legal/compliance handling, and documentation discipline.
+- Future work is expected to follow that document unless the user explicitly overrides it.

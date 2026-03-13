@@ -4,32 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [features]
 default = ["gui"]
 gui = ["dep:eframe", "dep:egui_plot", "dep:serde", "dep:serde_yaml"]
 
 [dependencies]
-eframe = { version = "0.31", optional = true, features = ["android-native-activity"] }
+eframe = { version = "0.31", optional = true }
 egui_plot = { version = "0.31", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_yaml = { version = "0.9", optional = true }
-
-[target.'cfg(target_os = "android")'.dependencies]
-winit = { version = "0.30.13", default-features = false, features = ["android-native-activity"] }
-
-[package.metadata.android]
-package = "com.itmz153.es_sim"
-build_targets = ["aarch64-linux-android"]
-
-[package.metadata.android.sdk]
-min_sdk_version = 26
-target_sdk_version = 35
-
-[package.metadata.android.application]
-label = "ES Simulator"
-theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 
 [[bin]]
 name = "es_sim"

@@ -32,10 +32,10 @@ audio synthesis path もありません。
 - [docs/USER_MANUAL.md](docs/USER_MANUAL.md): 英語版 user manual。build、run、dashboard 操作、設定の使い方
 - [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): 英語版 model reference。状態方程式、closure、実装対応、制約、出典
 - [docs/BENCH_CONSOLE_REFERENCE.md](docs/BENCH_CONSOLE_REFERENCE.md): 英語版 bench console reference。bench-side UI 要素と reduced-order dyno load の説明
+- [docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md): 日本語版の実装方針書。今後の設計・実装判断、段階的な開発順、知財・秘匿配慮をまとめた既定指針
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): 日本語版 user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): 日本語版 model reference。ODE system 全体のまとめ、closure、実装対応、制約、出典
 - [docs/BENCH_CONSOLE_REFERENCE.ja.md](docs/BENCH_CONSOLE_REFERENCE.ja.md): 日本語版 bench console reference
-- [ANDROID.md](ANDROID.md): Android packaging のメモ
 - [ENGINE_MODEL_WORKLOG.md](ENGINE_MODEL_WORKLOG.md): 作業ログ
 
 各文書は、それ単体で読んでも意味が閉じるように書いています。
@@ -45,6 +45,9 @@ audio synthesis path もありません。
 ## 方針
 
 現在の方針は accuracy-first の GUI simulation です。
+
+実装の中長期方針、適合 workflow、map runtime、知財・秘匿配慮を含む既定ルールは
+[docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md) にまとめています。
 
 - wall clock 同期よりも transient fidelity を優先する
 - 描画は lockstep realtime を強制せず、計算できた最新状態を表示する

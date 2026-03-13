@@ -2550,13 +2550,3 @@ pub(crate) fn run_app(config: AppConfig) -> eframe::Result {
 
     run_app_with_options(config, options)
 }
-
-#[cfg(target_os = "android")]
-pub(crate) fn run_android_app(
-    config: AppConfig,
-    android_app: winit::platform::android::activity::AndroidApp,
-) -> eframe::Result {
-    let mut options = eframe::NativeOptions::default();
-    options.android_app = Some(android_app);
-    run_app_with_options(config, options)
-}

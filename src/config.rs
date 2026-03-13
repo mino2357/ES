@@ -10,9 +10,6 @@ use crate::constants::FIXED_CYLINDER_COUNT;
 mod audit;
 pub(crate) use audit::validate_app_config;
 
-#[cfg(target_os = "android")]
-const EMBEDDED_SIM_CONFIG_YAML: &str = include_str!("../config/sim.yaml");
-
 // These structs intentionally mirror config/sim.yaml section-for-section so serde can
 // deserialize the checked-in tuning file directly into runtime configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -1007,13 +1004,6 @@ fn config_candidate_paths(path: &Path, executable_dir: Option<&Path>) -> Vec<Pat
 }
 
 pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
-    #[cfg(target_os = "android")]
-    {
-        // The mobile path currently ships the checked-in sim.yaml inside the APK.
-        let _ = path.as_ref();
-        return parse_config_text(EMBEDDED_SIM_CONFIG_YAML, "embedded config/sim.yaml");
-    }
-
     // Fall back to defaults on missing or malformed YAML so the app remains runnable.
     let path = path.as_ref();
     let executable_dir = std::env::current_exe()

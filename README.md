@@ -31,11 +31,11 @@ Start here, then follow the document that matches your task:
 - [docs/USER_MANUAL.md](docs/USER_MANUAL.md): build, run, dashboard operation, and configuration usage
 - [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): complete ODE system summary, closures, implementation map, validation limits, and literature sources
 - [docs/BENCH_CONSOLE_REFERENCE.md](docs/BENCH_CONSOLE_REFERENCE.md): source-backed bench-console feature map and reduced-order dyno-load rationale
+- [docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md): Japanese implementation charter for default development direction, phased roadmap, and compliance rules
 - [README.ja.md](README.ja.md): Japanese overview
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): Japanese user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): Japanese model reference
 - [docs/BENCH_CONSOLE_REFERENCE.ja.md](docs/BENCH_CONSOLE_REFERENCE.ja.md): Japanese bench-console reference
-- [ANDROID.md](ANDROID.md): Android packaging notes
 - [ENGINE_MODEL_WORKLOG.md](ENGINE_MODEL_WORKLOG.md): chronological work log
 
 Each linked document is written to be self-contained.
@@ -45,6 +45,9 @@ The detailed documents also link back to this README and to each other.
 ## Direction
 
 The current direction is accuracy-first GUI simulation:
+
+The broader implementation charter for calibration workflow, map-based runtime, and compliance rules is documented in
+[docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md).
 
 - transient fidelity matters more than wall-clock synchronization
 - the dashboard may render the latest completed state instead of forcing real-time lockstep
