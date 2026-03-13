@@ -16,9 +16,9 @@ use crate::constants::FIXED_CYLINDER_COUNT;
 use crate::simulator::{
     CycleHistorySample, Simulator, accuracy_priority_dt, cam_lift_mm, cam_profile_points,
     estimate_realtime_performance, external_load_available_torque_nm,
-    external_load_command_for_torque_nm, external_load_power_limit_torque_nm,
-    external_load_reflected_inertia_kgm2, external_load_speed_limit_active,
-    external_load_vehicle_speed_kph, rad_s_to_rpm, rpm_linked_dt, shaft_power_hp, shaft_power_kw,
+    external_load_command_for_torque_nm, external_load_reflected_inertia_kgm2,
+    external_load_vehicle_speed_kph, rad_s_to_rpm, rpm_linked_dt, shaft_power_hp,
+    shaft_power_kw,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -306,10 +306,6 @@ struct DashboardApp {
     load_speed_integral: f64,
     required_brake_torque_nm: f64,
     schematic_cycle_deg: f64,
-    bench_estop: bool,
-    bench_dyno_enabled: bool,
-    bench_cell_vent: bool,
-    bench_coolant_conditioning: bool,
 }
 
 impl DashboardApp {
@@ -366,10 +362,6 @@ impl DashboardApp {
             load_speed_integral: 0.0,
             required_brake_torque_nm,
             schematic_cycle_deg,
-            bench_estop: false,
-            bench_dyno_enabled: true,
-            bench_cell_vent: true,
-            bench_coolant_conditioning: true,
         }
     }
 
@@ -397,48 +389,13 @@ impl DashboardApp {
             - self.latest.torque_pumping_nm
     }
 
-    fn bench_interlock_ok(&self) -> bool {
-        self.bench_dyno_enabled
-            && self.bench_cell_vent
-            && self.bench_coolant_conditioning
-            && !self.bench_estop
-    }
-
-    fn bench_firing_permitted(&self) -> bool {
-        self.bench_cell_vent && self.bench_coolant_conditioning && !self.bench_estop
-    }
-
     fn dyno_available_torque_nm(&self) -> f64 {
         external_load_available_torque_nm(self.sim.state.omega_rad_s, &self.sim.model.external_load)
-    }
-
-    fn dyno_power_limit_torque_nm(&self) -> f64 {
-        external_load_power_limit_torque_nm(
-            self.sim.state.omega_rad_s,
-            &self.sim.model.external_load,
-        )
     }
 
     fn dyno_power_limit_active(&self) -> bool {
         let applied_power_kw = shaft_power_kw(self.latest.rpm, self.latest.torque_load_nm.abs());
         applied_power_kw >= self.sim.model.external_load.absorber_power_limit_kw * 0.98
-    }
-
-    fn apply_bench_console_interlocks(&mut self) {
-        if self.bench_estop {
-            self.sim.control.throttle_cmd = 0.0;
-            self.sim.control.spark_cmd = false;
-            self.sim.control.fuel_cmd = false;
-            self.load_target_rpm = 0.0;
-            self.load_speed_integral = 0.0;
-        } else if !self.bench_firing_permitted() {
-            self.sim.control.spark_cmd = false;
-            self.sim.control.fuel_cmd = false;
-        }
-        if !self.bench_dyno_enabled {
-            self.sim.control.load_cmd = 0.0;
-            self.load_speed_integral = 0.0;
-        }
     }
 
     fn update_schematic_phase(&mut self, wall_dt_s: f64) {
@@ -455,10 +412,6 @@ impl DashboardApp {
     }
 
     fn apply_load_input(&mut self, dt: f64) {
-        if !self.bench_dyno_enabled || self.bench_estop {
-            self.sim.control.load_cmd = 0.0;
-            return;
-        }
         let rpm = rad_s_to_rpm(self.sim.state.omega_rad_s.max(0.0));
         let error_rpm = self.load_target_rpm - rpm;
         self.load_speed_integral =
@@ -488,9 +441,6 @@ impl DashboardApp {
             if i.key_pressed(egui::Key::F) {
                 self.sim.control.fuel_cmd = !self.sim.control.fuel_cmd;
             }
-            if i.key_pressed(egui::Key::E) {
-                self.bench_estop = !self.bench_estop;
-            }
             if i.key_pressed(egui::Key::W) {
                 self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
                     + self.ui_config.throttle_key_step)
@@ -507,7 +457,6 @@ impl DashboardApp {
     fn advance_simulation(&mut self) {
         let now = Instant::now();
         let wall_dt_s = (now - self.last_tick).as_secs_f64();
-        self.apply_bench_console_interlocks();
         let target_time = if self.ui_config.sync_to_wall_clock {
             wall_dt_s.max(self.dt_base)
         } else {
@@ -592,7 +541,7 @@ impl DashboardApp {
                             ui,
                             self.theme,
                             self.theme.cyan,
-                            "CELL STATUS",
+                            "SIM STATUS",
                             if self.required_brake_torque_nm > 0.5 {
                                 "FIRED"
                             } else {
@@ -606,35 +555,6 @@ impl DashboardApp {
                 });
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    annunciator(ui, self.theme, "E-STOP", self.bench_estop, self.theme.red);
-                    annunciator(
-                        ui,
-                        self.theme,
-                        "INTERLOCK",
-                        self.bench_interlock_ok(),
-                        self.theme.green,
-                    );
-                    annunciator(
-                        ui,
-                        self.theme,
-                        "DYNO EN",
-                        self.bench_dyno_enabled,
-                        self.theme.cyan,
-                    );
-                    annunciator(
-                        ui,
-                        self.theme,
-                        "VENT",
-                        self.bench_cell_vent,
-                        self.theme.cyan,
-                    );
-                    annunciator(
-                        ui,
-                        self.theme,
-                        "COOLING",
-                        self.bench_coolant_conditioning,
-                        self.theme.cyan,
-                    );
                     annunciator(
                         ui,
                         self.theme,
@@ -673,8 +593,8 @@ impl DashboardApp {
                     annunciator(
                         ui,
                         self.theme,
-                        "SPD CTRL",
-                        self.bench_dyno_enabled && !self.bench_estop,
+                        "LOAD CTRL",
+                        true,
                         self.theme.amber,
                     );
                     annunciator(
@@ -709,123 +629,9 @@ impl DashboardApp {
                         show_collapsible_module(
                             ui,
                             self.theme,
-                            "rack_bench_console",
-                            "Bench Console",
-                            "interlocks, dyno coupling, and absorber limits",
-                            self.theme.cyan,
-                            true,
-                            |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.toggle_value(&mut self.bench_estop, "E-STOP");
-                                    ui.toggle_value(&mut self.bench_dyno_enabled, "Dyno enable");
-                                    ui.toggle_value(&mut self.bench_cell_vent, "Cell vent");
-                                    ui.toggle_value(
-                                        &mut self.bench_coolant_conditioning,
-                                        "Cooling cond",
-                                    );
-                                });
-                                ui.add_space(6.0);
-                                egui::Grid::new("bench_console_grid")
-                                    .num_columns(2)
-                                    .spacing(egui::vec2(16.0, 6.0))
-                                    .show(ui, |ui| {
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Interlock",
-                                            if self.bench_interlock_ok() {
-                                                "closed".to_owned()
-                                            } else {
-                                                "open".to_owned()
-                                            },
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Control mode",
-                                            if self.bench_dyno_enabled {
-                                                "speed control".to_owned()
-                                            } else {
-                                                "dyno uncoupled".to_owned()
-                                            },
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Absorber torque act",
-                                            format!("{:+.1} Nm", self.latest.torque_load_nm),
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Absorber power",
-                                            format!(
-                                                "{:.1} / {:.0} kW",
-                                                shaft_power_kw(
-                                                    self.latest.rpm,
-                                                    self.latest.torque_load_nm.abs()
-                                                ),
-                                                self.sim
-                                                    .model
-                                                    .external_load
-                                                    .absorber_power_limit_kw
-                                            ),
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Available torque",
-                                            format!("{:.1} Nm", self.dyno_available_torque_nm()),
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Speed limit",
-                                            format!(
-                                                "{:.0} rpm{}",
-                                                self.sim
-                                                    .model
-                                                    .external_load
-                                                    .absorber_speed_limit_rpm,
-                                                if external_load_speed_limit_active(
-                                                    self.sim.state.omega_rad_s,
-                                                    &self.sim.model.external_load
-                                                ) {
-                                                    " trip"
-                                                } else {
-                                                    ""
-                                                }
-                                            ),
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Rotor inertia",
-                                            format!(
-                                                "{:.3} kg m^2",
-                                                self.sim
-                                                    .model
-                                                    .external_load
-                                                    .absorber_rotor_inertia_kgm2
-                                            ),
-                                        );
-                                        metric_row(
-                                            ui,
-                                            self.theme,
-                                            "Power-limit torque",
-                                            format!("{:.1} Nm", self.dyno_power_limit_torque_nm()),
-                                        );
-                                    });
-                            },
-                        );
-
-                        ui.add_space(8.0);
-                        show_collapsible_module(
-                            ui,
-                            self.theme,
                             "rack_actuator",
                             "Actuator Deck",
-                            "speed-control console with throttle, ignition, and VVT inputs",
+                            "load-control console with throttle, ignition, and VVT inputs",
                             self.theme.amber,
                             true,
                             |ui| {
@@ -883,17 +689,8 @@ impl DashboardApp {
                                     "Absorber command: {:+.3}",
                                     self.sim.control.load_cmd
                                 ));
-                                ui.add_enabled_ui(self.bench_firing_permitted(), |ui| {
-                                    ui.checkbox(&mut self.sim.control.spark_cmd, "Spark");
-                                    ui.checkbox(&mut self.sim.control.fuel_cmd, "Fuel");
-                                });
-                                if !self.bench_firing_permitted() {
-                                    ui.label(
-                                        egui::RichText::new("Firing inhibited by bench interlock")
-                                            .color(self.theme.red)
-                                            .monospace(),
-                                    );
-                                }
+                                ui.checkbox(&mut self.sim.control.spark_cmd, "Spark");
+                                ui.checkbox(&mut self.sim.control.fuel_cmd, "Fuel");
                                 ui.separator();
                                 ui.add_enabled(
                                     true,
@@ -966,19 +763,6 @@ impl DashboardApp {
                                 ));
                                 ui.label(format!("Load model: {}", load_model.mode.label()));
                                 ui.label(format!(
-                                    "Bench interlock: {} / dyno {}",
-                                    if self.bench_interlock_ok() {
-                                        "closed"
-                                    } else {
-                                        "open"
-                                    },
-                                    if self.bench_dyno_enabled {
-                                        "enabled"
-                                    } else {
-                                        "disabled"
-                                    }
-                                ));
-                                ui.label(format!(
                                     "Absorber limit: {:.0} kW / {:.0} rpm",
                                     load_model.absorber_power_limit_kw,
                                     load_model.absorber_speed_limit_rpm
@@ -1006,9 +790,7 @@ impl DashboardApp {
                                 } else {
                                     "State: MOTORING"
                                 });
-                                ui.label(if !self.bench_dyno_enabled {
-                                    "Machine mode: DYNO DISABLED"
-                                } else if self.sim.control.load_cmd < -0.02 {
+                                ui.label(if self.sim.control.load_cmd < -0.02 {
                                     "Machine mode: SPEED HOLD / MOTOR"
                                 } else {
                                     "Machine mode: SPEED HOLD / ABSORB"

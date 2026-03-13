@@ -40,7 +40,6 @@ It is therefore:
 
 - [../README.md](../README.md): repository overview and document map
 - [USER_MANUAL.md](USER_MANUAL.md): GUI operation and configuration usage
-- [BENCH_CONSOLE_REFERENCE.md](BENCH_CONSOLE_REFERENCE.md): source-backed bench-console and dyno-load rationale
 - [MODEL_REFERENCE.ja.md](MODEL_REFERENCE.ja.md): Japanese version of this model reference
 - [../ENGINE_MODEL_WORKLOG.md](../ENGINE_MODEL_WORKLOG.md): chronological implementation log
 
@@ -884,7 +883,7 @@ Useful entry points:
   Hendricks and Sorenson, 1990; Hendricks and Vesterholm, 1992
 - Reduced-order EGR and residual-gas treatment:
   Fons et al., 1999
-- Bench-console functions and operator-side engine-dyno instrumentation:
+- Reduced-order dyno-load abstraction and operator-facing load instrumentation:
   HORIBA SPARC Engine; Froude Texcel V12 PRO; Froude InCell
 - Single-zone combustion framing and Wiebe-style burn law usage:
   Grau et al., 2002

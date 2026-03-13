@@ -30,12 +30,10 @@ Start here, then follow the document that matches your task:
 
 - [docs/USER_MANUAL.md](docs/USER_MANUAL.md): build, run, dashboard operation, and configuration usage
 - [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): complete ODE system summary, closures, implementation map, validation limits, and literature sources
-- [docs/BENCH_CONSOLE_REFERENCE.md](docs/BENCH_CONSOLE_REFERENCE.md): source-backed bench-console feature map and reduced-order dyno-load rationale
 - [docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md): Japanese implementation charter for default development direction, phased roadmap, and compliance rules
 - [README.ja.md](README.ja.md): Japanese overview
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): Japanese user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): Japanese model reference
-- [docs/BENCH_CONSOLE_REFERENCE.ja.md](docs/BENCH_CONSOLE_REFERENCE.ja.md): Japanese bench-console reference
 - [ENGINE_MODEL_WORKLOG.md](ENGINE_MODEL_WORKLOG.md): chronological work log
 
 Each linked document is written to be self-contained.

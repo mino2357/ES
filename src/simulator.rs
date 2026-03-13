@@ -2432,13 +2432,6 @@ pub(crate) fn external_load_available_torque_nm(
         .max(0.0)
 }
 
-pub(crate) fn external_load_speed_limit_active(
-    omega_rad_s: f64,
-    load_model: &ExternalLoadConfig,
-) -> bool {
-    rad_s_to_rpm(omega_rad_s.abs()) >= load_model.absorber_speed_limit_rpm
-}
-
 pub(crate) fn external_load_command_for_torque_nm(
     target_torque_nm: f64,
     omega_rad_s: f64,

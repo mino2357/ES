@@ -47,17 +47,12 @@ The GUI is organized like a compact engine test cell.
 
 The header shows machine-state annunciators such as:
 
-- `E-STOP`
-- `INTERLOCK`
-- `DYNO EN`
-- `VENT`
-- `COOLING`
 - `RUN`
 - `FUEL`
 - `SPARK`
 - `MOTOR`
 - `FIRING`
-- `SPD CTRL`
+- `LOAD CTRL`
 - `PWR LIM`
 - `ACCURACY`
 
@@ -67,7 +62,6 @@ The header shows machine-state annunciators such as:
 
 The left rack contains collapsible modules:
 
-- `Bench Console`: bench-side interlocks, dyno coupling, absorber limits, and safety state
 - `Actuator Deck`: manual throttle, `Target RPM`, spark, fuel, ignition, and VVT commands under motoring speed hold
 - `Status Bus`: runtime status, operator inputs, load-model mode, and solver mode
 - `Sensor / State Bus`: lower-level reduced-order states and closure outputs
@@ -130,22 +124,6 @@ In `Actuator Deck`, `Load model` can be:
 
 `Vehicle eq.` is the default checked-in path because it gives a more interpretable transient response.
 
-### Bench Console Behavior
-
-`Bench Console` adds operator-side stand controls that are common on engine dyno consoles:
-
-- `E-STOP`
-- `Dyno enable`
-- `Cell vent`
-- `Cooling cond`
-
-The GUI layout is not meant to copy any one vendor console.
-It keeps the repository's existing plots and readouts, then adds a reduced subset of bench-side switches and status indicators.
-
-`E-STOP` cuts throttle, spark, fuel, and speed-hold demand.
-Disabling `Dyno enable` opens the load path and zeroes the absorber command.
-Opening the bench interlock inhibits firing.
-
 ## Configuration
 
 The runtime configuration file is [../config/sim.yaml](../config/sim.yaml).
@@ -203,7 +181,6 @@ Good uses:
 
 - studying transient trends with physically interpretable controls
 - comparing load-model behavior
-- reasoning about engine-dyno interlocks and absorber limits in a reduced-order way
 - visualizing the qualitative effect of ignition and VVT changes
 - studying load transients with `Brake dyno` and `Vehicle eq.`
 
@@ -217,5 +194,4 @@ Poor uses:
 
 - [../README.md](../README.md): repository overview
 - [MODEL_REFERENCE.md](MODEL_REFERENCE.md): equations, closures, implementation map, and sources
-- [BENCH_CONSOLE_REFERENCE.md](BENCH_CONSOLE_REFERENCE.md): source-backed bench-console and dyno-load reference
 - [USER_MANUAL.ja.md](USER_MANUAL.ja.md): Japanese version of this manual

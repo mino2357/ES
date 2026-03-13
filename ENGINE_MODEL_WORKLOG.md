@@ -85,3 +85,9 @@
 - From here on, development is no longer framed as open-ended exploration of AI capability.
 - Added `docs/IMPLEMENTATION_DIRECTION.ja.md` as the default implementation charter for architecture, calibration workflow, educational goals, numerical credibility, legal/compliance handling, and documentation discipline.
 - Future work is expected to follow that document unless the user explicitly overrides it.
+
+### Direction-Aligned Slimming
+
+- Removed the Android packaging path and Android-specific launch/config code so the supported runtime stays focused on the desktop GUI path.
+- Removed the bench-console UI layer and its dedicated reference documents, keeping the external-load model while reducing nonessential dashboard state and documentation surface.
+- Updated the manuals and model-reference links so the remaining document set matches the slimmer runtime path.
