@@ -32,6 +32,7 @@ audio synthesis path もありません。
 - [docs/USER_MANUAL.md](docs/USER_MANUAL.md): 英語版 user manual。build、run、dashboard 操作、設定の使い方
 - [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): 英語版 model reference。状態方程式、closure、実装対応、制約、出典
 - [docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md): 日本語版の実装方針書。今後の設計・実装判断、段階的な開発順、知財・秘匿配慮をまとめた既定指針
+- [docs/GUI_REFACTOR_PLAN.ja.md](docs/GUI_REFACTOR_PLAN.ja.md): 日本語版の GUI 改修整理メモ。現状の画面構成、責務の偏り、簡素な再構成案をまとめたもの
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): 日本語版 user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): 日本語版 model reference。ODE system 全体のまとめ、closure、実装対応、制約、出典
 - [ENGINE_MODEL_WORKLOG.md](ENGINE_MODEL_WORKLOG.md): 作業ログ

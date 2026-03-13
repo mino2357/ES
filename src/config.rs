@@ -478,6 +478,7 @@ pub(crate) enum ExternalLoadMode {
 }
 
 impl ExternalLoadMode {
+    #[allow(dead_code)]
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::BrakeMap => "Brake dyno",

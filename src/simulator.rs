@@ -200,6 +200,7 @@ pub(crate) struct LockedCycleAverage {
     pub(crate) exhaust_temp_k: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct Observation {
     pub(crate) rpm: f64,
@@ -363,6 +364,31 @@ impl Simulator {
             torque_net_filtered_nm: 0.0,
             step_count: 0,
         }
+    }
+
+    pub(crate) fn seed_operating_point(
+        &mut self,
+        rpm: f64,
+        throttle: f64,
+        ignition_timing_deg: f64,
+    ) {
+        let throttle = throttle.clamp(0.0, 1.0);
+        let map_pa = self.env.ambient_pressure_pa * (0.45 + 0.50 * throttle).clamp(0.0, 1.0);
+        self.control.throttle_cmd = throttle;
+        self.control.ignition_timing_deg = ignition_timing_deg;
+        self.state = EngineState {
+            omega_rad_s: rpm_to_rad_s(rpm.max(0.0)),
+            theta_rad: 410.0_f64.to_radians(),
+            p_intake_pa: map_pa,
+            p_intake_runner_pa: map_pa,
+            p_exhaust_pa: self.env.ambient_pressure_pa + 7_000.0,
+            p_exhaust_runner_pa: self.env.ambient_pressure_pa + 7_000.0,
+            m_dot_intake_runner_kg_s: 0.0,
+            m_dot_exhaust_runner_kg_s: 0.0,
+            throttle_eff: throttle,
+            running: true,
+        };
+        self.prev_theta_rad = self.state.theta_rad;
     }
 
     fn theoretical_otto_efficiency(&self) -> f64 {
@@ -1271,6 +1297,7 @@ impl Simulator {
         (compression_peak + delta_p_comb).clamp(compression_peak, self.model.peak_pressure_max_pa)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn build_ptheta_display_curves(&self, samples: usize) -> Vec<Vec<(f64, f64)>> {
         let rpm = rad_s_to_rpm(self.state.omega_rad_s.max(0.0));
         if !self.pv_display_active(rpm, self.state) {
@@ -2096,7 +2123,7 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
-fn estimate_mbt_deg(model: &ModelConfig, rpm: f64, load: f64) -> f64 {
+pub(crate) fn estimate_mbt_deg(model: &ModelConfig, rpm: f64, load: f64) -> f64 {
     (model.mbt_base_deg
         + model.mbt_rpm_slope_deg_per_rpm * (rpm - model.mbt_rpm_reference)
         + model.mbt_load_coeff * (1.0 - load))
@@ -2423,6 +2450,7 @@ pub(crate) fn external_load_power_limit_torque_nm(
     power_limit_kw * W_PER_KW / omega
 }
 
+#[allow(dead_code)]
 pub(crate) fn external_load_available_torque_nm(
     omega_rad_s: f64,
     load_model: &ExternalLoadConfig,
@@ -2432,6 +2460,7 @@ pub(crate) fn external_load_available_torque_nm(
         .max(0.0)
 }
 
+#[allow(dead_code)]
 pub(crate) fn external_load_command_for_torque_nm(
     target_torque_nm: f64,
     omega_rad_s: f64,
@@ -2460,6 +2489,7 @@ pub(crate) fn external_load_vehicle_speed_mps(
     omega_rad_s.max(0.0) * wheel_radius / vehicle_load_engine_speed_ratio(load_model)
 }
 
+#[allow(dead_code)]
 pub(crate) fn external_load_vehicle_speed_kph(
     omega_rad_s: f64,
     load_model: &ExternalLoadConfig,
@@ -2769,6 +2799,7 @@ pub(crate) fn cam_lift_mm(
     max_lift_mm * smooth.powf(model.cam_shape_exponent)
 }
 
+#[allow(dead_code)]
 pub(crate) fn cam_profile_points(
     control: &ControlInput,
     cam: &CamConfig,
