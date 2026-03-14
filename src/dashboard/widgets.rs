@@ -27,6 +27,7 @@ pub(super) struct LinearMeterSpec<'a> {
     pub(super) width: f32,
 }
 
+#[allow(dead_code)]
 pub(super) fn section_label(
     ui: &mut egui::Ui,
     theme: DashboardTheme,
@@ -56,7 +57,7 @@ pub(super) fn monitor_heading(
     subtitle: &str,
     accent: egui::Color32,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(
             egui::RichText::new(title)
                 .color(theme.text_main)
@@ -74,6 +75,7 @@ pub(super) fn monitor_heading(
     ui.add_space(2.0);
 }
 
+#[allow(dead_code)]
 pub(super) fn annunciator(
     ui: &mut egui::Ui,
     theme: DashboardTheme,
@@ -109,6 +111,7 @@ pub(super) fn annunciator(
     );
 }
 
+#[allow(dead_code)]
 pub(super) fn digital_readout(
     ui: &mut egui::Ui,
     theme: DashboardTheme,
@@ -171,6 +174,7 @@ pub(super) fn digital_readout(
     });
 }
 
+#[allow(dead_code)]
 pub(super) fn metric_row(ui: &mut egui::Ui, theme: DashboardTheme, label: &str, value: String) {
     ui.label(
         egui::RichText::new(label)

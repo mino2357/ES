@@ -82,14 +82,14 @@ combustion から friction, pumping, load を引いた残りの torque。
 
 outer search は throttle / ignition の離散探索とする。
 
-初回は各軸をおよそ `8` 分割した候補から始める。
+現行実装は各軸 `16` 分割した候補から始める。
 
 ```math
-\mathcal{A}^{(0)} = \{\alpha_1,\dots,\alpha_8\}
+\mathcal{A}^{(0)} = \{\alpha_1,\dots,\alpha_{16}\}
 ```
 
 ```math
-\Theta^{(0)} = \{\theta_1,\dots,\theta_8\}
+\Theta^{(0)} = \{\theta_1,\dots,\theta_{16}\}
 ```
 
 ただし探索は全面的な固定格子ではなく、
@@ -297,7 +297,7 @@ fit 用 inner solve と UI 表示用の fixed-angle sampling は分離する。
 6. fit solver が UI 用 sampling から独立している
 7. `Indicated torque`、`Required brake torque`、`Net torque` の意味が UI と文書で混ざらない
 8. fit 中でも `p-V` と `p-theta` が可視化される
-9. wall-clock `30 s` 上限が守られる
+9. wall-clock 上限の有無が設定と実装で一致している
 
 ## 11. 実装開始前の最終確認
 

@@ -6,11 +6,14 @@ use super::startup_fit::{
     STARTUP_FIT_FAST_FORWARD_FACTOR, STARTUP_FIT_INITIAL_THROTTLE, STARTUP_FIT_TARGET_RPM,
     StartupFitControlBounds, StartupFitControls, StartupFitState, StartupFitStatus,
 };
-use crate::config::{AppConfig, UiConfig};
+use crate::config::{AppConfig, ExternalLoadMode, UiConfig};
 use crate::simulator::{
     Observation, Simulator, accuracy_priority_dt, estimate_mbt_deg, estimate_realtime_performance,
-    rad_s_to_rpm, rpm_linked_dt, shaft_power_hp, shaft_power_kw,
+    external_load_command_for_torque_nm, rad_s_to_rpm, rpm_linked_dt, shaft_power_hp,
+    shaft_power_kw,
 };
+
+const POST_FIT_SPEED_HOLD_GAIN_NM_PER_RPM: f64 = 0.08;
 
 // Owns runtime pacing, controls, and the latest simulation state shown in the dashboard.
 pub(super) struct DashboardState {
@@ -62,6 +65,9 @@ impl DashboardState {
             (dt_min_bound, dt_max_bound, None, dt_next)
         };
         let mut sim = Simulator::new(&config);
+        // The startup-fit dashboard solves a fixed-RPM bench point, so use the brake-dyno load
+        // path even if the checked-in config defaults to a vehicle-equivalent road load.
+        sim.model.external_load.mode = ExternalLoadMode::BrakeMap;
         let load_target_rpm = STARTUP_FIT_TARGET_RPM;
         let initial_load_est = 0.60;
         let ignition_timing_deg = estimate_mbt_deg(&sim.model, load_target_rpm, initial_load_est);
@@ -193,7 +199,7 @@ impl DashboardState {
         // In accuracy-first mode the solver advances a fixed slice of simulated time per frame
         // and does not try to stay phase-locked to wall clock.
         while simulated < target_time && steps < max_steps {
-            self.apply_fit_controls_if_active();
+            self.apply_runtime_controls();
             let rpm = rad_s_to_rpm(self.sim.state.omega_rad_s.max(0.0));
             let dt_target = if ui_config.sync_to_wall_clock {
                 if let Some(fixed_dt) = self.realtime_fixed_dt_s {
@@ -223,6 +229,7 @@ impl DashboardState {
                 .unwrap_or_else(|| dt_smoothed.clamp(self.dt_min_bound, self.dt_max_bound));
             simulated += dt_step;
             steps += 1;
+            self.record_fit_live_sample(dt_step);
         }
 
         if simulated < target_time {
@@ -231,17 +238,26 @@ impl DashboardState {
             let dt_tail = (target_time - simulated)
                 .max(ui_config.dt_epsilon_s)
                 .min(self.dt_max_bound);
-            self.apply_fit_controls_if_active();
+            self.apply_runtime_controls();
             self.latest = self.sim.step(dt_tail);
             self.dt_next = self
                 .realtime_fixed_dt_s
                 .unwrap_or_else(|| dt_tail.clamp(self.dt_min_bound, self.dt_max_bound));
             simulated += dt_tail;
+            self.record_fit_live_sample(dt_tail);
         }
         self.simulated_time_s += simulated;
         self.advance_startup_fit(elapsed_since_last_frame_s, simulated);
         self.sanitize_control_inputs();
         self.last_tick = now;
+    }
+
+    fn apply_runtime_controls(&mut self) {
+        if self.startup_fit_active() {
+            self.apply_fit_controls_if_active();
+        } else {
+            self.apply_post_fit_speed_hold();
+        }
     }
 
     fn apply_fit_controls_if_active(&mut self) {
@@ -253,16 +269,45 @@ impl DashboardState {
         self.sim.control.ignition_timing_deg = controls.ignition_timing_deg;
         self.sim.control.vvt_intake_deg = controls.vvt_intake_deg;
         self.sim.control.vvt_exhaust_deg = controls.vvt_exhaust_deg;
-        self.sim.control.load_cmd = controls.load_cmd;
+        if self.startup_fit.phase() == super::startup_fit::StartupFitPhase::Verifying {
+            let actual_rpm = rad_s_to_rpm(self.sim.state.omega_rad_s.max(0.0));
+            let target_torque_nm = fit_speed_hold_target_torque_nm(
+                self.startup_fit.selected_required_brake_torque_nm(),
+                actual_rpm,
+                self.load_target_rpm,
+            );
+            self.sim.control.load_cmd = external_load_command_for_torque_nm(
+                target_torque_nm,
+                self.sim.state.omega_rad_s,
+                &self.sim.model.external_load,
+            );
+        } else {
+            self.sim.control.load_cmd = controls.load_cmd;
+        }
     }
 
-    fn advance_startup_fit(&mut self, _frame_wall_s: f64, frame_simulated_s: f64) {
-        if !self.startup_fit.is_active() {
+    fn apply_post_fit_speed_hold(&mut self) {
+        if !self.sim.control.spark_cmd || !self.sim.control.fuel_cmd || self.latest.rpm <= 120.0 {
             return;
         }
 
-        self.startup_fit
-            .record_live_sample(frame_simulated_s, self.latest.rpm, self.latest.torque_net_nm);
+        let actual_rpm = rad_s_to_rpm(self.sim.state.omega_rad_s.max(0.0));
+        let target_torque_nm = fit_speed_hold_target_torque_nm(
+            self.startup_fit.selected_required_brake_torque_nm(),
+            actual_rpm,
+            self.load_target_rpm,
+        );
+        self.sim.control.load_cmd = external_load_command_for_torque_nm(
+            target_torque_nm,
+            self.sim.state.omega_rad_s,
+            &self.sim.model.external_load,
+        );
+    }
+
+    fn advance_startup_fit(&mut self, _frame_wall_s: f64, _frame_simulated_s: f64) {
+        if !self.startup_fit.is_active() {
+            return;
+        }
         let bounds = StartupFitControlBounds {
             throttle_min: 0.08,
             throttle_max: 1.0,
@@ -272,7 +317,24 @@ impl DashboardState {
         };
         self.startup_fit
             .update(self.simulated_time_s, &self.sim, bounds);
+        if let Some(seed) = self.startup_fit.take_live_reset_seed() {
+            self.sim = seed;
+            self.apply_fit_controls_if_active();
+            self.latest = self.sim.step(self.dt_min_bound.max(1.0e-4));
+        }
         self.apply_fit_controls_if_active();
+    }
+
+    fn record_fit_live_sample(&mut self, dt_s: f64) {
+        if !self.startup_fit.is_active() {
+            return;
+        }
+        self.startup_fit.record_live_sample(
+            dt_s,
+            self.latest.rpm,
+            self.latest.torque_net_nm,
+            self.latest.torque_load_nm,
+        );
     }
 
     fn sanitize_control_inputs(&mut self) {
@@ -312,11 +374,25 @@ fn finite_f64(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
 }
 
+fn fit_speed_hold_target_torque_nm(
+    reference_brake_torque_nm: f64,
+    actual_rpm: f64,
+    target_rpm: f64,
+) -> f64 {
+    (reference_brake_torque_nm + POST_FIT_SPEED_HOLD_GAIN_NM_PER_RPM * (actual_rpm - target_rpm))
+        .max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::config::AppConfig;
+    use std::path::PathBuf;
 
-    use super::{DashboardState, STARTUP_FIT_TARGET_RPM, shortest_cycle_delta_deg, wrap_cycle_deg};
+    use crate::config::{AppConfig, ExternalLoadMode, load_config};
+
+    use super::{
+        DashboardState, STARTUP_FIT_TARGET_RPM, fit_speed_hold_target_torque_nm,
+        shortest_cycle_delta_deg, wrap_cycle_deg,
+    };
 
     #[test]
     fn cycle_wrap_helpers_follow_shortest_direction() {
@@ -331,6 +407,10 @@ mod tests {
         let state = DashboardState::new(cfg);
 
         assert!((state.load_target_rpm - STARTUP_FIT_TARGET_RPM).abs() < f64::EPSILON);
+        assert_eq!(
+            state.sim.model.external_load.mode,
+            ExternalLoadMode::BrakeMap
+        );
         assert!(state.sim.control.spark_cmd);
         assert!(state.sim.control.fuel_cmd);
         assert!(state.sim.control.load_cmd.abs() < f64::EPSILON);
@@ -347,5 +427,138 @@ mod tests {
         state.advance_simulation(&ui);
 
         assert!(state.sim.control.load_cmd < 0.75);
+    }
+
+    #[test]
+    fn fit_speed_hold_trims_around_reference_brake_torque() {
+        let low = fit_speed_hold_target_torque_nm(20.0, 1_900.0, 2_000.0);
+        let nominal = fit_speed_hold_target_torque_nm(20.0, 2_000.0, 2_000.0);
+        let high = fit_speed_hold_target_torque_nm(20.0, 2_100.0, 2_000.0);
+
+        assert!(high > low);
+        assert!((nominal - 20.0).abs() < 1.0e-12);
+        assert!(low >= 0.0);
+    }
+
+    #[test]
+    #[ignore = "expensive headless startup-fit convergence run"]
+    fn startup_fit_reaches_ready_and_holds_target_on_checked_in_config() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("config")
+            .join("sim.yaml");
+        let mut cfg = load_config(&path);
+        cfg.ui.sync_to_wall_clock = false;
+        cfg.ui.simulated_time_per_frame_s = 0.05;
+        cfg.ui.max_steps_per_frame = 20_000;
+
+        let ui = cfg.ui.clone();
+        let mut state = DashboardState::new(cfg);
+        let max_frames = 120_000usize;
+        let mut ready_status = None;
+
+        for frame in 0..max_frames {
+            state.advance_simulation(&ui);
+            let status = state.startup_fit_status();
+            if frame % 200 == 0 {
+                println!(
+                    "frame={frame} phase={:?} iter={}/{} stable={}/{} avg_rpm={:.1} req_brake={:+.1} sim_elapsed={:.1}s",
+                    status.phase,
+                    status.iteration,
+                    status.max_iterations,
+                    status.stable_windows,
+                    status.required_stable_windows,
+                    status.avg_rpm,
+                    status.required_brake_torque_nm,
+                    status.simulated_elapsed_s
+                );
+            }
+            if !status.active {
+                ready_status = Some(status);
+                break;
+            }
+        }
+
+        let status = ready_status.unwrap_or_else(|| {
+            let status = state.startup_fit_status();
+            panic!(
+                "startup fit did not reach READY: phase={:?} iter={}/{} stable={}/{} avg_rpm={:.1} req_brake={:+.1} sim_elapsed={:.1}s",
+                status.phase,
+                status.iteration,
+                status.max_iterations,
+                status.stable_windows,
+                status.required_stable_windows,
+                status.avg_rpm,
+                status.required_brake_torque_nm,
+                status.simulated_elapsed_s
+            );
+        });
+
+        assert!(
+            (status.avg_rpm - STARTUP_FIT_TARGET_RPM).abs() <= 18.0,
+            "verify average rpm drifted too far: avg_rpm={:.2}",
+            status.avg_rpm
+        );
+        assert!(
+            status.avg_net_torque_nm.abs() <= 1.5,
+            "verify net torque stayed too large: net={:+.3}",
+            status.avg_net_torque_nm
+        );
+
+        let mut rpm_sum = 0.0;
+        let mut samples = 0usize;
+        for _ in 0..400 {
+            state.advance_simulation(&ui);
+            rpm_sum += state.latest.rpm;
+            samples += 1;
+        }
+        let avg_hold_rpm = rpm_sum / samples as f64;
+        assert!(
+            (avg_hold_rpm - STARTUP_FIT_TARGET_RPM).abs() <= 40.0,
+            "post-fit hold drifted too far: avg_hold_rpm={:.2}",
+            avg_hold_rpm
+        );
+        assert!(
+            state.latest.rpm > 500.0,
+            "post-fit live rpm collapsed unexpectedly: {:.2}",
+            state.latest.rpm
+        );
+    }
+
+    #[test]
+    #[ignore = "diagnostic trace for startup-fit verify behavior"]
+    fn startup_fit_debug_verify_trace() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("config")
+            .join("sim.yaml");
+        let mut cfg = load_config(&path);
+        cfg.ui.sync_to_wall_clock = false;
+        cfg.ui.simulated_time_per_frame_s = 0.05;
+        cfg.ui.max_steps_per_frame = 20_000;
+
+        let ui = cfg.ui.clone();
+        let mut state = DashboardState::new(cfg);
+        let mut last_label = String::new();
+        for frame in 0..2_000usize {
+            state.advance_simulation(&ui);
+            let status = state.startup_fit_status();
+            if status.candidate_label != last_label || frame % 20 == 0 {
+                println!(
+                    "frame={frame} phase={:?} label={} avg_rpm={:.1} live_rpm={:.1} req={:+.1} rel_req={:+.1} load_cmd={:+.3} rel_thr={:.3} rel_spk={:.1}",
+                    status.phase,
+                    status.candidate_label,
+                    status.avg_rpm,
+                    state.latest.rpm,
+                    status.required_brake_torque_nm,
+                    status.release_required_brake_torque_nm,
+                    state.sim.control.load_cmd,
+                    status.release_throttle_cmd,
+                    status.release_ignition_timing_deg,
+                );
+                last_label = status.candidate_label.clone();
+            }
+            if !status.active {
+                break;
+            }
+        }
     }
 }

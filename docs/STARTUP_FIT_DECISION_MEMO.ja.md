@@ -32,7 +32,7 @@
 1. startup fit は rough fit ではなく、数値計算ベースの適合として扱う
 2. 一次段では `VVT_i, VVT_e` は既定値に固定する
 3. ignition の第一基準は `MBT` とする
-4. outer search は `throttle / ignition` の離散探索とし、初期は各軸 `8` 分割程度から始める
+4. outer search は `throttle / ignition` の離散探索とし、現行実装では初期から各軸 `16` 分割を使う
 5. coarse-to-fine の adaptive 探索を前提にする
 6. periodic steady の内側評価は、まず `有限 cycle 反復` で進める
 7. fit 用の時間積分は、可変刻みの埋め込み型 `Runge-Kutta` のうち `Fehlberg 4(5)` を第一候補にする
@@ -122,7 +122,7 @@ fit 用 solver では
 
 構成:
 
-1. throttle を `8` 分割の離散候補にする
+1. throttle を `16` 分割の離散候補にする
 2. 各 throttle で ignition の `MBT` を求める
 3. `MBT` 点群から throttle を二次基準で選ぶ
 

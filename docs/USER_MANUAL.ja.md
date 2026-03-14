@@ -193,7 +193,7 @@ reduced-order state と cycle closure から再構成しています。
 - [../README.ja.md](../README.ja.md): repository 全体の概要
 - [MODEL_REFERENCE.ja.md](MODEL_REFERENCE.ja.md): 数式、closure、実装対応、出典
 - [STARTUP_FIT_OPTIMIZATION_FORMULATION.ja.md](STARTUP_FIT_OPTIMIZATION_FORMULATION.ja.md): startup fit を最適化問題として見るための定式化メモ
-- [STARTUP_FIT_MBT_DISCUSSION.ja.md](STARTUP_FIT_MBT_DISCUSSION.ja.md): MBT 基準と adaptive 8 分割探索の議論メモ
+- [STARTUP_FIT_MBT_DISCUSSION.ja.md](STARTUP_FIT_MBT_DISCUSSION.ja.md): MBT 基準と adaptive 探索の議論メモ
 - [STARTUP_FIT_DECISION_MEMO.ja.md](STARTUP_FIT_DECISION_MEMO.ja.md): startup fit の合意点、保留点、選択肢をまとめた意思決定メモ
 - [STARTUP_FIT_PREIMPLEMENTATION_SPEC.ja.md](STARTUP_FIT_PREIMPLEMENTATION_SPEC.ja.md): 実装開始前に固定した startup fit の仕様書
 - [USER_MANUAL.md](USER_MANUAL.md): この manual の英語版

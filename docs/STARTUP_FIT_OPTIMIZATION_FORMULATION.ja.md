@@ -717,7 +717,7 @@ throttle の二次基準としては、例えば次が候補です。
 N_{eval} = N_1 + N_2
 ```
 
-で制御でき、`30 s` 上限との整合も取りやすいです。
+で制御でき、wall-clock 上限を置く場合でも整合を取りやすいです。
 
 ## 7. inner evaluator の時間積分
 
@@ -834,7 +834,7 @@ fit の目的に対しては厳しすぎる可能性があります。
 
 1. `\omega`, pressure, flow, throttle state で scale が大きく違う
 2. fit で欲しいのは state の最終桁ではなく、candidate ranking と `MBT` の安定性
-3. `30 s` の wall-clock 制約では over-solving になりやすい
+3. wall-clock 制約を置かない場合でも over-solving は避けたい
 
 したがって ODE solver の誤差判定は
 

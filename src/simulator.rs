@@ -1937,7 +1937,10 @@ impl Simulator {
             ),
             dt,
         );
-        (wrap_engine_state(fourth_order), wrap_engine_state(fifth_order))
+        (
+            wrap_engine_state(fourth_order),
+            wrap_engine_state(fifth_order),
+        )
     }
 
     fn append_pv_history_samples(
@@ -2327,10 +2330,7 @@ fn weighted_derivatives4(
     Derivatives {
         d_omega: a.d_omega * wa + b.d_omega * wb + c.d_omega * wc + d.d_omega * wd,
         d_theta: a.d_theta * wa + b.d_theta * wb + c.d_theta * wc + d.d_theta * wd,
-        d_p_intake: a.d_p_intake * wa
-            + b.d_p_intake * wb
-            + c.d_p_intake * wc
-            + d.d_p_intake * wd,
+        d_p_intake: a.d_p_intake * wa + b.d_p_intake * wb + c.d_p_intake * wc + d.d_p_intake * wd,
         d_p_intake_runner: a.d_p_intake_runner * wa
             + b.d_p_intake_runner * wb
             + c.d_p_intake_runner * wc
@@ -2351,10 +2351,7 @@ fn weighted_derivatives4(
             + b.d_m_dot_exhaust_runner * wb
             + c.d_m_dot_exhaust_runner * wc
             + d.d_m_dot_exhaust_runner * wd,
-        d_throttle: a.d_throttle * wa
-            + b.d_throttle * wb
-            + c.d_throttle * wc
-            + d.d_throttle * wd,
+        d_throttle: a.d_throttle * wa + b.d_throttle * wb + c.d_throttle * wc + d.d_throttle * wd,
     }
 }
 
@@ -2371,16 +2368,8 @@ fn weighted_derivatives5(
     we: f64,
 ) -> Derivatives {
     Derivatives {
-        d_omega: a.d_omega * wa
-            + b.d_omega * wb
-            + c.d_omega * wc
-            + d.d_omega * wd
-            + e.d_omega * we,
-        d_theta: a.d_theta * wa
-            + b.d_theta * wb
-            + c.d_theta * wc
-            + d.d_theta * wd
-            + e.d_theta * we,
+        d_omega: a.d_omega * wa + b.d_omega * wb + c.d_omega * wc + d.d_omega * wd + e.d_omega * we,
+        d_theta: a.d_theta * wa + b.d_theta * wb + c.d_theta * wc + d.d_theta * wd + e.d_theta * we,
         d_p_intake: a.d_p_intake * wa
             + b.d_p_intake * wb
             + c.d_p_intake * wc

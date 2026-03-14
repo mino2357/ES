@@ -134,7 +134,10 @@ w_\alpha(\alpha_i-\alpha_{ref})^2
 
 - `\alpha_{ref}` の根拠が必要
 
-## 5. `8` 分割の adaptive 探索案
+## 5. adaptive 探索案
+
+注:
+現行実装は `16 x 16` の coarse grid を使うが、この節の `8 x 8` 例は計算量の見積もりを説明するための簡略例として残す。
 
 ## 5.1 一番わかりやすい構成
 
@@ -247,10 +250,10 @@ T_{wall} \approx N_{eval,total}\,t_{eval}
 
 です。
 
-したがって `30 s` 制約の下では
+wall-clock 制約を置く場合には
 
 ```math
-t_{eval} \le \frac{30}{N_{eval,total}}
+t_{eval} \le \frac{T_{wall}}{N_{eval,total}}
 ```
 
 が一つの目安です。
