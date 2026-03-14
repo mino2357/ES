@@ -95,6 +95,22 @@
 - `controller` 入力は、マップ実行系と車体応答が安定してから統合する。
 - より高次の `1D/3D` 解析への展開は、現時点では既定路線にしない。
 
+### 5.1 startup fit の既定方針
+
+- 起動直後の startup fit は、雑な rough fit ではなく数値計算ベースの operating-point solve として扱う。
+- startup fit の一次段では `VVT_i, VVT_e` を既定値に固定し、まず `throttle` と `ignition` の低次元問題として扱う。
+- requested speed を与える fit では、外部負荷トルクは固定ゼロの入力ではなく、その回転数で周期定常を成立させるために必要な `required brake torque` として扱う。
+- `required brake torque` と `indicated torque` は物理的意味が異なるので、表示と文書では分けて扱う。
+- startup fit の outer search は、bounded continuous search を既定にせず、まず離散化した有限候補集合から最良点を選ぶ構成を第一候補にする。
+- ignition の選定基準は、まず各 throttle 候補に対する `MBT` 探索を第一候補にする。
+- throttle は `MBT` だけでは一意に決まらないので、初回実装では `必要 torque margin を満たす最小 throttle` を二次基準にする。
+- throttle / ignition の離散探索は、各軸をおよそ `8` 分割した格子から始め、良好な領域だけを再分割する `adaptive` な coarse-to-fine を第一候補にする。
+- fit 用の event 処理は、初回実装では次の点火角までを上限として step を制限する phase-scheduled な構成を第一候補にする。
+- 候補評価の inner solver は、途中波形の高密度サンプリングではなく周期残差と cycle-average 評価を優先し、可変刻みの埋め込み型 `Runge-Kutta` のうち広く使われている `Fehlberg 4(5)` を第一候補にする。
+- inner solver の tolerance は、単一の極端に厳しい相対誤差だけで決めず、状態量ごとの scale を持つ重み付き誤差ノルムと candidate ranking の安定性で決める。
+- periodic steady の初期実装は、直接 `root-finding` を掛ける前に、まず有限 cycle 反復で近い定常点を作る経路を採用する。
+- fit 用の数値積分と UI 可視化用の診断サンプリングは役割を分け、solver 都合で表示要件を引きずらない。
+
 ## 6. 数理モデル可視化の方針
 
 - 可視化は `black-box` 的な重要度表示だけで終わらせない。

@@ -242,6 +242,14 @@ pub(crate) struct Observation {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct FitStateSample {
+    pub(crate) rpm: f64,
+    pub(crate) torque_load_nm: f64,
+    pub(crate) torque_net_nm: f64,
+    pub(crate) burn_start_deg: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct PvSample {
     pub(crate) cycle: u64,
     pub(crate) cycle_deg: f64,
@@ -256,6 +264,7 @@ pub(crate) struct CycleHistorySample {
     pub(crate) value: f64,
 }
 
+#[derive(Debug, Clone)]
 // Owns the continuous engine state plus the cycle-averaged quantities shown in the GUI.
 pub(crate) struct Simulator {
     pub(crate) env: EnvironmentConfig,
@@ -389,6 +398,20 @@ impl Simulator {
             running: true,
         };
         self.prev_theta_rad = self.state.theta_rad;
+    }
+
+    pub(crate) fn sample_fit_state(&self, state: EngineState) -> FitStateSample {
+        let eval = self.eval(state);
+        let rpm = rad_s_to_rpm(state.omega_rad_s.max(0.0));
+        FitStateSample {
+            rpm,
+            torque_load_nm: eval.torque_load_nm,
+            torque_net_nm: eval.torque_combustion_nm
+                - eval.torque_friction_nm
+                - eval.torque_pumping_nm
+                - eval.torque_load_nm,
+            burn_start_deg: eval.burn_start_deg,
+        }
     }
 
     fn theoretical_otto_efficiency(&self) -> f64 {
@@ -1814,6 +1837,109 @@ impl Simulator {
         self.advance_state_rk3_from_eval(state, eval_1, dt)
     }
 
+    pub(crate) fn advance_state_rkf45_pair(
+        &self,
+        state: EngineState,
+        dt: f64,
+    ) -> (EngineState, EngineState) {
+        let eval_1 = self.eval(state);
+        let k1 = self.derivatives(state, eval_1);
+
+        let s2 = integrate_state(state, k1, dt * 1.0 / 4.0);
+        let k2 = self.derivatives(s2, self.eval(s2));
+
+        let s3 = integrate_state(
+            state,
+            weighted_derivatives2(k1, 3.0 / 32.0, k2, 9.0 / 32.0),
+            dt,
+        );
+        let k3 = self.derivatives(s3, self.eval(s3));
+
+        let s4 = integrate_state(
+            state,
+            weighted_derivatives3(
+                k1,
+                1932.0 / 2197.0,
+                k2,
+                -7200.0 / 2197.0,
+                k3,
+                7296.0 / 2197.0,
+            ),
+            dt,
+        );
+        let k4 = self.derivatives(s4, self.eval(s4));
+
+        let s5 = integrate_state(
+            state,
+            weighted_derivatives4(
+                k1,
+                439.0 / 216.0,
+                k2,
+                -8.0,
+                k3,
+                3680.0 / 513.0,
+                k4,
+                -845.0 / 4104.0,
+            ),
+            dt,
+        );
+        let k5 = self.derivatives(s5, self.eval(s5));
+
+        let s6 = integrate_state(
+            state,
+            weighted_derivatives5(
+                k1,
+                -8.0 / 27.0,
+                k2,
+                2.0,
+                k3,
+                -3544.0 / 2565.0,
+                k4,
+                1859.0 / 4104.0,
+                k5,
+                -11.0 / 40.0,
+            ),
+            dt,
+        );
+        let k6 = self.derivatives(s6, self.eval(s6));
+
+        let fourth_order = integrate_state(
+            state,
+            weighted_derivatives5(
+                k1,
+                25.0 / 216.0,
+                k2,
+                0.0,
+                k3,
+                1408.0 / 2565.0,
+                k4,
+                2197.0 / 4104.0,
+                k5,
+                -1.0 / 5.0,
+            ),
+            dt,
+        );
+        let fifth_order = integrate_state(
+            state,
+            weighted_derivatives6(
+                k1,
+                16.0 / 135.0,
+                k2,
+                0.0,
+                k3,
+                6656.0 / 12825.0,
+                k4,
+                28561.0 / 56430.0,
+                k5,
+                -9.0 / 50.0,
+                k6,
+                2.0 / 55.0,
+            ),
+            dt,
+        );
+        (wrap_engine_state(fourth_order), wrap_engine_state(fifth_order))
+    }
+
     fn append_pv_history_samples(
         &mut self,
         eval_prev: EvalPoint,
@@ -2188,6 +2314,188 @@ fn weighted_derivatives3(
     }
 }
 
+fn weighted_derivatives4(
+    a: Derivatives,
+    wa: f64,
+    b: Derivatives,
+    wb: f64,
+    c: Derivatives,
+    wc: f64,
+    d: Derivatives,
+    wd: f64,
+) -> Derivatives {
+    Derivatives {
+        d_omega: a.d_omega * wa + b.d_omega * wb + c.d_omega * wc + d.d_omega * wd,
+        d_theta: a.d_theta * wa + b.d_theta * wb + c.d_theta * wc + d.d_theta * wd,
+        d_p_intake: a.d_p_intake * wa
+            + b.d_p_intake * wb
+            + c.d_p_intake * wc
+            + d.d_p_intake * wd,
+        d_p_intake_runner: a.d_p_intake_runner * wa
+            + b.d_p_intake_runner * wb
+            + c.d_p_intake_runner * wc
+            + d.d_p_intake_runner * wd,
+        d_p_exhaust: a.d_p_exhaust * wa
+            + b.d_p_exhaust * wb
+            + c.d_p_exhaust * wc
+            + d.d_p_exhaust * wd,
+        d_p_exhaust_runner: a.d_p_exhaust_runner * wa
+            + b.d_p_exhaust_runner * wb
+            + c.d_p_exhaust_runner * wc
+            + d.d_p_exhaust_runner * wd,
+        d_m_dot_intake_runner: a.d_m_dot_intake_runner * wa
+            + b.d_m_dot_intake_runner * wb
+            + c.d_m_dot_intake_runner * wc
+            + d.d_m_dot_intake_runner * wd,
+        d_m_dot_exhaust_runner: a.d_m_dot_exhaust_runner * wa
+            + b.d_m_dot_exhaust_runner * wb
+            + c.d_m_dot_exhaust_runner * wc
+            + d.d_m_dot_exhaust_runner * wd,
+        d_throttle: a.d_throttle * wa
+            + b.d_throttle * wb
+            + c.d_throttle * wc
+            + d.d_throttle * wd,
+    }
+}
+
+fn weighted_derivatives5(
+    a: Derivatives,
+    wa: f64,
+    b: Derivatives,
+    wb: f64,
+    c: Derivatives,
+    wc: f64,
+    d: Derivatives,
+    wd: f64,
+    e: Derivatives,
+    we: f64,
+) -> Derivatives {
+    Derivatives {
+        d_omega: a.d_omega * wa
+            + b.d_omega * wb
+            + c.d_omega * wc
+            + d.d_omega * wd
+            + e.d_omega * we,
+        d_theta: a.d_theta * wa
+            + b.d_theta * wb
+            + c.d_theta * wc
+            + d.d_theta * wd
+            + e.d_theta * we,
+        d_p_intake: a.d_p_intake * wa
+            + b.d_p_intake * wb
+            + c.d_p_intake * wc
+            + d.d_p_intake * wd
+            + e.d_p_intake * we,
+        d_p_intake_runner: a.d_p_intake_runner * wa
+            + b.d_p_intake_runner * wb
+            + c.d_p_intake_runner * wc
+            + d.d_p_intake_runner * wd
+            + e.d_p_intake_runner * we,
+        d_p_exhaust: a.d_p_exhaust * wa
+            + b.d_p_exhaust * wb
+            + c.d_p_exhaust * wc
+            + d.d_p_exhaust * wd
+            + e.d_p_exhaust * we,
+        d_p_exhaust_runner: a.d_p_exhaust_runner * wa
+            + b.d_p_exhaust_runner * wb
+            + c.d_p_exhaust_runner * wc
+            + d.d_p_exhaust_runner * wd
+            + e.d_p_exhaust_runner * we,
+        d_m_dot_intake_runner: a.d_m_dot_intake_runner * wa
+            + b.d_m_dot_intake_runner * wb
+            + c.d_m_dot_intake_runner * wc
+            + d.d_m_dot_intake_runner * wd
+            + e.d_m_dot_intake_runner * we,
+        d_m_dot_exhaust_runner: a.d_m_dot_exhaust_runner * wa
+            + b.d_m_dot_exhaust_runner * wb
+            + c.d_m_dot_exhaust_runner * wc
+            + d.d_m_dot_exhaust_runner * wd
+            + e.d_m_dot_exhaust_runner * we,
+        d_throttle: a.d_throttle * wa
+            + b.d_throttle * wb
+            + c.d_throttle * wc
+            + d.d_throttle * wd
+            + e.d_throttle * we,
+    }
+}
+
+fn weighted_derivatives6(
+    a: Derivatives,
+    wa: f64,
+    b: Derivatives,
+    wb: f64,
+    c: Derivatives,
+    wc: f64,
+    d: Derivatives,
+    wd: f64,
+    e: Derivatives,
+    we: f64,
+    f: Derivatives,
+    wf: f64,
+) -> Derivatives {
+    Derivatives {
+        d_omega: a.d_omega * wa
+            + b.d_omega * wb
+            + c.d_omega * wc
+            + d.d_omega * wd
+            + e.d_omega * we
+            + f.d_omega * wf,
+        d_theta: a.d_theta * wa
+            + b.d_theta * wb
+            + c.d_theta * wc
+            + d.d_theta * wd
+            + e.d_theta * we
+            + f.d_theta * wf,
+        d_p_intake: a.d_p_intake * wa
+            + b.d_p_intake * wb
+            + c.d_p_intake * wc
+            + d.d_p_intake * wd
+            + e.d_p_intake * we
+            + f.d_p_intake * wf,
+        d_p_intake_runner: a.d_p_intake_runner * wa
+            + b.d_p_intake_runner * wb
+            + c.d_p_intake_runner * wc
+            + d.d_p_intake_runner * wd
+            + e.d_p_intake_runner * we
+            + f.d_p_intake_runner * wf,
+        d_p_exhaust: a.d_p_exhaust * wa
+            + b.d_p_exhaust * wb
+            + c.d_p_exhaust * wc
+            + d.d_p_exhaust * wd
+            + e.d_p_exhaust * we
+            + f.d_p_exhaust * wf,
+        d_p_exhaust_runner: a.d_p_exhaust_runner * wa
+            + b.d_p_exhaust_runner * wb
+            + c.d_p_exhaust_runner * wc
+            + d.d_p_exhaust_runner * wd
+            + e.d_p_exhaust_runner * we
+            + f.d_p_exhaust_runner * wf,
+        d_m_dot_intake_runner: a.d_m_dot_intake_runner * wa
+            + b.d_m_dot_intake_runner * wb
+            + c.d_m_dot_intake_runner * wc
+            + d.d_m_dot_intake_runner * wd
+            + e.d_m_dot_intake_runner * we
+            + f.d_m_dot_intake_runner * wf,
+        d_m_dot_exhaust_runner: a.d_m_dot_exhaust_runner * wa
+            + b.d_m_dot_exhaust_runner * wb
+            + c.d_m_dot_exhaust_runner * wc
+            + d.d_m_dot_exhaust_runner * wd
+            + e.d_m_dot_exhaust_runner * we
+            + f.d_m_dot_exhaust_runner * wf,
+        d_throttle: a.d_throttle * wa
+            + b.d_throttle * wb
+            + c.d_throttle * wc
+            + d.d_throttle * wd
+            + e.d_throttle * we
+            + f.d_throttle * wf,
+    }
+}
+
+fn wrap_engine_state(mut state: EngineState) -> EngineState {
+    state.theta_rad = wrap_cycle(state.theta_rad);
+    state
+}
+
 pub(crate) fn wrap_cycle(theta_rad: f64) -> f64 {
     theta_rad.rem_euclid(2.0 * TAU)
 }
@@ -2239,7 +2547,6 @@ pub(crate) fn state_error_norm(
     state_error_norm_internal(coarse, fine, numerics, true)
 }
 
-#[cfg(test)]
 pub(crate) fn running_state_error_norm(
     coarse: EngineState,
     fine: EngineState,

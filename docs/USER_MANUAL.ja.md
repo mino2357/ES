@@ -60,14 +60,11 @@ header には次のような annunciator が並びます。
 
 ### Operator Rack
 
-左の rack には collapsible module が入っています。
+左の rack には `Startup Numerical Fit` の進捗表示と manual control が入っています。
 
-- `Actuator Deck`: motoring speed hold の上で throttle、`Target RPM`、spark、fuel、ignition、VVT を操作する command surface
-- `Status Bus`: runtime status、operator input、load-model mode、solver mode
-- `Sensor / State Bus`: reduced-order state と closure output
-
-左 rack 自体は scrollable です。
-優先度の低い module は collapse できるので、FHD 級の画面でも使いやすくしています。
+- 起動直後は throttle 候補ごとに ignition の `MBT` を探索し、requested RPM を保持する `Required brake torque` を数値的に解きます
+- 適合が収束するまでは manual actuator edit は lock されます
+- 収束後は throttle、spark、fuel、ignition、VVT を手動で調整できます
 
 ### Operator Display
 
@@ -83,8 +80,9 @@ header には次のような annunciator が並びます。
 
 - cylinder `p-V`
 - cylinder `p-theta`
-- RPM、torque、trapped air の cycle-history plot
-- `Engine Motion Schematic`: current の bore、stroke、displayed crank phase、VVT に基づく normalized slow-motion single-cylinder cutaway で、piston / crank / intake port / exhaust port / valve seat / valve lift を表示し、engine 停止時だけ停止する
+- 図示トルク、正味トルク、正味出力、IMEP / indicated efficiency
+
+これらは startup fit 中も常時表示されます。
 
 縦方向に収まりきらない場合は、中央領域を scroll して追えます。
 
@@ -93,11 +91,10 @@ header には次のような annunciator が並びます。
 ### 手動の過渡運転
 
 1. application を起動する
-2. `Throttle cmd` で airflow を要求する
-3. `Target RPM` に目標 engine speed を与える
-4. その結果として表示される `Required brake torque` と `Required brake power` を読む
+2. 起動直後は startup numerical fit が自動で走る
+3. その間も `p-V`、`p-theta`、図示トルクを見ながら収束を確認する
+4. fit が `READY` になったら `Throttle cmd`、`Ignition`、`VVT Intake`、`VVT Exhaust` を手動操作できる
 5. 必要に応じて `Spark` と `Fuel` を切り替える
-6. `Ignition`、`VVT Intake`、`VVT Exhaust` を操作して応答を見る
 
 ### Operator input と output
 
@@ -195,4 +192,8 @@ reduced-order state と cycle closure から再構成しています。
 
 - [../README.ja.md](../README.ja.md): repository 全体の概要
 - [MODEL_REFERENCE.ja.md](MODEL_REFERENCE.ja.md): 数式、closure、実装対応、出典
+- [STARTUP_FIT_OPTIMIZATION_FORMULATION.ja.md](STARTUP_FIT_OPTIMIZATION_FORMULATION.ja.md): startup fit を最適化問題として見るための定式化メモ
+- [STARTUP_FIT_MBT_DISCUSSION.ja.md](STARTUP_FIT_MBT_DISCUSSION.ja.md): MBT 基準と adaptive 8 分割探索の議論メモ
+- [STARTUP_FIT_DECISION_MEMO.ja.md](STARTUP_FIT_DECISION_MEMO.ja.md): startup fit の合意点、保留点、選択肢をまとめた意思決定メモ
+- [STARTUP_FIT_PREIMPLEMENTATION_SPEC.ja.md](STARTUP_FIT_PREIMPLEMENTATION_SPEC.ja.md): 実装開始前に固定した startup fit の仕様書
 - [USER_MANUAL.md](USER_MANUAL.md): この manual の英語版

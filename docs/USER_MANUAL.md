@@ -60,14 +60,11 @@ The header shows machine-state annunciators such as:
 
 ### Operator Rack
 
-The left rack contains collapsible modules:
+The left rack now shows the `Startup Numerical Fit` status together with the manual controls:
 
-- `Actuator Deck`: manual throttle, `Target RPM`, spark, fuel, ignition, and VVT commands under motoring speed hold
-- `Status Bus`: runtime status, operator inputs, load-model mode, and solver mode
-- `Sensor / State Bus`: lower-level reduced-order states and closure outputs
-
-The left rack is scrollable.
-Lower-priority modules are collapsible so the dashboard remains usable on FHD-class displays.
+- on first fire, each throttle bin gets a local `MBT` spark search and the required brake torque for the requested RPM is solved numerically
+- manual actuator edits stay locked until that startup fit converges
+- once the fit is ready, throttle, spark, fuel, ignition, and VVT can be edited manually
 
 ### Operator Display
 
@@ -83,8 +80,9 @@ The center and lower areas show:
 
 - cylinder `p-V`
 - cylinder `p-theta`
-- cycle-history plots for RPM, torque, and trapped air
-- `Engine Motion Schematic`: a normalized slow-motion single-cylinder cutaway showing the piston, crank, intake port, exhaust port, valve seats, and valve lift from current bore, stroke, displayed crank phase, and VVT; it freezes only when the engine is stopped
+- indicated torque, net torque, net shaft power, and IMEP / indicated efficiency
+
+These remain visible while the startup fit is running.
 
 The central region is scrollable when the full layout does not fit vertically.
 
@@ -93,11 +91,10 @@ The central region is scrollable when the full layout does not fit vertically.
 ### Manual Transient Operation
 
 1. Start the application.
-2. Use `Throttle cmd` to request airflow.
-3. Set `Target RPM` to the requested engine speed.
-4. Read `Required brake torque` and `Required brake power` as the resulting outputs.
+2. Let the startup numerical fit run immediately after first fire.
+3. Watch `p-V`, `p-theta`, and indicated torque while the fit converges.
+4. Once the fit reaches `READY`, adjust `Throttle cmd`, `Ignition`, `VVT Intake`, and `VVT Exhaust` manually.
 5. Toggle `Spark` and `Fuel` as needed.
-6. Adjust `Ignition`, `VVT Intake`, and `VVT Exhaust` to inspect transient response.
 
 ### Operator Inputs And Outputs
 
