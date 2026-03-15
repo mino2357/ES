@@ -5,8 +5,12 @@ use eframe::egui;
 use super::startup_fit::{
     STARTUP_FIT_FAST_FORWARD_FACTOR, STARTUP_FIT_INITIAL_THROTTLE, STARTUP_FIT_TARGET_RPM,
     StartupFitControlBounds, StartupFitControls, StartupFitState, StartupFitStatus,
+    StartupFitTorqueCurvePoint,
 };
-use crate::config::{AppConfig, ExternalLoadMode, UiConfig};
+use super::startup_fit_artifact::{
+    StartupFitArtifact, StartupFitCacheContext, load_matching_artifact, save_artifact,
+};
+use crate::config::{AppConfig, ExternalLoadMode, LoadedAppConfig, UiConfig};
 use crate::simulator::{
     Observation, Simulator, accuracy_priority_dt, estimate_mbt_deg, estimate_realtime_performance,
     external_load_command_for_torque_nm, rad_s_to_rpm, rpm_linked_dt, shaft_power_hp,
@@ -14,6 +18,60 @@ use crate::simulator::{
 };
 
 const POST_FIT_SPEED_HOLD_GAIN_NM_PER_RPM: f64 = 0.08;
+const DRIVER_DEMAND_DEFAULT: f64 = 0.50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PostFitRuntimeMode {
+    StandardRuntime,
+    ActuatorLab,
+}
+
+impl PostFitRuntimeMode {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::StandardRuntime => "Standard runtime",
+            Self::ActuatorLab => "Actuator lab",
+        }
+    }
+
+    pub(super) fn detail(self) -> &'static str {
+        match self {
+            Self::StandardRuntime => {
+                "Driver demand sets torque request; throttle, ignition, and VVT follow the fitted baseline automatically."
+            }
+            Self::ActuatorLab => {
+                "Driver demand still sets torque request, while throttle, ignition, and VVT become live manual overrides against the auto baseline."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PostFitBaseline {
+    pub(super) requested_brake_torque_nm: f64,
+    pub(super) throttle_cmd: f64,
+    pub(super) ignition_timing_deg: f64,
+    pub(super) vvt_intake_deg: f64,
+    pub(super) vvt_exhaust_deg: f64,
+}
+
+impl PostFitBaseline {
+    fn new(
+        requested_brake_torque_nm: f64,
+        throttle_cmd: f64,
+        ignition_timing_deg: f64,
+        vvt_intake_deg: f64,
+        vvt_exhaust_deg: f64,
+    ) -> Self {
+        Self {
+            requested_brake_torque_nm,
+            throttle_cmd,
+            ignition_timing_deg,
+            vvt_intake_deg,
+            vvt_exhaust_deg,
+        }
+    }
+}
 
 // Owns runtime pacing, controls, and the latest simulation state shown in the dashboard.
 pub(super) struct DashboardState {
@@ -27,11 +85,27 @@ pub(super) struct DashboardState {
     dt_max_bound: f64,
     realtime_fixed_dt_s: Option<f64>,
     pub(super) load_target_rpm: f64,
+    pub(super) driver_demand: f64,
+    pub(super) post_fit_mode: PostFitRuntimeMode,
+    pub(super) post_fit_baseline: PostFitBaseline,
     startup_fit: StartupFitState,
+    startup_fit_cache_context: Option<StartupFitCacheContext>,
+    startup_fit_artifact_persisted: bool,
+    post_fit_defaults_initialized: bool,
 }
 
 impl DashboardState {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new(config: AppConfig) -> Self {
+        Self::build(config, None)
+    }
+
+    pub(super) fn from_loaded_config(loaded: LoadedAppConfig) -> Self {
+        let cache_context = StartupFitCacheContext::from_loaded_config(&loaded);
+        Self::build(loaded.config, cache_context)
+    }
+
+    fn build(config: AppConfig, startup_fit_cache_context: Option<StartupFitCacheContext>) -> Self {
         let ui_config = config.ui.clone();
         let dt = config.environment.dt.max(ui_config.min_base_dt_s);
         let (dt_min_bound, dt_max_bound, realtime_fixed_dt_s, dt_next) = if ui_config
@@ -68,7 +142,7 @@ impl DashboardState {
         // The startup-fit dashboard solves a fixed-RPM bench point, so use the brake-dyno load
         // path even if the checked-in config defaults to a vehicle-equivalent road load.
         sim.model.external_load.mode = ExternalLoadMode::BrakeMap;
-        let load_target_rpm = STARTUP_FIT_TARGET_RPM;
+        let mut load_target_rpm = STARTUP_FIT_TARGET_RPM;
         let initial_load_est = 0.60;
         let ignition_timing_deg = estimate_mbt_deg(&sim.model, load_target_rpm, initial_load_est);
         sim.control.spark_cmd = true;
@@ -76,11 +150,50 @@ impl DashboardState {
         sim.control.vvt_intake_deg = 0.0;
         sim.control.vvt_exhaust_deg = 0.0;
         sim.control.load_cmd = 0.0;
-        sim.seed_operating_point(
-            load_target_rpm,
-            STARTUP_FIT_INITIAL_THROTTLE,
-            ignition_timing_deg,
-        );
+        let cached_artifact = startup_fit_cache_context.as_ref().and_then(|context| {
+            match load_matching_artifact(context) {
+                Ok(artifact) => artifact,
+                Err(err) => {
+                    eprintln!("{err}");
+                    None
+                }
+            }
+        });
+        let (startup_fit, startup_fit_artifact_persisted) =
+            if let Some(ref artifact) = cached_artifact {
+                load_target_rpm = artifact.target_rpm;
+                sim.control.throttle_cmd = artifact.release_controls.throttle_cmd;
+                sim.control.ignition_timing_deg = artifact.release_controls.ignition_timing_deg;
+                sim.control.vvt_intake_deg = artifact.release_controls.vvt_intake_deg;
+                sim.control.vvt_exhaust_deg = artifact.release_controls.vvt_exhaust_deg;
+                sim.control.load_cmd = artifact.release_controls.load_cmd;
+                sim.seed_operating_point(
+                    artifact.target_rpm,
+                    artifact.release_controls.throttle_cmd,
+                    artifact.release_controls.ignition_timing_deg,
+                );
+                (StartupFitState::from_artifact(dt_next, artifact), true)
+            } else {
+                sim.seed_operating_point(
+                    load_target_rpm,
+                    STARTUP_FIT_INITIAL_THROTTLE,
+                    ignition_timing_deg,
+                );
+                (
+                    StartupFitState::new(
+                        dt_next,
+                        load_target_rpm,
+                        StartupFitControls {
+                            throttle_cmd: STARTUP_FIT_INITIAL_THROTTLE,
+                            ignition_timing_deg,
+                            vvt_intake_deg: 0.0,
+                            vvt_exhaust_deg: 0.0,
+                            load_cmd: 0.0,
+                        },
+                    ),
+                    startup_fit_cache_context.is_none(),
+                )
+            };
         let latest = sim.step(dt_next);
         Self {
             sim,
@@ -93,17 +206,19 @@ impl DashboardState {
             dt_max_bound,
             realtime_fixed_dt_s,
             load_target_rpm,
-            startup_fit: StartupFitState::new(
-                dt_next,
-                load_target_rpm,
-                StartupFitControls {
-                    throttle_cmd: STARTUP_FIT_INITIAL_THROTTLE,
-                    ignition_timing_deg,
-                    vvt_intake_deg: 0.0,
-                    vvt_exhaust_deg: 0.0,
-                    load_cmd: 0.0,
-                },
+            driver_demand: DRIVER_DEMAND_DEFAULT,
+            post_fit_mode: PostFitRuntimeMode::StandardRuntime,
+            post_fit_baseline: PostFitBaseline::new(
+                0.0,
+                STARTUP_FIT_INITIAL_THROTTLE,
+                ignition_timing_deg,
+                0.0,
+                0.0,
             ),
+            startup_fit,
+            startup_fit_cache_context,
+            startup_fit_artifact_persisted,
+            post_fit_defaults_initialized: false,
         }
     }
 
@@ -155,6 +270,23 @@ impl DashboardState {
         self.startup_fit.snapshot(self.simulated_time_s)
     }
 
+    pub(super) fn set_post_fit_runtime_mode(&mut self, mode: PostFitRuntimeMode) {
+        if self.post_fit_mode == mode {
+            return;
+        }
+        self.post_fit_mode = mode;
+        self.initialize_post_fit_runtime_if_needed();
+        self.update_post_fit_baseline();
+        if mode == PostFitRuntimeMode::ActuatorLab {
+            self.seed_manual_actuator_lab_from_baseline();
+        }
+    }
+
+    pub(super) fn refresh_post_fit_preview(&mut self) {
+        self.initialize_post_fit_runtime_if_needed();
+        self.update_post_fit_baseline();
+    }
+
     pub(super) fn apply_shortcuts(&mut self, ctx: &egui::Context, ui_config: &UiConfig) {
         let manual_shortcuts_enabled = !self.startup_fit_active();
         ctx.input(|i| {
@@ -169,14 +301,30 @@ impl DashboardState {
                     self.sim.control.fuel_cmd = !self.sim.control.fuel_cmd;
                 }
                 if i.key_pressed(egui::Key::W) {
-                    self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
-                        + ui_config.throttle_key_step)
-                        .clamp(0.0, 1.0);
+                    match self.post_fit_mode {
+                        PostFitRuntimeMode::StandardRuntime => {
+                            self.driver_demand =
+                                (self.driver_demand + ui_config.throttle_key_step).clamp(0.0, 1.0);
+                        }
+                        PostFitRuntimeMode::ActuatorLab => {
+                            self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
+                                + ui_config.throttle_key_step)
+                                .clamp(0.0, 1.0);
+                        }
+                    }
                 }
                 if i.key_pressed(egui::Key::X) {
-                    self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
-                        - ui_config.throttle_key_step)
-                        .clamp(0.0, 1.0);
+                    match self.post_fit_mode {
+                        PostFitRuntimeMode::StandardRuntime => {
+                            self.driver_demand =
+                                (self.driver_demand - ui_config.throttle_key_step).clamp(0.0, 1.0);
+                        }
+                        PostFitRuntimeMode::ActuatorLab => {
+                            self.sim.control.throttle_cmd = (self.sim.control.throttle_cmd
+                                - ui_config.throttle_key_step)
+                                .clamp(0.0, 1.0);
+                        }
+                    }
                 }
             }
         });
@@ -248,6 +396,14 @@ impl DashboardState {
         }
         self.simulated_time_s += simulated;
         self.advance_startup_fit(elapsed_since_last_frame_s, simulated);
+        if !self.startup_fit_active() {
+            self.persist_startup_fit_artifact_if_needed();
+            self.initialize_post_fit_runtime_if_needed();
+            self.update_post_fit_baseline();
+            if self.post_fit_mode == PostFitRuntimeMode::StandardRuntime {
+                self.apply_standard_runtime_actuator_baseline();
+            }
+        }
         self.sanitize_control_inputs();
         self.last_tick = now;
     }
@@ -256,7 +412,12 @@ impl DashboardState {
         if self.startup_fit_active() {
             self.apply_fit_controls_if_active();
         } else {
-            self.apply_post_fit_speed_hold();
+            self.initialize_post_fit_runtime_if_needed();
+            self.update_post_fit_baseline();
+            match self.post_fit_mode {
+                PostFitRuntimeMode::StandardRuntime => self.apply_standard_runtime_controls(),
+                PostFitRuntimeMode::ActuatorLab => self.apply_actuator_lab_controls(),
+            }
         }
     }
 
@@ -286,6 +447,66 @@ impl DashboardState {
         }
     }
 
+    fn apply_standard_runtime_controls(&mut self) {
+        self.apply_standard_runtime_actuator_baseline();
+        self.apply_post_fit_speed_hold();
+    }
+
+    fn apply_standard_runtime_actuator_baseline(&mut self) {
+        self.sim.control.throttle_cmd = self.post_fit_baseline.throttle_cmd;
+        self.sim.control.ignition_timing_deg = self.post_fit_baseline.ignition_timing_deg;
+        self.sim.control.vvt_intake_deg = self.post_fit_baseline.vvt_intake_deg;
+        self.sim.control.vvt_exhaust_deg = self.post_fit_baseline.vvt_exhaust_deg;
+    }
+
+    fn apply_actuator_lab_controls(&mut self) {
+        self.apply_post_fit_speed_hold();
+    }
+
+    fn seed_manual_actuator_lab_from_baseline(&mut self) {
+        self.sim.control.throttle_cmd = self.post_fit_baseline.throttle_cmd;
+        self.sim.control.ignition_timing_deg = self.post_fit_baseline.ignition_timing_deg;
+        self.sim.control.vvt_intake_deg = self.post_fit_baseline.vvt_intake_deg;
+        self.sim.control.vvt_exhaust_deg = self.post_fit_baseline.vvt_exhaust_deg;
+    }
+
+    fn initialize_post_fit_runtime_if_needed(&mut self) {
+        if self.startup_fit_active() || self.post_fit_defaults_initialized {
+            return;
+        }
+        let release_torque_nm = self.startup_fit.selected_required_brake_torque_nm();
+        let torque_curve = self.startup_fit.best_torque_curve();
+        self.driver_demand =
+            driver_demand_for_torque_request(release_torque_nm, &torque_curve, release_torque_nm);
+        self.post_fit_defaults_initialized = true;
+    }
+
+    fn update_post_fit_baseline(&mut self) {
+        if self.startup_fit_active() {
+            return;
+        }
+        let release_controls = self.startup_fit.release_controls();
+        let torque_curve = self.startup_fit.best_torque_curve();
+        let requested_brake_torque_nm =
+            torque_request_from_driver_demand(self.driver_demand, &torque_curve, 0.0);
+        let throttle_cmd = throttle_for_requested_torque(
+            requested_brake_torque_nm,
+            &torque_curve,
+            release_controls.throttle_cmd,
+        );
+        let load_est =
+            (0.45 + 0.50 * throttle_cmd).clamp(self.sim.model.load_min, self.sim.model.load_max);
+        let ignition_timing_deg =
+            estimate_mbt_deg(&self.sim.model, self.load_target_rpm.max(600.0), load_est);
+        self.post_fit_baseline = PostFitBaseline::new(
+            requested_brake_torque_nm,
+            throttle_cmd,
+            ignition_timing_deg,
+            release_controls.vvt_intake_deg,
+            release_controls.vvt_exhaust_deg,
+        );
+    }
+
     fn apply_post_fit_speed_hold(&mut self) {
         if !self.sim.control.spark_cmd || !self.sim.control.fuel_cmd || self.latest.rpm <= 120.0 {
             return;
@@ -293,7 +514,7 @@ impl DashboardState {
 
         let actual_rpm = rad_s_to_rpm(self.sim.state.omega_rad_s.max(0.0));
         let target_torque_nm = fit_speed_hold_target_torque_nm(
-            self.startup_fit.selected_required_brake_torque_nm(),
+            self.post_fit_baseline.requested_brake_torque_nm,
             actual_rpm,
             self.load_target_rpm,
         );
@@ -340,6 +561,7 @@ impl DashboardState {
     fn sanitize_control_inputs(&mut self) {
         self.load_target_rpm = finite_f64(self.load_target_rpm, STARTUP_FIT_TARGET_RPM)
             .clamp(0.0, self.sim.params.max_rpm);
+        self.driver_demand = finite_f64(self.driver_demand, DRIVER_DEMAND_DEFAULT).clamp(0.0, 1.0);
         self.sim.control.throttle_cmd =
             finite_f64(self.sim.control.throttle_cmd, STARTUP_FIT_INITIAL_THROTTLE).clamp(0.0, 1.0);
         self.sim.control.ignition_timing_deg = finite_f64(
@@ -352,6 +574,25 @@ impl DashboardState {
         self.sim.control.vvt_exhaust_deg =
             finite_f64(self.sim.control.vvt_exhaust_deg, 0.0).clamp(-90.0, 90.0);
         self.sim.control.load_cmd = finite_f64(self.sim.control.load_cmd, 0.0).clamp(-1.0, 1.0);
+    }
+
+    fn persist_startup_fit_artifact_if_needed(&mut self) {
+        if self.startup_fit_artifact_persisted {
+            return;
+        }
+        let Some(context) = self.startup_fit_cache_context.as_ref() else {
+            self.startup_fit_artifact_persisted = true;
+            return;
+        };
+        let Some(snapshot) = self.startup_fit.artifact() else {
+            self.startup_fit_artifact_persisted = true;
+            return;
+        };
+        let artifact = StartupFitArtifact::new(context, snapshot);
+        if let Err(err) = save_artifact(context, &artifact) {
+            eprintln!("{err}");
+        }
+        self.startup_fit_artifact_persisted = true;
     }
 }
 
@@ -383,16 +624,121 @@ fn fit_speed_hold_target_torque_nm(
         .max(0.0)
 }
 
+fn driver_demand_for_torque_request(
+    requested_brake_torque_nm: f64,
+    torque_curve: &[StartupFitTorqueCurvePoint],
+    fallback_torque_nm: f64,
+) -> f64 {
+    let (min_torque_nm, max_torque_nm) = torque_request_bounds(torque_curve, fallback_torque_nm);
+    if (max_torque_nm - min_torque_nm).abs() <= f64::EPSILON {
+        return 1.0;
+    }
+    ((requested_brake_torque_nm - min_torque_nm) / (max_torque_nm - min_torque_nm)).clamp(0.0, 1.0)
+}
+
+fn torque_request_from_driver_demand(
+    driver_demand: f64,
+    torque_curve: &[StartupFitTorqueCurvePoint],
+    fallback_torque_nm: f64,
+) -> f64 {
+    let demand = finite_f64(driver_demand, DRIVER_DEMAND_DEFAULT).clamp(0.0, 1.0);
+    let (min_torque_nm, max_torque_nm) = torque_request_bounds(torque_curve, fallback_torque_nm);
+    min_torque_nm + demand * (max_torque_nm - min_torque_nm)
+}
+
+fn throttle_for_requested_torque(
+    requested_brake_torque_nm: f64,
+    torque_curve: &[StartupFitTorqueCurvePoint],
+    fallback_throttle_cmd: f64,
+) -> f64 {
+    let samples = sorted_torque_curve_samples(torque_curve);
+    interpolate_curve(requested_brake_torque_nm, &samples, fallback_throttle_cmd).clamp(0.0, 1.0)
+}
+
+fn torque_request_bounds(
+    torque_curve: &[StartupFitTorqueCurvePoint],
+    fallback_torque_nm: f64,
+) -> (f64, f64) {
+    let samples = sorted_torque_curve_samples(torque_curve);
+    let Some((min_torque_nm, _)) = samples.first().copied() else {
+        let fallback = fallback_torque_nm.max(0.0);
+        return (fallback, fallback);
+    };
+    let max_torque_nm = samples
+        .last()
+        .map(|sample| sample.0)
+        .unwrap_or(min_torque_nm);
+    (
+        min_torque_nm.max(0.0),
+        max_torque_nm.max(min_torque_nm).max(0.0),
+    )
+}
+
+fn sorted_torque_curve_samples(torque_curve: &[StartupFitTorqueCurvePoint]) -> Vec<(f64, f64)> {
+    let mut samples: Vec<(f64, f64)> = torque_curve
+        .iter()
+        .filter_map(|point| {
+            let torque_nm = finite_f64(point.required_brake_torque_nm, f64::NAN);
+            let throttle_cmd = finite_f64(point.throttle_cmd, f64::NAN);
+            (torque_nm.is_finite() && throttle_cmd.is_finite())
+                .then_some((torque_nm, throttle_cmd.clamp(0.0, 1.0)))
+        })
+        .collect();
+    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+    samples.dedup_by(|a, b| (a.0 - b.0).abs() <= 1.0e-9);
+    samples
+}
+
+fn interpolate_curve(value: f64, samples: &[(f64, f64)], fallback: f64) -> f64 {
+    let Some(first) = samples.first().copied() else {
+        return fallback;
+    };
+    if value <= first.0 {
+        return first.1;
+    }
+    let last = samples.last().copied().unwrap_or(first);
+    if value >= last.0 {
+        return last.1;
+    }
+    for window in samples.windows(2) {
+        let (x0, y0) = window[0];
+        let (x1, y1) = window[1];
+        if value <= x1 {
+            let span = (x1 - x0).abs().max(f64::EPSILON);
+            let t = ((value - x0) / span).clamp(0.0, 1.0);
+            return y0 + t * (y1 - y0);
+        }
+    }
+    last.1
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::config::{AppConfig, ExternalLoadMode, load_config};
+    use crate::config::{AppConfig, ExternalLoadMode, LoadedAppConfig, load_config};
+    use crate::dashboard::startup_fit::StartupFitControls;
+    use crate::dashboard::startup_fit_artifact::{
+        StartupFitArtifact, StartupFitArtifactEvaluation, StartupFitArtifactSnapshot,
+        StartupFitCacheContext, save_artifact,
+    };
 
     use super::{
-        DashboardState, STARTUP_FIT_TARGET_RPM, fit_speed_hold_target_torque_nm,
-        shortest_cycle_delta_deg, wrap_cycle_deg,
+        DRIVER_DEMAND_DEFAULT, DashboardState, PostFitRuntimeMode, STARTUP_FIT_TARGET_RPM,
+        StartupFitTorqueCurvePoint, driver_demand_for_torque_request,
+        fit_speed_hold_target_torque_nm, shortest_cycle_delta_deg, throttle_for_requested_torque,
+        torque_request_from_driver_demand, wrap_cycle_deg,
     };
+
+    fn unique_temp_root() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("es_sim_dashboard_state_cache_test_{nanos}"))
+    }
 
     #[test]
     fn cycle_wrap_helpers_follow_shortest_direction() {
@@ -407,6 +753,8 @@ mod tests {
         let state = DashboardState::new(cfg);
 
         assert!((state.load_target_rpm - STARTUP_FIT_TARGET_RPM).abs() < f64::EPSILON);
+        assert!((state.driver_demand - DRIVER_DEMAND_DEFAULT).abs() < f64::EPSILON);
+        assert_eq!(state.post_fit_mode, PostFitRuntimeMode::StandardRuntime);
         assert_eq!(
             state.sim.model.external_load.mode,
             ExternalLoadMode::BrakeMap
@@ -430,6 +778,71 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_state_skips_startup_fit_when_cached_artifact_matches() {
+        let root = unique_temp_root();
+        let loaded = LoadedAppConfig {
+            config: AppConfig::default(),
+            resolved_path: Some(root.join("config").join("sim.yaml")),
+            source_text: Some("engine:\n  max_rpm: 7000\n".to_owned()),
+        };
+        let context =
+            StartupFitCacheContext::from_loaded_config(&loaded).expect("cache context exists");
+        let artifact = StartupFitArtifact::new(
+            &context,
+            StartupFitArtifactSnapshot {
+                target_rpm: STARTUP_FIT_TARGET_RPM,
+                timed_out: false,
+                release_controls: StartupFitControls {
+                    throttle_cmd: 0.24,
+                    ignition_timing_deg: 20.5,
+                    vvt_intake_deg: 0.0,
+                    vvt_exhaust_deg: 0.0,
+                    load_cmd: 0.18,
+                },
+                release_evaluation: StartupFitArtifactEvaluation {
+                    avg_rpm: 1_999.0,
+                    avg_net_torque_nm: 0.2,
+                    required_brake_torque_nm: 18.6,
+                    load_cmd: 0.18,
+                    periodic_error_norm: 0.010,
+                    converged: true,
+                },
+                best_required_brake_torque_nm: 18.8,
+                torque_margin_to_best_nm: 0.2,
+                torque_curve: vec![
+                    StartupFitTorqueCurvePoint {
+                        throttle_cmd: 0.20,
+                        required_brake_torque_nm: 15.0,
+                    },
+                    StartupFitTorqueCurvePoint {
+                        throttle_cmd: 0.24,
+                        required_brake_torque_nm: 18.6,
+                    },
+                    StartupFitTorqueCurvePoint {
+                        throttle_cmd: 0.32,
+                        required_brake_torque_nm: 25.0,
+                    },
+                ],
+            },
+        );
+        save_artifact(&context, &artifact).expect("artifact saved");
+
+        let state = DashboardState::from_loaded_config(loaded);
+        let status = state.startup_fit_status();
+
+        assert!(!state.startup_fit_active());
+        assert!(status.loaded_from_cache);
+        assert_eq!(
+            status.phase,
+            super::super::startup_fit::StartupFitPhase::Ready
+        );
+        assert!((status.release_throttle_cmd - 0.24).abs() < 1.0e-12);
+        assert!((status.release_required_brake_torque_nm - 18.6).abs() < 1.0e-12);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn fit_speed_hold_trims_around_reference_brake_torque() {
         let low = fit_speed_hold_target_torque_nm(20.0, 1_900.0, 2_000.0);
         let nominal = fit_speed_hold_target_torque_nm(20.0, 2_000.0, 2_000.0);
@@ -438,6 +851,52 @@ mod tests {
         assert!(high > low);
         assert!((nominal - 20.0).abs() < 1.0e-12);
         assert!(low >= 0.0);
+    }
+
+    #[test]
+    fn driver_demand_maps_across_curve_bounds() {
+        let curve = [
+            StartupFitTorqueCurvePoint {
+                throttle_cmd: 0.18,
+                required_brake_torque_nm: 12.0,
+            },
+            StartupFitTorqueCurvePoint {
+                throttle_cmd: 0.42,
+                required_brake_torque_nm: 28.0,
+            },
+            StartupFitTorqueCurvePoint {
+                throttle_cmd: 0.68,
+                required_brake_torque_nm: 44.0,
+            },
+        ];
+
+        assert!((torque_request_from_driver_demand(0.0, &curve, 0.0) - 12.0).abs() < 1.0e-12);
+        assert!((torque_request_from_driver_demand(1.0, &curve, 0.0) - 44.0).abs() < 1.0e-12);
+        assert!((driver_demand_for_torque_request(28.0, &curve, 0.0) - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn throttle_interpolates_from_requested_torque() {
+        let curve = [
+            StartupFitTorqueCurvePoint {
+                throttle_cmd: 0.22,
+                required_brake_torque_nm: 16.0,
+            },
+            StartupFitTorqueCurvePoint {
+                throttle_cmd: 0.40,
+                required_brake_torque_nm: 26.0,
+            },
+            StartupFitTorqueCurvePoint {
+                throttle_cmd: 0.72,
+                required_brake_torque_nm: 46.0,
+            },
+        ];
+
+        let interpolated = throttle_for_requested_torque(21.0, &curve, 0.30);
+        assert!(
+            (interpolated - 0.31).abs() < 1.0e-12,
+            "expected 0.31, got {interpolated}"
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ Start here, then follow the document that matches your task:
 - [docs/USER_MANUAL.md](docs/USER_MANUAL.md): build, run, dashboard operation, and configuration usage
 - [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): complete ODE system summary, closures, implementation map, validation limits, and literature sources
 - [docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md): Japanese implementation charter for default development direction, phased roadmap, and compliance rules
+- [docs/SURROGATE_GUIDE.ja.md](docs/SURROGATE_GUIDE.ja.md): Japanese note defining surrogates vs. closures/maps/display models, plus the representative equations used in the current repo
 - [README.ja.md](README.ja.md): Japanese overview
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): Japanese user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): Japanese model reference
@@ -87,6 +88,9 @@ The checked-in `sim.yaml` uses:
 - `ui.sync_to_wall_clock: false`
 
 That means the default path is an accuracy-first transient simulation with a vehicle-like external load model.
+
+When startup fit reaches `READY`, the result is saved as a YAML artifact under `cache/startup_fit/`.
+On the next launch, the app reuses that artifact instead of rerunning the heavy fit when both the build identity and the raw YAML text still match.
 
 ## Code Entry Points
 

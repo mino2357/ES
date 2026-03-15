@@ -62,12 +62,12 @@ pub(super) struct SimpleDashboardViewModel {
     pub(super) header_rpm_text: String,
     pub(super) header_target_text: String,
     pub(super) header_error_text: String,
-    pub(super) fit_detail: &'static str,
+    pub(super) fit_detail: String,
     pub(super) fit_progress_fraction: f32,
     pub(super) fit_progress_label: String,
     pub(super) fit_rows: [StatusRow; 10],
     pub(super) manual_control_hint: Option<String>,
-    pub(super) external_load_note: &'static str,
+    pub(super) external_load_note: String,
     pub(super) live_status_message: String,
     pub(super) live_rows: [StatusRow; 10],
     pub(super) operating_point_table: OperatingPointTableViewModel,
@@ -82,26 +82,41 @@ impl SimpleDashboardViewModel {
         let fit_progress_label = fit_progress_label(&fit);
         let fit_phase_label = fit.phase.label();
         let fit_progress_fraction = fit_progress_fraction(&fit);
+        let runtime_mode_label = state.post_fit_mode.label();
         let header_fit_text = if fit.active {
             format!("Startup fit: {} / {}", fit_status_value, fit_progress_label)
+        } else if fit.loaded_from_cache {
+            format!(
+                "Startup fit: READY / cache hit / {} live",
+                runtime_mode_label
+            )
         } else if fit.timed_out {
             format!(
                 "Startup fit: READY / {} cap reached, best candidate applied",
                 wall_limit_label
             )
         } else {
-            format!("Startup fit: {} / manual control ready", fit_status_value)
+            format!(
+                "Startup fit: {} / {} live",
+                fit_status_value, runtime_mode_label
+            )
         };
         let live_status_message = if fit.active {
             "Discrete startup-fit search is evaluating throttle bins, local MBT spark, and required brake torque until the selected point holds the target speed."
                 .to_owned()
+        } else if fit.loaded_from_cache {
+            "Cached startup-fit map loaded from disk: the heavy startup-fit search was skipped, and post-fit runtime control is live immediately."
+                .to_owned()
         } else if fit.timed_out {
             format!(
-                "The startup fit hit its {} wall-clock limit, applied the best candidate found so far, and unlocked manual trim.",
+                "The startup fit hit its {} wall-clock limit, applied the best candidate found so far, and switched into post-fit runtime control.",
                 wall_limit_label
             )
+        } else if state.post_fit_mode == super::state::PostFitRuntimeMode::StandardRuntime {
+            "Standard runtime is live: driver demand sets torque request, and throttle, ignition, and VVT follow the fitted baseline in real time."
+                .to_owned()
         } else {
-            "The fitted operating point keeps trimming brake load to hold the target speed. You can now trim throttle, ignition, and VVT manually."
+            "Actuator lab is live: driver demand still sets torque request, while throttle, ignition, and VVT are manual overrides against the auto baseline."
                 .to_owned()
         };
 
@@ -113,7 +128,11 @@ impl SimpleDashboardViewModel {
             header_rpm_text: format!("RPM {:.0}", state.latest.rpm),
             header_target_text: format!("Target {:.0}", state.load_target_rpm),
             header_error_text: format!("RPM err {:+.0}", state.rpm_error()),
-            fit_detail: fit.phase.detail(),
+            fit_detail: if fit.loaded_from_cache {
+                "startup-fit artifact was restored from a saved cache, so standard runtime and actuator-lab features start from the previously fitted map".to_owned()
+            } else {
+                fit.phase.detail().to_owned()
+            },
             fit_progress_fraction,
             fit_progress_label: fit_progress_label.clone(),
             fit_rows: [
@@ -183,10 +202,25 @@ impl SimpleDashboardViewModel {
                 ),
                 None => "Startup fit is running. Manual actuator edits stay locked until the MBT search and finite-cycle verification finish.".to_owned(),
             }),
-            external_load_note:
-                "This dashboard uses a brake-dyno bench load for startup fit and RPM hold; indicated torque remains a separate p-V diagnostic.",
+            external_load_note: if state.post_fit_mode
+                == super::state::PostFitRuntimeMode::StandardRuntime
+            {
+                "This dashboard uses a brake-dyno bench load for startup fit and RPM hold; driver demand sets torque request while throttle, ignition, and VVT follow the auto baseline."
+                    .to_owned()
+            } else {
+                "This dashboard uses a brake-dyno bench load for startup fit and RPM hold; actuator lab keeps the same torque-request path but exposes manual overrides against the auto baseline."
+                    .to_owned()
+            },
             live_status_message,
             live_rows: [
+                StatusRow {
+                    label: "Runtime mode",
+                    value: format!(
+                        "{} / demand {:.0}%",
+                        runtime_mode_label,
+                        state.driver_demand * 100.0
+                    ),
+                },
                 StatusRow {
                     label: "Engine speed",
                     value: format!("{:.0} rpm", state.latest.rpm),
@@ -196,45 +230,53 @@ impl SimpleDashboardViewModel {
                     value: format!("{:.0} rpm", state.load_target_rpm),
                 },
                 StatusRow {
-                    label: "Net torque",
-                    value: format!("{:+.1} Nm", state.latest.torque_net_nm),
+                    label: "Demand / torque req",
+                    value: format!(
+                        "{:.0}% / {:+.1} Nm",
+                        state.driver_demand * 100.0,
+                        state.post_fit_baseline.requested_brake_torque_nm
+                    ),
                 },
                 StatusRow {
-                    label: "Net shaft power",
+                    label: "Required brake torque",
                     value: format!(
-                        "{:+.1} kW / {:+.1} hp",
+                        "{:+.1} Nm / shaft est {:+.1}",
+                        state.latest.torque_load_nm,
+                        state.shaft_torque_estimate_nm()
+                    ),
+                },
+                StatusRow {
+                    label: "Net torque / power",
+                    value: format!(
+                        "{:+.1} Nm / {:+.1} kW / {:+.1} hp",
+                        state.latest.torque_net_nm,
                         state.net_shaft_power_kw(),
                         state.net_shaft_power_hp()
                     ),
                 },
                 StatusRow {
-                    label: "Required brake torque",
-                    value: format!("{:+.1} Nm", state.latest.torque_load_nm),
-                },
-                StatusRow {
-                    label: "Throttle cmd / eff",
+                    label: "Throttle act / auto",
                     value: format!(
                         "{:.3} / {:.3}",
-                        state.sim.control.throttle_cmd, state.sim.state.throttle_eff
+                        state.sim.control.throttle_cmd, state.post_fit_baseline.throttle_cmd
                     ),
                 },
                 StatusRow {
-                    label: "Ignition",
-                    value: format!("{:.1} deg BTDC", state.sim.control.ignition_timing_deg),
-                },
-                StatusRow {
-                    label: "Combustion / friction",
+                    label: "Ignition act / auto",
                     value: format!(
-                        "{:+.1} / {:+.1} Nm",
-                        state.latest.torque_combustion_cycle_nm, state.latest.torque_friction_nm
+                        "{:.1} / {:.1} deg BTDC",
+                        state.sim.control.ignition_timing_deg,
+                        state.post_fit_baseline.ignition_timing_deg
                     ),
                 },
                 StatusRow {
-                    label: "Pumping / brake req est",
+                    label: "VVT IN/EX act / auto",
                     value: format!(
-                        "{:+.1} / {:+.1} Nm",
-                        state.latest.torque_pumping_nm,
-                        state.shaft_torque_estimate_nm()
+                        "{:+.1}/{:+.1} / {:+.1}/{:+.1} deg",
+                        state.sim.control.vvt_intake_deg,
+                        state.sim.control.vvt_exhaust_deg,
+                        state.post_fit_baseline.vvt_intake_deg,
+                        state.post_fit_baseline.vvt_exhaust_deg
                     ),
                 },
                 StatusRow {
@@ -321,13 +363,14 @@ fn build_operating_point_table(
             fit.avg_rpm, fit.required_brake_torque_nm, fit.throttle_cmd, fit.ignition_timing_deg
         )),
         live_summary: format!(
-            "LIVE {:.0} rpm / {:+.1} Nm / thr {:.3} / spark {:.1}",
+            "LIVE {:.0} rpm / req {:+.1} / load {:+.1} / thr {:.3} / spark {:.1}",
             state.latest.rpm,
+            state.post_fit_baseline.requested_brake_torque_nm,
             state.latest.torque_load_nm,
             state.sim.control.throttle_cmd,
             state.sim.control.ignition_timing_deg
         ),
-        note: "16 x 16 bands. Cell color fills as candidates are evaluated: cool=coarse, green=refined. F=selected fit release, R=post-fit result, L=current live point.",
+        note: "16 x 16 bands. Cell color fills as candidates are evaluated: cool=coarse, green=refined. F=selected fit release, R=post-fit result, L=current live point under the active torque-request path.",
     }
 }
 
@@ -405,11 +448,11 @@ fn fit_progress_label(status: &StartupFitStatus) -> String {
         StartupFitPhase::Ready => {
             if status.timed_out {
                 format!(
-                    "{} cap reached / best candidate unlocked",
+                    "{} cap reached / best candidate applied",
                     startup_fit_wall_limit_label()
                 )
             } else {
-                "manual controls unlocked".to_owned()
+                "standard runtime live / actuator lab ready".to_owned()
             }
         }
     }

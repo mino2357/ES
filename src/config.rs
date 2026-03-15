@@ -976,6 +976,13 @@ impl AppConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedAppConfig {
+    pub(crate) config: AppConfig,
+    pub(crate) resolved_path: Option<PathBuf>,
+    pub(crate) source_text: Option<String>,
+}
+
 fn push_config_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !candidates.iter().any(|existing| existing == &candidate) {
         candidates.push(candidate);
@@ -1004,7 +1011,7 @@ fn config_candidate_paths(path: &Path, executable_dir: Option<&Path>) -> Vec<Pat
     candidates
 }
 
-pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
+pub(crate) fn load_config_with_metadata(path: impl AsRef<Path>) -> LoadedAppConfig {
     // Fall back to defaults on missing or malformed YAML so the app remains runnable.
     let path = path.as_ref();
     let executable_dir = std::env::current_exe()
@@ -1018,13 +1025,35 @@ pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
             Err(_) => None,
         })
     else {
-        return AppConfig::default();
+        return LoadedAppConfig {
+            config: AppConfig::default(),
+            resolved_path: None,
+            source_text: None,
+        };
     };
 
-    parse_config_text(&text, resolved_path.display().to_string())
+    let resolved_path = resolved_path.canonicalize().unwrap_or(resolved_path);
+    let source_name = resolved_path.display().to_string();
+    match parse_config_text(&text, &source_name) {
+        Some(config) => LoadedAppConfig {
+            config,
+            resolved_path: Some(resolved_path),
+            source_text: Some(text),
+        },
+        None => LoadedAppConfig {
+            config: AppConfig::default(),
+            resolved_path: Some(resolved_path),
+            source_text: None,
+        },
+    }
 }
 
-fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> AppConfig {
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
+    load_config_with_metadata(path).config
+}
+
+fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> Option<AppConfig> {
     match serde_yaml::from_str::<AppConfig>(text) {
         Ok(mut cfg) => {
             cfg.sync_derived_fields();
@@ -1036,20 +1065,20 @@ fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> AppConfig {
                             source_name.as_ref()
                         );
                     }
-                    cfg
+                    Some(cfg)
                 }
                 Err(report) => {
                     eprintln!(
                         "Config plausibility audit failed for {}:\n{report}\nFalling back to defaults.",
                         source_name.as_ref()
                     );
-                    AppConfig::default()
+                    None
                 }
             }
         }
         Err(e) => {
             eprintln!("Failed to parse {}: {e}", source_name.as_ref());
-            AppConfig::default()
+            None
         }
     }
 }

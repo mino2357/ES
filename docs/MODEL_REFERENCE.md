@@ -752,30 +752,33 @@ J_{abs}
 |s|\,m_{eq}\left(\frac{r_w}{i_{tot}}\right)^2
 ```
 
-## Reconstructed `p-V` And `p-theta`
-
-These plots are not direct cylinder-state solutions.
-They are display-model reconstructions.
+## Display-Oriented Single-Zone `p-V` And `p-theta`
 
 ```math
-V^*(\theta)
+V(\theta)
 =
-V_{min}^*
-+ \frac{1}{2}(V_{max}^*-V_{min}^*)(1-\cos\theta_p)
+V_c + \frac{V_s}{2}(1-\cos\theta_p)
 ```
 
 ```math
-V_{min}^* = \frac{1}{r_c-1},
-\qquad
-V_{max}^* = V_{min}^* + 1
+\frac{dp}{d\theta}
+=
+\frac{\gamma(\theta)-1}{V(\theta)}\frac{dQ_{net}}{d\theta}
+- \gamma(\theta)\frac{p}{V(\theta)}\frac{dV}{d\theta}
 ```
 
 ```math
-p_{comp,end} = p_{int}\left(\frac{V_{max}^*}{V_{min}^*}\right)^{\gamma_c}
+\frac{dQ_{net}}{d\theta}
+=
+m_f LHV \frac{dx_b}{d\theta}
+- \frac{dQ_{loss}}{d\theta}
 ```
 
 ```math
-\Delta p_{peak} = \max(p_{peak}-p_{comp,end},0)
+x_b(\theta)
+=
+\frac{1-\exp\left[-a\left(\frac{\theta-\theta_{SOC}}{\Delta \theta_b}\right)^{m+1}\right]}
+{1-\exp(-a)}
 ```
 
 ```math
@@ -793,6 +796,11 @@ IMEP = \frac{W_i}{V_{swept}}
 ```math
 \eta_{Otto} = 1 - \frac{1}{r_c^{\gamma_{air}-1}}
 ```
+
+The display-side closed-cycle pressure solve uses the equation above over `180 degCA .. EVO`.
+`gamma(theta)` transitions from the unburned-mixture `mixture_gamma` toward `gamma_expansion`,
+and `dQ_loss/dtheta` distributes the cycle heat-loss estimate across the burn window plus a short post-burn tail.
+The intake and exhaust strokes are then blended back to the intake and exhaust boundary pressures for display.
 
 ## Numerical Method
 
@@ -851,7 +859,7 @@ Implementation-specific surrogates:
 - the exact overlap multiplier and wave-action blending
 - the exact `internal EGR` surrogate
 - the exact efficiency-base surrogate
-- the exact display-model `p-V` reconstruction
+- the exact display-oriented single-zone `p-V` pressure solve
 
 ## Implementation Map
 

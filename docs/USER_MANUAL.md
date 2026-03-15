@@ -64,6 +64,7 @@ The left rack now shows the `Startup Numerical Fit` status together with the man
 
 - on first fire, each throttle bin gets a local `MBT` spark search and the required brake torque for the requested RPM is solved numerically
 - manual actuator edits stay locked until that startup fit converges
+- once the fit reaches `READY`, its result is saved under `cache/startup_fit/` and reused on the next launch when the build identity and raw YAML config text still match
 - once the fit is ready, throttle, spark, fuel, ignition, and VVT can be edited manually
 
 ### Operator Display
@@ -126,6 +127,9 @@ In `Actuator Deck`, `Load model` can be:
 The runtime configuration file is [../config/sim.yaml](../config/sim.yaml).
 It is parsed by `AppConfig` in `src/config.rs` and checked by the plausibility audit in `src/config/audit.rs`.
 
+Startup-fit artifacts are saved under [../cache/startup_fit](../cache/startup_fit).
+They are reused only when both the build identity and the raw YAML config text still match.
+
 ### Important Sections
 
 - `environment`: ambient pressure, temperature, and base timestep
@@ -153,15 +157,18 @@ The solver then chooses a numerically smaller step internally when engine speed 
 
 ### `p-V`
 
-The displayed `p-V` loop is a reconstructed diagnostic view.
-It is based on the reduced-order state and cycle closures.
+The displayed `p-V` loop uses a display-oriented single-zone cylinder-pressure solve.
+Over the closed cycle it integrates `dp/dtheta` from the Wiebe burn fraction and the cycle heat-loss estimate,
+then blends the gas-exchange strokes back to the intake and exhaust boundary pressures.
 It is useful for relative trends such as:
 
 - indicated work changes
 - combustion phasing changes
 - pumping-loss changes
 
-It is not a direct measured cylinder pressure trace.
+When combustion is active, the plot also overlays ignition, `SOC/EOC`, and `CA10/50/90` markers.
+
+It is not the main engine-state ODE itself, and it is not a direct measured cylinder-pressure trace.
 
 ### `p-theta`
 

@@ -1,5 +1,10 @@
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
+use super::startup_fit_artifact::{
+    StartupFitArtifact, StartupFitArtifactEvaluation, StartupFitArtifactSnapshot,
+};
 use crate::simulator::{
     EngineState, Simulator, accuracy_priority_dt, external_load_command_for_torque_nm,
     running_state_error_norm, state_error_norm,
@@ -63,7 +68,9 @@ impl StartupFitPhase {
             Self::Verifying => {
                 "applying the selected throttle and spark, then trimming brake load on the live model to confirm it settles at target speed"
             }
-            Self::Ready => "startup fit completed and manual trim is unlocked",
+            Self::Ready => {
+                "startup fit completed; standard runtime is live and actuator-lab overrides are available"
+            }
         }
     }
 }
@@ -82,7 +89,7 @@ pub(super) fn startup_fit_wall_limit_s() -> Option<f64> {
     STARTUP_FIT_MAX_WALL_TIME_S
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(super) struct StartupFitControls {
     pub(super) throttle_cmd: f64,
     pub(super) ignition_timing_deg: f64,
@@ -114,7 +121,7 @@ pub(super) struct StartupFitControlBounds {
     pub(super) vvt_default_deg: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub(super) struct StartupFitTorqueCurvePoint {
     pub(super) throttle_cmd: f64,
     pub(super) required_brake_torque_nm: f64,
@@ -123,6 +130,7 @@ pub(super) struct StartupFitTorqueCurvePoint {
 #[derive(Debug, Clone)]
 pub(super) struct StartupFitStatus {
     pub(super) active: bool,
+    pub(super) loaded_from_cache: bool,
     pub(super) timed_out: bool,
     pub(super) phase: StartupFitPhase,
     pub(super) target_rpm: f64,
@@ -253,10 +261,12 @@ pub(super) struct StartupFitState {
     torque_margin_to_best_nm: f64,
     current_controls: StartupFitControls,
     best_controls: StartupFitControls,
+    ready_torque_curve: Vec<StartupFitTorqueCurvePoint>,
     rejected_release_controls: Vec<StartupFitControls>,
     pending_live_reset: bool,
     last_candidate_label: String,
     timed_out: bool,
+    loaded_from_cache: bool,
 }
 
 impl StartupFitState {
@@ -293,10 +303,73 @@ impl StartupFitState {
             torque_margin_to_best_nm: STARTUP_FIT_TORQUE_MARGIN_FROM_BEST_NM,
             current_controls: initial_controls,
             best_controls: initial_controls,
+            ready_torque_curve: Vec::new(),
             rejected_release_controls: Vec::new(),
             pending_live_reset: false,
             last_candidate_label: "waiting for priming".to_owned(),
             timed_out: false,
+            loaded_from_cache: false,
+        }
+    }
+
+    pub(super) fn from_artifact(started_sim_time_s: f64, artifact: &StartupFitArtifact) -> Self {
+        let release_evaluation = artifact.release_evaluation;
+        let release_controls = artifact.release_controls;
+        let torque_curve = if artifact.torque_curve.is_empty() {
+            vec![StartupFitTorqueCurvePoint {
+                throttle_cmd: release_controls.throttle_cmd,
+                required_brake_torque_nm: release_evaluation.required_brake_torque_nm,
+            }]
+        } else {
+            artifact.torque_curve.clone()
+        };
+        let last_evaluation = CandidateEvaluation {
+            avg_rpm: release_evaluation.avg_rpm,
+            avg_net_torque_nm: release_evaluation.avg_net_torque_nm,
+            required_brake_torque_nm: release_evaluation.required_brake_torque_nm,
+            load_cmd: release_evaluation.load_cmd,
+            periodic_error_norm: release_evaluation.periodic_error_norm,
+            converged: release_evaluation.converged,
+        };
+        let best_result = CandidateResult {
+            controls: release_controls,
+            evaluation: last_evaluation,
+        };
+
+        Self {
+            phase: StartupFitPhase::Ready,
+            target_rpm: artifact.target_rpm,
+            started_sim_time_s,
+            started_wall_at: Instant::now(),
+            primed_seed: None,
+            search_stage: SearchStage::Refine,
+            coarse_candidates: Vec::new(),
+            refine_candidates: Vec::new(),
+            next_candidate_index: 0,
+            throttle_tracks: Vec::new(),
+            iteration: 0,
+            stable_windows: STARTUP_FIT_REQUIRED_STABLE_WINDOWS,
+            verify_elapsed_s: 0.0,
+            verify_measure_elapsed_s: 0.0,
+            verify_sample_count: 0,
+            verify_rpm_sum: 0.0,
+            verify_net_torque_sum_nm: 0.0,
+            verify_load_torque_sum_nm: 0.0,
+            verify_failed_windows: 0,
+            coarse_candidate_points: Vec::new(),
+            refine_candidate_points: Vec::new(),
+            last_evaluation,
+            best_result: Some(best_result),
+            best_required_brake_torque_nm: artifact.best_required_brake_torque_nm,
+            torque_margin_to_best_nm: artifact.torque_margin_to_best_nm,
+            current_controls: release_controls,
+            best_controls: release_controls,
+            ready_torque_curve: torque_curve,
+            rejected_release_controls: Vec::new(),
+            pending_live_reset: false,
+            last_candidate_label: "loaded cached startup-fit map".to_owned(),
+            timed_out: artifact.timed_out,
+            loaded_from_cache: true,
         }
     }
 
@@ -319,6 +392,56 @@ impl StartupFitState {
             .max(0.0)
     }
 
+    pub(super) fn release_controls(&self) -> StartupFitControls {
+        self.best_result
+            .map(|result| result.controls)
+            .unwrap_or(self.best_controls)
+    }
+
+    pub(super) fn best_torque_curve(&self) -> Vec<StartupFitTorqueCurvePoint> {
+        if !self.ready_torque_curve.is_empty() {
+            return self.ready_torque_curve.clone();
+        }
+        self.throttle_tracks
+            .iter()
+            .filter_map(|track| track.best().map(torque_curve_point))
+            .collect()
+    }
+
+    pub(super) fn artifact(&self) -> Option<StartupFitArtifactSnapshot> {
+        let release = self.best_result.unwrap_or(CandidateResult {
+            controls: self.best_controls,
+            evaluation: self.last_evaluation,
+        });
+        let mut torque_curve = self.best_torque_curve();
+        if torque_curve.is_empty() {
+            torque_curve.push(StartupFitTorqueCurvePoint {
+                throttle_cmd: release.controls.throttle_cmd,
+                required_brake_torque_nm: release.evaluation.required_brake_torque_nm,
+            });
+        }
+        let release_evaluation = StartupFitArtifactEvaluation {
+            avg_rpm: release.evaluation.avg_rpm,
+            avg_net_torque_nm: release.evaluation.avg_net_torque_nm,
+            required_brake_torque_nm: release.evaluation.required_brake_torque_nm,
+            load_cmd: release.evaluation.load_cmd,
+            periodic_error_norm: release.evaluation.periodic_error_norm,
+            converged: release.evaluation.converged,
+        };
+
+        Some(StartupFitArtifactSnapshot {
+            target_rpm: self.target_rpm,
+            timed_out: self.timed_out,
+            release_controls: release.controls,
+            release_evaluation,
+            best_required_brake_torque_nm: self
+                .best_required_brake_torque_nm
+                .max(release.evaluation.required_brake_torque_nm),
+            torque_margin_to_best_nm: self.torque_margin_to_best_nm.max(0.0),
+            torque_curve,
+        })
+    }
+
     pub(super) fn snapshot(&self, simulated_time_s: f64) -> StartupFitStatus {
         let release = self.best_result.unwrap_or(CandidateResult {
             controls: self.best_controls,
@@ -326,6 +449,7 @@ impl StartupFitState {
         });
         StartupFitStatus {
             active: self.is_active(),
+            loaded_from_cache: self.loaded_from_cache,
             timed_out: self.timed_out,
             phase: self.phase,
             target_rpm: self.target_rpm,
@@ -357,11 +481,14 @@ impl StartupFitState {
                 .iter()
                 .filter_map(|track| track.coarse_best.map(torque_curve_point))
                 .collect(),
-            refine_torque_curve: self
-                .throttle_tracks
-                .iter()
-                .filter_map(|track| track.refined_best.map(torque_curve_point))
-                .collect(),
+            refine_torque_curve: if !self.ready_torque_curve.is_empty() {
+                self.ready_torque_curve.clone()
+            } else {
+                self.throttle_tracks
+                    .iter()
+                    .filter_map(|track| track.refined_best.map(torque_curve_point))
+                    .collect()
+            },
             candidate_label: self.last_candidate_label.clone(),
         }
     }

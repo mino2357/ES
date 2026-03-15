@@ -42,7 +42,7 @@ fn render_pv_plot(
             ui,
             theme,
             "Cylinder p-V",
-            "reconstructed display loop",
+            "single-zone display loop",
             theme.amber,
         );
         Plot::new("pv_plot")

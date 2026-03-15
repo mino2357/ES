@@ -6,7 +6,7 @@ use super::build_info;
 use super::panels;
 use super::state::DashboardState;
 use super::theme::DashboardTheme;
-use crate::config::{AppConfig, UiConfig};
+use crate::config::{LoadedAppConfig, UiConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VisualizationTab {
@@ -59,17 +59,17 @@ impl VisualizationTab {
 pub(super) enum OperatorTab {
     Fit,
     Status,
-    Manual,
+    Runtime,
 }
 
 impl OperatorTab {
-    pub(super) const ALL: [Self; 3] = [Self::Fit, Self::Status, Self::Manual];
+    pub(super) const ALL: [Self; 3] = [Self::Fit, Self::Status, Self::Runtime];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Fit => "Fit",
             Self::Status => "Status",
-            Self::Manual => "Manual",
+            Self::Runtime => "Runtime",
         }
     }
 }
@@ -126,10 +126,10 @@ pub(super) struct DashboardApp {
 }
 
 impl DashboardApp {
-    fn new(config: AppConfig) -> Self {
+    fn new(loaded: LoadedAppConfig) -> Self {
         let theme = DashboardTheme::default();
-        let ui_config = config.ui.clone();
-        let state = DashboardState::new(config);
+        let ui_config = loaded.config.ui.clone();
+        let state = DashboardState::from_loaded_config(loaded);
         Self {
             theme,
             ui_config,
@@ -166,7 +166,7 @@ impl eframe::App for DashboardApp {
 }
 
 fn run_app_with_options(
-    config: AppConfig,
+    loaded: LoadedAppConfig,
     app_title: &str,
     options: eframe::NativeOptions,
 ) -> eframe::Result {
@@ -175,20 +175,23 @@ fn run_app_with_options(
         options,
         Box::new(move |cc| {
             DashboardTheme::default().apply(&cc.egui_ctx);
-            Ok(Box::new(DashboardApp::new(config.clone())))
+            Ok(Box::new(DashboardApp::new(loaded.clone())))
         }),
     )
 }
 
-pub(crate) fn run_app(config: AppConfig) -> eframe::Result {
+pub(crate) fn run_app(loaded: LoadedAppConfig) -> eframe::Result {
     let app_title = build_info::window_title();
     // Window size comes from YAML so different machine setups can keep their preferred layout.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(app_title.clone())
-            .with_inner_size([config.ui.window_width_px, config.ui.window_height_px]),
+            .with_inner_size([
+                loaded.config.ui.window_width_px,
+                loaded.config.ui.window_height_px,
+            ]),
         ..Default::default()
     };
 
-    run_app_with_options(config, &app_title, options)
+    run_app_with_options(loaded, &app_title, options)
 }

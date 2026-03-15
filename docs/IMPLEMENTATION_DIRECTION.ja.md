@@ -6,6 +6,8 @@
 
 この文書でいう `surrogate` とは、厳密な物理式や詳細モデルをそのまま解く代わりに、
 似た挙動を扱いやすく再現するために用いる近似モデル、経験式、簡略化した置き換え表現を指す。
+この repository における `surrogate`、`closure`、`map`、display-model の使い分けは
+[SURROGATE_GUIDE.ja.md](SURROGATE_GUIDE.ja.md) を共通基準とする。
 
 この文書でいう `0D CAE` とは、空間分布を直接解くのではなく、容積、流量、圧力、温度、トルクなどを
 集中定数系として扱う `zero-dimensional` なモデル化と、その上で行う解析、適合、可視化の流れを指す。
@@ -35,7 +37,10 @@
 - エンジン側の中核は最後まで `0D CAE` とし、この枠組みの中で適合、可視化、過渡再現を成立させる。
 - 物理モデルは、適合と検証の基準となる一次情報として残す。
 - 実行系は検証済みのマップを使い、GUI や将来の車体運動を軽く動かす。
+- 適合は当面 wall-clock で重くてもよいが、適合後の実行系は map lookup と軽量補正で realtime 可視化を優先する。
 - マップは、与えたモデルに対する内部の適合結果として生成し、手作業の断片ではなく再生成可能な成果物として管理する。
+- 標準の適合後実行系では、`requested brake torque` か `accelerator-equivalent request` を主入力とし、`throttle`、`ignition`、`VVT` などは適合マップから自動決定することを第一候補にする。
+- actuator の手動操作を教育用途で残す場合は、標準 runtime と混同させず、map 値との差分が見える learning mode / override として分離する。
 - 物理妥当性と数値妥当性は分けて評価し、両方を説明可能にする。
 - 可視化は見た目の派手さよりも、物理的意味と判断材料の提示を優先する。
 - UI と文書は、利用者の理解を助ける教育的な導線を持たせる。
@@ -55,12 +60,17 @@
 - 目的関数と制約条件の評価
 - シミュレーター内での適合実行
 - 適合マップの生成
+- startup fit や map fit の成果物保存と再読込
 - マップの検証と由来記録
 
 ### 3.2 実行系
 
+- `requested brake torque` または `accelerator-equivalent request` を受ける標準 runtime 入力
 - 検証済みマップの補間
 - 範囲外入力の検知と外挿ガード
+- map から決まる actuator 指令と予測状態
+- map feedforward と feedback trim の分離
+- 教育用途の `ignition` / `VVT` / `throttle` compare・override mode
 - リアルタイムのダッシュボードとプロット
 - 将来の `controller` 入力と車体応答
 
@@ -68,6 +78,8 @@
 
 - 現在の運転点の表示
 - マップ上の現在地と周辺勾配の表示
+- 現在値が `map feedforward`、`feedback trim`、`manual override` のどれかの表示
+- map baseline と override 差分の表示
 - 式、項、`parameter` の感度または寄与度の表示
 - 有効な制約条件の表示
 - 物理ベースの項と、近似、`surrogate`、数値都合の処理の区別表示
@@ -90,12 +102,15 @@
 現時点では、以下を既定の初期方針とする。詳細は今後の議論で更新する。
 
 - 最初のマップは `steady-state` を中心に、内部のシミュレーション適合で生成する。
-- 主軸は `engine speed x requested load` か `engine speed x brake torque` を第一候補にする。
+- 標準 runtime の主軸は、まず `engine speed x requested brake torque` を第一候補にする。
+- UI 上で `accelerator-equivalent request` を見せる場合も、内部では map request と physical actuator を分けて扱う。
 - 最適化の第一目的は、まず `efficiency`、出力、温度余裕のようなエンジン側の指標に置く。
 - 制約条件は、まず現在のモデルが表現できる範囲から始める。
 - `transient correction` は `base map` を作った後の追加層として扱う。
 - `vehicle model` は最初は `longitudinal 1D` に限定する。
 - `controller` 入力は、マップ実行系と車体応答が安定してから統合する。
+- 初期段階では fit 自体の速さより map 品質と再現性を優先し、fit 後の runtime 応答と可視化を realtime に近づける。
+- 教育用途では `throttle` の手動入力を別モードで残してよいが、標準 runtime では `ignition` や `VVT` を map 自動値の primary input にしない。
 - より高次の `1D/3D` 解析への展開は、現時点では既定路線にしない。
 
 ### 5.1 startup fit の既定方針
@@ -135,6 +150,7 @@
 - 可視化は、誤解を招く演出よりも、因果関係や物理的解釈の伝達を優先する。
 - 用語、単位、軸、制約条件は、学習用途でも読み違えにくい表現にする。
 - 教育的価値を損なう強すぎる抽象化や隠蔽は避け、必要なら簡略化の理由と影響範囲を明示する。
+- actuator の manual override を見せる場合は、map の自動値と明確に区別し、override が何を壊しうるかも見せる。
 
 ## 8. 楽しさの方針
 
@@ -176,6 +192,7 @@
 - 新しい `module` には入力、出力、単位、有効範囲を明示する。
 - 実行系がマップを使う場合でも、元になったモデルと生成条件を追跡できるようにする。
 - 主要な式、`closure`、マップ、`surrogate` には、実装と対応付けるための安定した識別子または参照手段を持たせる。
+- `surrogate` を追加するときは、対象現象、入力、出力、物理 anchor、適用範囲、display 専用か runtime へ効くかを追えるようにする。
 - 根拠不明の `hard-coded` な補正値を避け、必要なら根拠か調整理由を残す。
 - 物理的でない処理、近似処理、暫定補正、数値安定化処理は、物理モデル本体と区別して命名、配置、文書化する。
 - 数値パラメータは物理パラメータと混在させず、`solver` 設定や補間設定として分離する。
@@ -184,6 +201,7 @@
 
 - 適合実行時は設定、目的関数、制約、`seed`、使用モデルの版を記録する。
 - マップは再生成手順を持つ成果物とし、手編集を前提にしない。
+- fit 後に再利用する artifact は、少なくとも build identity と入力 YAML の同一性を照合してから読む。
 - 補間、外挿、`clamp` の挙動はコードと `test` で固定する。
 - 数値実験では `solver` 種別、`timestep`、反復条件、許容誤差、補間設定も記録する。
 
@@ -239,7 +257,7 @@
 以下は、次の会話で優先的に詰めたい論点である。
 
 1. 最適化の目的関数を何に置くか。燃費、出力、温度余裕、`lambda = 1` を優先する運転のどれを第一に置くか。
-2. マップの主軸を何にするか。`speed x load`、`speed x torque`、`speed x throttle` のどれを基準にするか。
+2. 標準 runtime の map request と UI 入力をどう切り分けるか。`speed x requested torque` を基本にしつつ、`accelerator-equivalent demand` や `speed x throttle` を教育用途でどう見せるか。
 3. 制約条件をどこまでモデル化するか。`lambda`、`cylinder pressure`、`temperature`、`knock surrogate`、`emission surrogate` をどう扱うか。
 4. 数式と実装をどう紐づけるか。式 ID、コード `annotation`、対応表、UI 連携のどれを基盤にするか。
 5. 「物理的な部分」と「非物理または近似の部分」をどう分類し、どう表示するか。`surrogate`、`clamp`、補正、補間、数値安定化をどう扱うか。

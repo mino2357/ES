@@ -32,6 +32,9 @@ audio synthesis path もありません。
 - [docs/USER_MANUAL.md](docs/USER_MANUAL.md): 英語版 user manual。build、run、dashboard 操作、設定の使い方
 - [docs/MODEL_REFERENCE.md](docs/MODEL_REFERENCE.md): 英語版 model reference。状態方程式、closure、実装対応、制約、出典
 - [docs/IMPLEMENTATION_DIRECTION.ja.md](docs/IMPLEMENTATION_DIRECTION.ja.md): 日本語版の実装方針書。今後の設計・実装判断、段階的な開発順、知財・秘匿配慮をまとめた既定指針
+- [docs/SURROGATE_GUIDE.ja.md](docs/SURROGATE_GUIDE.ja.md): 日本語版の用語整理メモ。`surrogate`、`closure`、`map`、display-model の違いと、現行 surrogate の代表式
+- [docs/CALIBRATION_MAP_RUNTIME_DECISION_MEMO.ja.md](docs/CALIBRATION_MAP_RUNTIME_DECISION_MEMO.ja.md): 日本語版の意思決定メモ。適合で何を決めるか、適合後に何を manual input として残すか、map runtime と教育用 override をどう分けるかを整理したもの
+- [docs/POST_FIT_RUNTIME_FORMULATION.ja.md](docs/POST_FIT_RUNTIME_FORMULATION.ja.md): 日本語版の数式メモ。post-fit runtime の `Driver demand -> torque request -> baseline actuator -> load trim` を現行実装に沿って整理したもの
 - [docs/GUI_REFACTOR_PLAN.ja.md](docs/GUI_REFACTOR_PLAN.ja.md): 日本語版の GUI 改修整理メモ。現状の画面構成、責務の偏り、簡素な再構成案をまとめたもの
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): 日本語版 user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): 日本語版 model reference。ODE system 全体のまとめ、closure、実装対応、制約、出典
@@ -89,6 +92,9 @@ checked-in の `sim.yaml` は、
 
 を使います。
 つまり既定では、vehicle-like な external load を持つ accuracy-first transient simulation です。
+
+startup fit が `READY` になると、その結果は `cache/startup_fit/` に YAML artifact として保存されます。
+次回起動時に build identity と入力 YAML text が一致すれば、その artifact を読み込んで重い fit を再実行しません。
 
 ## 実装の入口
 

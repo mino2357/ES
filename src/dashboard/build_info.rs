@@ -19,6 +19,17 @@ pub(super) fn layout_revision() -> &'static str {
     option_env!("ES_LAYOUT_REV").unwrap_or("layout-unknown")
 }
 
+pub(super) fn cache_identity() -> String {
+    format!(
+        "v{}|{}|{}|b{}|{}",
+        env!("CARGO_PKG_VERSION"),
+        profile_short(),
+        git_sha(),
+        build_id(),
+        layout_revision(),
+    )
+}
+
 fn short_badge() -> String {
     format!(
         "v{} {} {} b{} {}",

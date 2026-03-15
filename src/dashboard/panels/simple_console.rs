@@ -10,7 +10,7 @@ use super::super::simple_view_model::{
     OperatingPointTableViewModel, SimpleDashboardViewModel, StatusRow,
 };
 use super::super::startup_fit::{StartupFitPhase, StartupFitStatus, StartupFitTorqueCurvePoint};
-use super::super::state::DashboardState;
+use super::super::state::{DashboardState, PostFitRuntimeMode};
 use super::super::theme::DashboardTheme;
 use super::super::widgets::{GaugeSpec, LinearMeterSpec, gauge, linear_meter, monitor_heading};
 use crate::config::UiConfig;
@@ -143,7 +143,7 @@ fn render_controls_panel(
                     ui,
                     theme,
                     "Operator Deck",
-                    "Keep fit and manual controls inside the default window footprint",
+                    "Keep fit and runtime controls inside the default window footprint",
                     theme.cyan,
                 );
                 render_operator_tabs(ui, theme, operator_tab);
@@ -152,7 +152,7 @@ fn render_controls_panel(
                 match *operator_tab {
                     OperatorTab::Fit => render_fit_panel(ui, theme, view),
                     OperatorTab::Status => render_status_tab(ui, theme, view, header_badge),
-                    OperatorTab::Manual => render_manual_panel(ui, theme, ui_config, state, view),
+                    OperatorTab::Runtime => render_manual_panel(ui, theme, ui_config, state, view),
                 }
             });
         });
@@ -264,7 +264,7 @@ fn render_operator_tabs(ui: &mut egui::Ui, theme: DashboardTheme, operator_tab: 
 }
 
 fn render_fit_panel(ui: &mut egui::Ui, theme: DashboardTheme, view: &SimpleDashboardViewModel) {
-    ui.label(view.fit_detail);
+    ui.label(&view.fit_detail);
     theme.instrument_frame(theme.cyan).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.colored_label(
@@ -297,49 +297,132 @@ fn render_manual_panel(
     state: &mut DashboardState,
     view: &SimpleDashboardViewModel,
 ) {
-    ui.heading("Manual Control");
+    ui.heading("Runtime Control");
     if let Some(message) = &view.manual_control_hint {
         ui.label(egui::RichText::new(message).color(theme.red));
     } else {
         ui.label(
-            egui::RichText::new("Manual trim is available without leaving the default window.")
+            egui::RichText::new("Standard runtime keeps realtime response, and Actuator lab exposes all actuator overrides in the same window.")
                 .color(theme.text_soft),
         );
     }
 
     theme.instrument_frame(theme.amber).show(ui, |ui| {
         ui.add_enabled_ui(!view.fit_active, |ui| {
-            ui.add(
-                egui::Slider::new(&mut state.sim.control.throttle_cmd, 0.0..=1.0).text("Throttle"),
+            let mut selected_mode = state.post_fit_mode;
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(
+                    &mut selected_mode,
+                    PostFitRuntimeMode::StandardRuntime,
+                    "Standard runtime",
+                );
+                ui.selectable_value(
+                    &mut selected_mode,
+                    PostFitRuntimeMode::ActuatorLab,
+                    "Actuator lab",
+                );
+            });
+            state.set_post_fit_runtime_mode(selected_mode);
+            ui.label(
+                egui::RichText::new(state.post_fit_mode.detail())
+                    .color(theme.text_soft)
+                    .size(10.5),
             );
+            ui.separator();
+            ui.add(
+                egui::Slider::new(&mut state.driver_demand, 0.0..=1.0).text("Driver demand"),
+            );
+            ui.label(format!(
+                "Torque request: {:+.1} Nm",
+                state.post_fit_baseline.requested_brake_torque_nm
+            ));
+            ui.label(format!(
+                "Auto baseline: throttle {:.3} / ignition {:.1} deg / VVT {:+.1} / {:+.1} deg",
+                state.post_fit_baseline.throttle_cmd,
+                state.post_fit_baseline.ignition_timing_deg,
+                state.post_fit_baseline.vvt_intake_deg,
+                state.post_fit_baseline.vvt_exhaust_deg
+            ));
             ui.add(
                 egui::Slider::new(
-                    &mut state.sim.control.ignition_timing_deg,
-                    ui_config.ignition_slider_min_deg..=ui_config.ignition_slider_max_deg,
+                    &mut state.load_target_rpm,
+                    0.0..=state.sim.params.max_rpm,
                 )
-                .text("Ignition [deg BTDC]"),
+                .text("Target RPM"),
             );
+            state.refresh_post_fit_preview();
+            ui.label(format!(
+                "Required brake torque: {:.1} Nm / RPM err {:+.0}",
+                state.latest.torque_load_nm,
+                state.rpm_error()
+            ));
+            ui.separator();
+            if state.post_fit_mode == PostFitRuntimeMode::ActuatorLab {
+                ui.label(
+                    egui::RichText::new(
+                        "Actuator lab is live. Manual values are applied directly; the auto baseline stays visible for comparison.",
+                    )
+                    .color(theme.text_soft)
+                    .size(10.5),
+                );
+                ui.add(
+                    egui::Slider::new(&mut state.sim.control.throttle_cmd, 0.0..=1.0)
+                        .text("Throttle override"),
+                );
+                ui.label(format!(
+                    "Throttle delta vs auto: {:+.3}",
+                    state.sim.control.throttle_cmd - state.post_fit_baseline.throttle_cmd
+                ));
+                ui.add(
+                    egui::Slider::new(
+                        &mut state.sim.control.ignition_timing_deg,
+                        ui_config.ignition_slider_min_deg..=ui_config.ignition_slider_max_deg,
+                    )
+                    .text("Ignition override [deg BTDC]"),
+                );
+                ui.label(format!(
+                    "Ignition delta vs auto: {:+.1} deg",
+                    state.sim.control.ignition_timing_deg
+                        - state.post_fit_baseline.ignition_timing_deg
+                ));
+                ui.add(
+                    egui::Slider::new(
+                        &mut state.sim.control.vvt_intake_deg,
+                        ui_config.vvt_slider_min_deg..=ui_config.vvt_slider_max_deg,
+                    )
+                    .text("VVT intake override [deg]"),
+                );
+                ui.add(
+                    egui::Slider::new(
+                        &mut state.sim.control.vvt_exhaust_deg,
+                        ui_config.vvt_slider_min_deg..=ui_config.vvt_slider_max_deg,
+                    )
+                    .text("VVT exhaust override [deg]"),
+                );
+                ui.label(format!(
+                    "VVT delta vs auto: IN {:+.1} / EX {:+.1} deg",
+                    state.sim.control.vvt_intake_deg - state.post_fit_baseline.vvt_intake_deg,
+                    state.sim.control.vvt_exhaust_deg - state.post_fit_baseline.vvt_exhaust_deg
+                ));
+            } else {
+                ui.label(
+                    egui::RichText::new(
+                        "Standard runtime is live. Driver demand is the primary input; throttle, ignition, and VVT follow the auto baseline.",
+                    )
+                    .color(theme.text_soft)
+                    .size(10.5),
+                );
+            }
+            ui.separator();
             ui.add(
-                egui::Slider::new(
-                    &mut state.sim.control.vvt_intake_deg,
-                    ui_config.vvt_slider_min_deg..=ui_config.vvt_slider_max_deg,
-                )
-                .text("VVT intake [deg]"),
+                egui::Checkbox::new(&mut state.sim.control.spark_cmd, "Spark enable"),
             );
-            ui.add(
-                egui::Slider::new(
-                    &mut state.sim.control.vvt_exhaust_deg,
-                    ui_config.vvt_slider_min_deg..=ui_config.vvt_slider_max_deg,
-                )
-                .text("VVT exhaust [deg]"),
-            );
-            ui.checkbox(&mut state.sim.control.spark_cmd, "Spark");
-            ui.checkbox(&mut state.sim.control.fuel_cmd, "Fuel");
+            ui.add(egui::Checkbox::new(&mut state.sim.control.fuel_cmd, "Fuel enable"));
         });
     });
 
     ui.add_space(6.0);
-    ui.label(egui::RichText::new(view.external_load_note).color(theme.text_soft));
+    ui.label(egui::RichText::new(&view.external_load_note).color(theme.text_soft));
 }
 
 fn render_visualization_tabs(
@@ -590,12 +673,15 @@ fn render_overview_tab(
             ui,
             theme,
             LinearMeterSpec {
-                label: "BRAKE LOAD",
-                value: state.latest.torque_load_nm,
-                min: -80.0,
+                label: "TORQUE REQUEST",
+                value: state.post_fit_baseline.requested_brake_torque_nm,
+                min: 0.0,
                 max: 160.0,
                 accent: theme.amber,
-                value_text: format!("{:+.1} Nm", state.latest.torque_load_nm),
+                value_text: format!(
+                    "{:+.1} Nm / load {:+.1}",
+                    state.post_fit_baseline.requested_brake_torque_nm, state.latest.torque_load_nm
+                ),
                 width: 228.0,
             },
         );
@@ -603,12 +689,33 @@ fn render_overview_tab(
             ui,
             theme,
             LinearMeterSpec {
-                label: "THROTTLE CMD",
-                value: state.sim.control.throttle_cmd * 100.0,
+                label: "DRIVER DEMAND",
+                value: state.driver_demand * 100.0,
                 min: 0.0,
                 max: 100.0,
                 accent: theme.cyan,
-                value_text: format!("{:.1}%", state.sim.control.throttle_cmd * 100.0),
+                value_text: format!(
+                    "{:.0}% / auto thr {:.1}%",
+                    state.driver_demand * 100.0,
+                    state.post_fit_baseline.throttle_cmd * 100.0
+                ),
+                width: 228.0,
+            },
+        );
+        linear_meter(
+            ui,
+            theme,
+            LinearMeterSpec {
+                label: "THROTTLE ACT",
+                value: state.sim.control.throttle_cmd * 100.0,
+                min: 0.0,
+                max: 100.0,
+                accent: theme.amber,
+                value_text: format!(
+                    "{:.1}% / auto {:.1}%",
+                    state.sim.control.throttle_cmd * 100.0,
+                    state.post_fit_baseline.throttle_cmd * 100.0
+                ),
                 width: 228.0,
             },
         );
@@ -621,7 +728,11 @@ fn render_overview_tab(
                 min: ui_config.ignition_slider_min_deg,
                 max: ui_config.ignition_slider_max_deg,
                 accent: theme.green,
-                value_text: format!("{:.1} deg BTDC", state.sim.control.ignition_timing_deg),
+                value_text: format!(
+                    "{:.1} deg / auto {:.1}",
+                    state.sim.control.ignition_timing_deg,
+                    state.post_fit_baseline.ignition_timing_deg
+                ),
                 width: 228.0,
             },
         );
@@ -1129,7 +1240,7 @@ fn render_pressure_tab(
             ui_config,
             "simple_pv_plot",
             "Cylinder p-V",
-            "reconstructed diagnostic loop",
+            "single-zone diagnostic loop",
             theme.amber,
             "Normalized volume [-]",
             "Pressure [kPa]",
@@ -1518,6 +1629,13 @@ fn pv_combustion_markers(state: &DashboardState, theme: DashboardTheme) -> Vec<P
     };
 
     let spark_deg = spark_event_cycle_deg(state.latest.ignition_timing_deg);
+    let soc_deg = combustion_fraction_cycle_deg(
+        state.latest.burn_start_deg,
+        state.latest.burn_duration_deg,
+        state.sim.model.wiebe_a,
+        state.sim.model.wiebe_m,
+        0.0,
+    );
     let ca10_deg = combustion_fraction_cycle_deg(
         state.latest.burn_start_deg,
         state.latest.burn_duration_deg,
@@ -1539,6 +1657,13 @@ fn pv_combustion_markers(state: &DashboardState, theme: DashboardTheme) -> Vec<P
         state.sim.model.wiebe_m,
         0.90,
     );
+    let eoc_deg = combustion_fraction_cycle_deg(
+        state.latest.burn_start_deg,
+        state.latest.burn_duration_deg,
+        state.sim.model.wiebe_a,
+        state.sim.model.wiebe_m,
+        1.0,
+    );
 
     let mut markers = Vec::new();
     if let Some(point) = interpolate_pv_cycle_point(&cycle_samples, spark_deg) {
@@ -1548,6 +1673,15 @@ fn pv_combustion_markers(state: &DashboardState, theme: DashboardTheme) -> Vec<P
             point,
             shape: MarkerShape::Cross,
             radius: 8.0,
+        });
+    }
+    if let Some(point) = interpolate_pv_cycle_point(&cycle_samples, soc_deg) {
+        markers.push(PlotMarker {
+            name: Some(format!("SOC {:.1} degCA", soc_deg)),
+            color: egui::Color32::from_rgb(255, 140, 80),
+            point,
+            shape: MarkerShape::Circle,
+            radius: 5.5,
         });
     }
     if let Some(point) = interpolate_pv_cycle_point(&cycle_samples, ca10_deg) {
@@ -1575,6 +1709,15 @@ fn pv_combustion_markers(state: &DashboardState, theme: DashboardTheme) -> Vec<P
             point,
             shape: MarkerShape::Cross,
             radius: 8.0,
+        });
+    }
+    if let Some(point) = interpolate_pv_cycle_point(&cycle_samples, eoc_deg) {
+        markers.push(PlotMarker {
+            name: Some(format!("EOC {:.1} degCA", eoc_deg)),
+            color: egui::Color32::from_rgb(216, 228, 236),
+            point,
+            shape: MarkerShape::Diamond,
+            radius: 5.5,
         });
     }
     markers
@@ -1856,16 +1999,20 @@ mod tests {
 
     #[test]
     fn combustion_fraction_markers_stay_inside_burn_window() {
+        let soc = combustion_fraction_cycle_deg(352.0, 60.0, 5.2, 2.0, 0.0);
         let ca10 = combustion_fraction_cycle_deg(352.0, 60.0, 5.2, 2.0, 0.10);
         let ca50 = combustion_fraction_cycle_deg(352.0, 60.0, 5.2, 2.0, 0.50);
         let ca90 = combustion_fraction_cycle_deg(352.0, 60.0, 5.2, 2.0, 0.90);
+        let eoc = combustion_fraction_cycle_deg(352.0, 60.0, 5.2, 2.0, 1.0);
 
+        assert!((soc - 352.0).abs() < 1.0e-12);
         assert!(ca10 > 352.0);
         assert!(ca10 < ca50);
         assert!(ca50 > 352.0);
         assert!(ca50 < 412.0);
         assert!(ca90 > ca50);
         assert!(ca90 < 412.0);
+        assert!((eoc - 412.0).abs() < 1.0e-12);
         assert!(wiebe_fraction_location(0.5, 5.2, 2.0) > 0.0);
         assert!(wiebe_fraction_location(0.5, 5.2, 2.0) < 1.0);
     }

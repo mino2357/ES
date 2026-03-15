@@ -133,7 +133,6 @@ pub(crate) struct EvalPoint {
     combustion_enabled: bool,
     burn_start_deg: f64,
     burn_duration_deg: f64,
-    phase_eff: f64,
     ve_effective: f64,
     intake_wave_current_pa: f64,
     exhaust_wave_current_pa: f64,
@@ -144,6 +143,7 @@ pub(crate) struct EvalPoint {
     lambda_target: f64,
     intake_charge_temp_k: f64,
     heat_loss_cycle_j: f64,
+    mixture_gamma: f64,
     ignition_timing_deg: f64,
     exhaust_temp_k: f64,
 }
@@ -255,6 +255,21 @@ pub(crate) struct PvSample {
     pub(crate) cycle_deg: f64,
     pub(crate) volume: f64,
     pub(crate) pressure_pa: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SingleZonePressureTraceInput {
+    compression_ratio: f64,
+    swept_volume_cyl_m3: f64,
+    p_intake_pa: f64,
+    p_exhaust_pa: f64,
+    fuel_mass_cycle_cyl_kg: f64,
+    heat_loss_cycle_j: f64,
+    combustion_enabled: bool,
+    soc_deg: f64,
+    eoc_deg: f64,
+    mixture_gamma: f64,
+    peak_pressure_limit_pa: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -424,11 +439,6 @@ impl Simulator {
 
     fn swept_volume_per_cylinder_m3(&self) -> f64 {
         self.params.displacement_m3 / FIXED_CYLINDER_COUNT as f64
-    }
-
-    fn clearance_volume_per_cylinder_m3(&self) -> f64 {
-        self.swept_volume_per_cylinder_m3()
-            / (self.params.compression_ratio - 1.0).max(self.model.compression_ratio_guard)
     }
 
     fn cylinder_surface_area_m2(&self) -> f64 {
@@ -1293,33 +1303,6 @@ impl Simulator {
         averaged
     }
 
-    fn displayed_pv_peak_pressure_pa(
-        &self,
-        p_intake_pa: f64,
-        fuel_mass_cycle_cyl_kg: f64,
-        heat_loss_cycle_j: f64,
-        phase_eff: f64,
-    ) -> f64 {
-        let clearance_volume_cyl = self
-            .clearance_volume_per_cylinder_m3()
-            .max(self.model.clearance_volume_floor_m3);
-        let compression_peak = (p_intake_pa
-            * self
-                .params
-                .compression_ratio
-                .powf(self.model.compression_peak_gamma))
-        .clamp(p_intake_pa, self.model.compression_peak_max_pa);
-        let fuel_heat_cycle_j = fuel_mass_cycle_cyl_kg * FUEL_LHV_J_PER_KG;
-        let load = (p_intake_pa / self.env.ambient_pressure_pa)
-            .clamp(self.model.load_min, self.model.load_max);
-        let combustion_pressure_gain = self.model.combustion_pressure_gain
-            * load.powf(self.model.combustion_pressure_load_exponent);
-        let effective_fuel_heat_j = (fuel_heat_cycle_j - heat_loss_cycle_j).max(0.0);
-        let delta_p_comb =
-            combustion_pressure_gain * phase_eff * effective_fuel_heat_j / clearance_volume_cyl;
-        (compression_peak + delta_p_comb).clamp(compression_peak, self.model.peak_pressure_max_pa)
-    }
-
     #[allow(dead_code)]
     pub(crate) fn build_ptheta_display_curves(&self, samples: usize) -> Vec<Vec<(f64, f64)>> {
         let rpm = rad_s_to_rpm(self.state.omega_rad_s.max(0.0));
@@ -1330,38 +1313,44 @@ impl Simulator {
         let count = samples.max(180);
         let firing_interval = self.firing_interval_deg();
         let mut global_curves = vec![Vec::with_capacity(count + 1); FIXED_CYLINDER_COUNT];
+        let swept_volume_cyl_m3 = self.swept_volume_per_cylinder_m3();
 
-        for i in 0..=count {
-            let global_theta_deg = 720.0 * i as f64 / count as f64;
+        // Warm one periodic cycle before collecting the displayed cycle so each cylinder's closed
+        // pressure trace starts from a physically consistent compression state.
+        for i in 0..=(count * 2) {
+            let global_theta_unwrapped_deg = 720.0 * i as f64 / count as f64 - 720.0;
             let sample_state = EngineState {
-                theta_rad: global_theta_deg.to_radians(),
+                theta_rad: global_theta_unwrapped_deg.rem_euclid(720.0).to_radians(),
                 ..self.state
             };
             let eval = self.eval(sample_state);
-            let p_peak_pa = self.displayed_pv_peak_pressure_pa(
-                eval.p_intake_cyl_pa,
-                eval.fuel_mass_cycle_cyl_kg,
-                eval.heat_loss_cycle_j,
-                eval.phase_eff,
-            );
 
-            for cylinder_idx in 0..FIXED_CYLINDER_COUNT {
+            for (cylinder_idx, curve) in global_curves.iter_mut().enumerate() {
                 let offset_deg = cylinder_idx as f64 * firing_interval;
-                let local_theta_deg = (global_theta_deg - offset_deg).rem_euclid(720.0);
+                let local_theta_deg = (global_theta_unwrapped_deg - offset_deg).rem_euclid(720.0);
+                let trace_input = SingleZonePressureTraceInput {
+                    compression_ratio: self.params.compression_ratio,
+                    swept_volume_cyl_m3,
+                    p_intake_pa: eval.p_intake_cyl_pa,
+                    p_exhaust_pa: eval.p_exhaust_cyl_pa,
+                    fuel_mass_cycle_cyl_kg: eval.fuel_mass_cycle_cyl_kg,
+                    heat_loss_cycle_j: eval.heat_loss_cycle_j,
+                    combustion_enabled: eval.combustion_enabled,
+                    soc_deg: eval.burn_start_deg,
+                    eoc_deg: eval.burn_start_deg + eval.burn_duration_deg,
+                    mixture_gamma: eval.mixture_gamma,
+                    peak_pressure_limit_pa: self.model.peak_pressure_max_pa,
+                };
                 let (_, pressure_pa) = instantaneous_pv_sample(
-                    self.params.compression_ratio,
                     local_theta_deg.to_radians(),
-                    eval.p_intake_cyl_pa,
-                    eval.p_exhaust_cyl_pa,
-                    p_peak_pa,
-                    eval.combustion_enabled,
-                    eval.burn_start_deg,
-                    eval.burn_start_deg + eval.burn_duration_deg,
+                    trace_input,
                     self.model.wiebe_a,
                     self.model.wiebe_m,
                     &self.model.pv_model,
                 );
-                global_curves[cylinder_idx].push((global_theta_deg, pressure_pa));
+                if global_theta_unwrapped_deg >= 0.0 {
+                    curve.push((global_theta_unwrapped_deg, pressure_pa));
+                }
             }
         }
 
@@ -1683,7 +1672,6 @@ impl Simulator {
             combustion_enabled,
             burn_start_deg: burn_start,
             burn_duration_deg: burn_duration,
-            phase_eff,
             ve_effective,
             intake_wave_current_pa: wave_action.intake_wave_current_pa,
             exhaust_wave_current_pa: wave_action.exhaust_wave_current_pa,
@@ -1694,6 +1682,7 @@ impl Simulator {
             lambda_target,
             intake_charge_temp_k: charge_state.intake_charge_temp_k,
             heat_loss_cycle_j,
+            mixture_gamma: charge_state.mixture_gamma,
             ignition_timing_deg,
             exhaust_temp_k,
         }
@@ -1961,6 +1950,7 @@ impl Simulator {
 
         let subsamples = self.plot.pv_subsamples_per_step.max(1);
         let combustion_active = eval_prev.combustion_enabled || eval_next.combustion_enabled;
+        let swept_volume_cyl_m3 = self.swept_volume_per_cylinder_m3();
 
         // Reconstruct a dense recent-cycle p-V loop by interpolating step endpoints instead of
         // re-running the full reduced-order model for every display-only subsample.
@@ -1971,7 +1961,6 @@ impl Simulator {
             let cycle = self.cycle_index + u64::from(theta_unwrapped >= 4.0 * PI);
             let p_intake = lerp(eval_prev.p_intake_cyl_pa, eval_next.p_intake_cyl_pa, frac);
             let p_exhaust = lerp(eval_prev.p_exhaust_cyl_pa, eval_next.p_exhaust_cyl_pa, frac);
-            let phase_eff = lerp(eval_prev.phase_eff, eval_next.phase_eff, frac);
             let fuel_mass_cycle_cyl = lerp(
                 eval_prev.fuel_mass_cycle_cyl_kg,
                 eval_next.fuel_mass_cycle_cyl_kg,
@@ -1993,21 +1982,24 @@ impl Simulator {
             .max(1.0);
             let combustion_enabled = combustion_active
                 && fuel_mass_cycle_cyl > self.model.fuel_mass_presence_threshold_kg;
-            let p_peak = self.displayed_pv_peak_pressure_pa(
-                p_intake,
-                fuel_mass_cycle_cyl,
+            let mixture_gamma =
+                lerp(eval_prev.mixture_gamma, eval_next.mixture_gamma, frac).max(1.01);
+            let trace_input = SingleZonePressureTraceInput {
+                compression_ratio: self.params.compression_ratio,
+                swept_volume_cyl_m3,
+                p_intake_pa: p_intake,
+                p_exhaust_pa: p_exhaust,
+                fuel_mass_cycle_cyl_kg: fuel_mass_cycle_cyl,
                 heat_loss_cycle_j,
-                phase_eff,
-            );
-            let (volume_rel, pressure_pa) = instantaneous_pv_sample(
-                self.params.compression_ratio,
-                theta,
-                p_intake,
-                p_exhaust,
-                p_peak,
                 combustion_enabled,
-                burn_start_deg,
-                burn_start_deg + burn_duration_deg,
+                soc_deg: burn_start_deg,
+                eoc_deg: burn_start_deg + burn_duration_deg,
+                mixture_gamma,
+                peak_pressure_limit_pa: self.model.peak_pressure_max_pa,
+            };
+            let (volume_rel, pressure_pa) = instantaneous_pv_sample(
+                theta,
+                trace_input,
                 self.model.wiebe_a,
                 self.model.wiebe_m,
                 &self.model.pv_model,
@@ -2939,84 +2931,34 @@ pub(crate) fn wiebe_combustion_rate(
     }
 }
 
-pub(crate) fn instantaneous_pv_sample(
-    compression_ratio: f64,
+fn instantaneous_pv_sample(
     theta_rad: f64,
-    p_intake_pa: f64,
-    p_exhaust_pa: f64,
-    p_peak_pa: f64,
-    combustion_enabled: bool,
-    soc_deg: f64,
-    eoc_deg: f64,
+    input: SingleZonePressureTraceInput,
     wiebe_a: f64,
     wiebe_m: f64,
     pv_model: &PvModelConfig,
 ) -> (f64, f64) {
-    // This is a display-model cylinder trace: phase-aligned with combustion torque, but not state-solved.
-    let v_min = 1.0 / (compression_ratio - 1.0);
-    let v_max = v_min + 1.0;
-    let gamma_c = pv_model.gamma_compression;
-    let gamma_e = pv_model.gamma_expansion;
-    let burn = if combustion_enabled { 1.0 } else { 0.0 };
-    let comp_end = p_intake_pa * (v_max / v_min).powf(gamma_c);
-    let p_peak = p_peak_pa.max(comp_end);
-
     let cycle_deg = theta_rad.to_degrees().rem_euclid(720.0);
-    let piston_phase = theta_rad.rem_euclid(TAU);
-    let vol = v_min + 0.5 * (v_max - v_min) * (1.0 - piston_phase.cos());
-    let volume_at_deg = |deg: f64| -> f64 {
-        let phase = deg.to_radians().rem_euclid(TAU);
-        v_min + 0.5 * (v_max - v_min) * (1.0 - phase.cos())
-    };
-    let motored_pressure = |deg: f64, volume: f64| -> f64 {
-        if deg < 180.0 {
-            let x = deg / 180.0;
-            p_intake_pa * (1.0 - pv_model.intake_pulsation_amplitude * (PI * x).sin().powi(2))
-        } else if deg < 360.0 {
-            p_intake_pa * (v_max / volume).powf(gamma_c)
+    let evo_deg: f64 = pv_model.evo_deg;
+    let blowdown_end_deg: f64 = pv_model.blowdown_end_deg;
+    let volume_ratio = normalized_cylinder_volume_ratio(input.compression_ratio, cycle_deg);
+    let pressure_pa = if cycle_deg < 180.0 {
+        intake_stroke_pressure_pa(cycle_deg, input.p_intake_pa, pv_model)
+    } else {
+        let p_evo =
+            solve_single_zone_closed_cycle_pressure(evo_deg, input, wiebe_a, wiebe_m, pv_model);
+        if cycle_deg < evo_deg {
+            solve_single_zone_closed_cycle_pressure(cycle_deg, input, wiebe_a, wiebe_m, pv_model)
+        } else if cycle_deg < blowdown_end_deg {
+            let x = (cycle_deg - evo_deg) / (blowdown_end_deg - evo_deg).max(f64::EPSILON);
+            p_evo + (input.p_exhaust_pa - p_evo) * smoothstep01(x)
         } else {
-            comp_end * (v_min / volume).powf(gamma_e)
+            let x = (cycle_deg - blowdown_end_deg) / (720.0 - blowdown_end_deg).max(f64::EPSILON);
+            input.p_exhaust_pa + (input.p_intake_pa - input.p_exhaust_pa) * smoothstep01(x)
         }
     };
 
-    let soc_deg = soc_deg;
-    let eoc_deg = eoc_deg.max(soc_deg + 1.0);
-    let evo_deg: f64 = pv_model.evo_deg;
-    let blowdown_end_deg: f64 = pv_model.blowdown_end_deg;
-
-    let xb =
-        normalized_wiebe_burn_fraction(cycle_deg, soc_deg, eoc_deg - soc_deg, wiebe_a, wiebe_m);
-    let delta_p_peak = burn * (p_peak - comp_end).max(0.0);
-    let vol_at_eoc = volume_at_deg(eoc_deg);
-    let vol_at_evo = volume_at_deg(evo_deg);
-    let combustion_delta = if cycle_deg < soc_deg {
-        0.0
-    } else if cycle_deg < eoc_deg {
-        delta_p_peak * xb
-    } else if cycle_deg < evo_deg {
-        delta_p_peak * (vol_at_eoc / vol).powf(gamma_e)
-    } else {
-        0.0
-    };
-    let p_power_at_evo = motored_pressure(evo_deg, vol_at_evo)
-        + delta_p_peak * (vol_at_eoc / vol_at_evo).powf(gamma_e);
-
-    let p = if cycle_deg < 180.0 {
-        motored_pressure(cycle_deg, vol)
-    } else if cycle_deg < 360.0 {
-        motored_pressure(cycle_deg, vol)
-    } else if cycle_deg < evo_deg {
-        (motored_pressure(cycle_deg, vol) + combustion_delta)
-            .max(p_exhaust_pa * pv_model.expansion_floor_exhaust_ratio)
-    } else if cycle_deg < blowdown_end_deg {
-        let x = (cycle_deg - evo_deg) / (blowdown_end_deg - evo_deg);
-        p_power_at_evo + (p_exhaust_pa - p_power_at_evo) * smoothstep01(x)
-    } else {
-        let x = (cycle_deg - blowdown_end_deg) / (720.0 - blowdown_end_deg);
-        p_exhaust_pa + (p_intake_pa - p_exhaust_pa) * smoothstep01(x)
-    };
-
-    (vol, p.max(pv_model.pressure_floor_pa))
+    (volume_ratio, pressure_pa.max(pv_model.pressure_floor_pa))
 }
 
 fn smoothstep01(x: f64) -> f64 {
@@ -3041,6 +2983,204 @@ fn normalized_wiebe_burn_fraction(
     }
     let denom = (1.0 - (-a.max(f64::EPSILON)).exp()).max(f64::EPSILON);
     (1.0 - (-a.max(f64::EPSILON) * x.powf(m + 1.0)).exp()) / denom
+}
+
+fn normalized_wiebe_burn_rate_per_deg(
+    cycle_angle_deg: f64,
+    start_deg: f64,
+    duration_deg: f64,
+    a: f64,
+    m: f64,
+) -> f64 {
+    let duration_deg = duration_deg.max(f64::EPSILON);
+    let x = ((cycle_angle_deg - start_deg) / duration_deg).clamp(0.0, 1.0);
+    if x <= 0.0 || x >= 1.0 {
+        return 0.0;
+    }
+    let a = a.max(f64::EPSILON);
+    let denom = (1.0 - (-a).exp()).max(f64::EPSILON);
+    let expo = (-a * x.powf(m + 1.0)).exp();
+    expo * a * (m + 1.0) * x.powf(m) / (denom * duration_deg)
+}
+
+fn smoothstep_window_rate_per_deg(cycle_angle_deg: f64, start_deg: f64, end_deg: f64) -> f64 {
+    let duration_deg = (end_deg - start_deg).max(f64::EPSILON);
+    let x = (cycle_angle_deg - start_deg) / duration_deg;
+    if !(0.0..=1.0).contains(&x) {
+        return 0.0;
+    }
+    6.0 * x * (1.0 - x) / duration_deg
+}
+
+fn normalized_cylinder_volume_ratio(compression_ratio: f64, cycle_deg: f64) -> f64 {
+    let v_min = 1.0 / (compression_ratio - 1.0).max(f64::EPSILON);
+    let phase = cycle_deg.to_radians().rem_euclid(TAU);
+    v_min + 0.5 * (1.0 - phase.cos())
+}
+
+fn cylinder_volume_derivative_ratio_per_deg(cycle_deg: f64) -> f64 {
+    0.5 * cycle_deg.to_radians().rem_euclid(TAU).sin() * PI / 180.0
+}
+
+fn intake_stroke_pressure_pa(cycle_deg: f64, p_intake_pa: f64, pv_model: &PvModelConfig) -> f64 {
+    let x = (cycle_deg / 180.0).clamp(0.0, 1.0);
+    p_intake_pa * (1.0 - pv_model.intake_pulsation_amplitude * (PI * x).sin().powi(2))
+}
+
+fn single_zone_gamma(
+    cycle_deg: f64,
+    combustion_enabled: bool,
+    soc_deg: f64,
+    eoc_deg: f64,
+    burn_fraction: f64,
+    mixture_gamma: f64,
+    pv_model: &PvModelConfig,
+) -> f64 {
+    let gamma_c = mixture_gamma.max(1.01);
+    let gamma_e = pv_model.gamma_expansion.max(1.01);
+    if !combustion_enabled {
+        if cycle_deg < 360.0 { gamma_c } else { gamma_e }
+    } else if cycle_deg <= soc_deg {
+        gamma_c
+    } else if cycle_deg >= eoc_deg {
+        gamma_e
+    } else {
+        lerp(gamma_c, gamma_e, burn_fraction)
+    }
+}
+
+fn single_zone_pressure_derivative_pa_per_deg(
+    cycle_deg: f64,
+    pressure_pa: f64,
+    input: SingleZonePressureTraceInput,
+    wiebe_a: f64,
+    wiebe_m: f64,
+    pv_model: &PvModelConfig,
+) -> f64 {
+    let eoc_deg = input.eoc_deg.max(input.soc_deg + 1.0);
+    let burn_fraction = if input.combustion_enabled {
+        normalized_wiebe_burn_fraction(
+            cycle_deg,
+            input.soc_deg,
+            eoc_deg - input.soc_deg,
+            wiebe_a,
+            wiebe_m,
+        )
+    } else {
+        0.0
+    };
+    let burn_rate_per_deg = if input.combustion_enabled {
+        normalized_wiebe_burn_rate_per_deg(
+            cycle_deg,
+            input.soc_deg,
+            eoc_deg - input.soc_deg,
+            wiebe_a,
+            wiebe_m,
+        )
+    } else {
+        0.0
+    };
+    let post_burn_loss_rate_per_deg =
+        smoothstep_window_rate_per_deg(cycle_deg, eoc_deg, pv_model.evo_deg);
+    let volume_m3 = (input.swept_volume_cyl_m3
+        * normalized_cylinder_volume_ratio(input.compression_ratio, cycle_deg))
+    .max(f64::EPSILON);
+    let d_volume_dtheta_m3_per_deg =
+        input.swept_volume_cyl_m3 * cylinder_volume_derivative_ratio_per_deg(cycle_deg);
+    let heat_release_rate_j_per_deg =
+        input.fuel_mass_cycle_cyl_kg.max(0.0) * FUEL_LHV_J_PER_KG * burn_rate_per_deg;
+    let heat_loss_rate_j_per_deg = if input.combustion_enabled {
+        input.heat_loss_cycle_j.max(0.0)
+            * (0.7 * burn_rate_per_deg + 0.3 * post_burn_loss_rate_per_deg)
+    } else {
+        0.0
+    };
+    let gamma = single_zone_gamma(
+        cycle_deg,
+        input.combustion_enabled,
+        input.soc_deg,
+        eoc_deg,
+        burn_fraction,
+        input.mixture_gamma,
+        pv_model,
+    );
+    ((gamma - 1.0) / volume_m3) * (heat_release_rate_j_per_deg - heat_loss_rate_j_per_deg)
+        - gamma * pressure_pa / volume_m3 * d_volume_dtheta_m3_per_deg
+}
+
+fn rk4_integrate_single_zone_pressure_step(
+    pressure_pa: f64,
+    cycle_deg: f64,
+    step_deg: f64,
+    input: SingleZonePressureTraceInput,
+    wiebe_a: f64,
+    wiebe_m: f64,
+    pv_model: &PvModelConfig,
+) -> f64 {
+    let k1 = single_zone_pressure_derivative_pa_per_deg(
+        cycle_deg,
+        pressure_pa,
+        input,
+        wiebe_a,
+        wiebe_m,
+        pv_model,
+    );
+    let k2 = single_zone_pressure_derivative_pa_per_deg(
+        cycle_deg + 0.5 * step_deg,
+        pressure_pa + 0.5 * step_deg * k1,
+        input,
+        wiebe_a,
+        wiebe_m,
+        pv_model,
+    );
+    let k3 = single_zone_pressure_derivative_pa_per_deg(
+        cycle_deg + 0.5 * step_deg,
+        pressure_pa + 0.5 * step_deg * k2,
+        input,
+        wiebe_a,
+        wiebe_m,
+        pv_model,
+    );
+    let k4 = single_zone_pressure_derivative_pa_per_deg(
+        cycle_deg + step_deg,
+        pressure_pa + step_deg * k3,
+        input,
+        wiebe_a,
+        wiebe_m,
+        pv_model,
+    );
+    let pressure_floor_pa = (input.p_exhaust_pa * pv_model.expansion_floor_exhaust_ratio)
+        .max(pv_model.pressure_floor_pa);
+    (pressure_pa + step_deg * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0)
+        .clamp(pressure_floor_pa, input.peak_pressure_limit_pa)
+}
+
+fn solve_single_zone_closed_cycle_pressure(
+    target_cycle_deg: f64,
+    input: SingleZonePressureTraceInput,
+    wiebe_a: f64,
+    wiebe_m: f64,
+    pv_model: &PvModelConfig,
+) -> f64 {
+    const INTERNAL_STEP_DEG: f64 = 1.0;
+
+    let target_cycle_deg = target_cycle_deg.clamp(180.0, pv_model.evo_deg);
+    let mut cycle_deg = 180.0;
+    let mut pressure_pa = input.p_intake_pa.max(pv_model.pressure_floor_pa);
+    while cycle_deg < target_cycle_deg - f64::EPSILON {
+        let step_deg = (target_cycle_deg - cycle_deg).min(INTERNAL_STEP_DEG);
+        pressure_pa = rk4_integrate_single_zone_pressure_step(
+            pressure_pa,
+            cycle_deg,
+            step_deg,
+            input,
+            wiebe_a,
+            wiebe_m,
+            pv_model,
+        );
+        cycle_deg += step_deg;
+    }
+    pressure_pa.max(pv_model.pressure_floor_pa)
 }
 
 fn wave_kernel(elapsed_s: f64, delay_s: f64, decay_time_s: f64, quarter_wave_hz: f64) -> f64 {
@@ -4665,16 +4805,23 @@ mod tests {
     #[test]
     fn pv_combustion_phasing_tracks_burn_window() {
         let pv_model = PvModelConfig::default();
+        let trace_input = |soc_deg: f64, eoc_deg: f64| SingleZonePressureTraceInput {
+            compression_ratio: 10.5,
+            swept_volume_cyl_m3: 0.5e-3,
+            p_intake_pa: 90_000.0,
+            p_exhaust_pa: 115_000.0,
+            fuel_mass_cycle_cyl_kg: 4.8e-5,
+            heat_loss_cycle_j: 120.0,
+            combustion_enabled: true,
+            soc_deg,
+            eoc_deg,
+            mixture_gamma: 1.34,
+            peak_pressure_limit_pa: 8.0e6,
+        };
         let sample_pressure = |deg: f64, soc_deg: f64, eoc_deg: f64| -> f64 {
             instantaneous_pv_sample(
-                10.5,
                 deg.to_radians(),
-                90_000.0,
-                115_000.0,
-                4_200_000.0,
-                true,
-                soc_deg,
-                eoc_deg,
+                trace_input(soc_deg, eoc_deg),
                 5.0,
                 2.0,
                 &pv_model,
@@ -4941,16 +5088,25 @@ mod tests {
 
     #[test]
     fn fired_pressure_does_not_collapse_immediately_after_combustion() {
-        let cr = 10.5;
         let p_intake = 90_000.0;
         let p_exhaust = 120_000.0;
-        let p_peak = 4_500_000.0;
         let sample = |deg: f64| -> f64 {
             let theta = deg.to_radians();
             let pv_model = PvModelConfig::default();
-            let (_, p) = instantaneous_pv_sample(
-                cr, theta, p_intake, p_exhaust, p_peak, true, 350.0, 430.0, 5.0, 2.0, &pv_model,
-            );
+            let trace_input = SingleZonePressureTraceInput {
+                compression_ratio: 10.5,
+                swept_volume_cyl_m3: 0.5e-3,
+                p_intake_pa: p_intake,
+                p_exhaust_pa: p_exhaust,
+                fuel_mass_cycle_cyl_kg: 4.8e-5,
+                heat_loss_cycle_j: 160.0,
+                combustion_enabled: true,
+                soc_deg: 350.0,
+                eoc_deg: 430.0,
+                mixture_gamma: 1.34,
+                peak_pressure_limit_pa: 8.0e6,
+            };
+            let (_, p) = instantaneous_pv_sample(theta, trace_input, 5.0, 2.0, &pv_model);
             p
         };
         let p_380 = sample(380.0);
