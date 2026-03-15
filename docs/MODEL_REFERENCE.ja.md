@@ -1,4 +1,4 @@
-﻿# ES Simulator Model Reference
+﻿# ES Model Reference
 
 この文書は self-contained です。
 現在の reduced-order 数理モデルを、微分方程式、algebraic closure、実装対応、文献出典まで含めてまとめます。

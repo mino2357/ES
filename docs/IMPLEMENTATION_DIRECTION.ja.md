@@ -44,6 +44,8 @@
 - 物理妥当性と数値妥当性は分けて評価し、両方を説明可能にする。
 - 可視化は見た目の派手さよりも、物理的意味と判断材料の提示を優先する。
 - UI と文書は、利用者の理解を助ける教育的な導線を持たせる。
+- GUI の操作性を守るため、runtime loop は 1 frame あたりの wall-clock budget を持ち、入力中は simulation backlog を許容してでも UI 応答を優先する。
+- 高密度の `p-V` / `p-theta` 診断は常時フルレートで回さず、Pressure view を見ているときに full-rate、他 view では background sampling に落として操作性を守る。
 - 大きい設計や実装方針は、その場の口頭的な合意だけで進めず、文書ベースで議論してから意思決定する。
 - 意思決定では、最終結論だけでなく、比較した選択肢、採用理由、見送った理由、未解決点を簡潔に文書へ残す。
 - 「考えた過程」を残すときは、内部思考の逐語記録ではなく、後から追跡できる最小限の判断過程として整理して残す。
@@ -121,13 +123,20 @@
 - `required brake torque` と `indicated torque` は物理的意味が異なるので、表示と文書では分けて扱う。
 - startup fit の outer search は、bounded continuous search を既定にせず、まず離散化した有限候補集合から最良点を選ぶ構成を第一候補にする。
 - ignition の選定基準は、まず各 throttle 候補に対する `MBT` 探索を第一候補にする。
-- throttle は `MBT` だけでは一意に決まらないので、初回実装では `必要 torque margin を満たす最小 throttle` を二次基準にする。
-- throttle / ignition の離散探索は、現行実装では各軸 `16` 分割の格子を使い、良好な領域だけを再分割する `adaptive` な coarse-to-fine を第一候補にする。
+- 現行の既定 runtime では throttle は基本 `WOT` に固定し、manual override で特別に絞ったときだけ charge restriction と torque drop を見せる。
+- startup fit の一次段では `WOT + ignition` の release search を既定にし、throttle sweep を primary path にしない。
+- ignition の離散探索は、現行実装では `WOT` 固定で `10` coarse ignition bins、`6` local-refine ignition bins の coarse-to-fine を既定値とする。
 - fit 用の event 処理は、初回実装では次の点火角までを上限として step を制限する phase-scheduled な構成を第一候補にする。
 - 候補評価の inner solver は、途中波形の高密度サンプリングではなく周期残差と cycle-average 評価を優先し、可変刻みの埋め込み型 `Runge-Kutta` のうち広く使われている `Fehlberg 4(5)` を第一候補にする。
 - inner solver の tolerance は、単一の極端に厳しい相対誤差だけで決めず、状態量ごとの scale を持つ重み付き誤差ノルムと candidate ranking の安定性で決める。
 - periodic steady の初期実装は、直接 `root-finding` を掛ける前に、まず有限 cycle 反復で近い定常点を作る経路を採用する。
 - fit 用の数値積分と UI 可視化用の診断サンプリングは役割を分け、solver 都合で表示要件を引きずらない。
+- startup fit は UI frame 駆動にぶら下げず、background worker / headless runner に逃がして進める。
+- fit 用 numerics は runtime より粗くしてよく、現行既定値は `accuracy_target_deg_per_step = 4.5 deg`、`accuracy_dt_max_s = 2.5 ms`、`rpm_link_dt_min_floor_s = 0.1 ms` とする。
+- startup fit の wall-clock 合格条件は `10 min` 以内とし、同じ値を fail-safe cap にも使う。
+- 現行 contract では release fit を `WOT x (10 + 6) = 16` candidates、各 candidate は最大 `6` cycles、最大 `1200` RKF steps / cycle として budget を逆算する。
+- release fit 完了後は `1000..7000 rpm` の `13` 点で WOT torque curve を headless sweep して保存する。
+- したがって release fit 本体の worst-case accepted RKF step budget は `16 x 6 x 1200 = 115,200` steps と見積もる。
 
 ## 6. 数理モデル可視化の方針
 

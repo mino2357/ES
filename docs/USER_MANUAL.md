@@ -1,4 +1,4 @@
-# ES Simulator User Manual
+﻿# ES User Manual
 
 This document is self-contained.
 It explains how to build, run, operate, and interpret the current GUI-centered simulator.
@@ -15,7 +15,7 @@ It explains how to build, run, operate, and interpret the current GUI-centered s
 
 ## Scope
 
-`ES Simulator` is a reduced-order inline-4 engine simulator with a stylized test-cell dashboard.
+`ES` is a reduced-order inline-4 engine simulator with a stylized test-cell dashboard.
 It is intended for interactive transient studies, physically interpretable load-response studies, and visualization.
 
 It is not:
@@ -73,12 +73,13 @@ The top-center display shows:
 
 - large digital readouts for speed, torque, power, trapped air, intake pressure, and indicated efficiency
 - gauges for RPM, MAP, lambda, BMEP, exhaust temperature, combustion power, and internal EGR
-- linear meters for throttle, `Target RPM`, ignition, and VVT
+- linear meters for throttle, `Eq RPM`, ignition, and VVT
 
 ### Plots
 
 The center and lower areas show:
 
+- the `Map` view includes a `Map fill` toggle with `BSFC + limit` and `Full BSFC`
 - cylinder `p-V`
 - cylinder `p-theta`
 - indicated torque, net torque, net shaft power, and IMEP / indicated efficiency
@@ -94,18 +95,17 @@ The central region is scrollable when the full layout does not fit vertically.
 1. Start the application.
 2. Let the startup numerical fit run immediately after first fire.
 3. Watch `p-V`, `p-theta`, and indicated torque while the fit converges.
-4. Once the fit reaches `READY`, adjust `Throttle cmd`, `Ignition`, `VVT Intake`, and `VVT Exhaust` manually.
+4. Once the fit reaches `READY`, use `Driver demand` for standard runtime, or switch to `Actuator lab` for manual throttle / ignition / VVT overrides.
 5. Toggle `Spark` and `Fuel` as needed.
 
 ### Operator Inputs And Outputs
 
 The primary operator inputs are:
 
-- `Throttle cmd`
-- `Target RPM`
+- `Driver demand`
 
-The dashboard-side speed-hold controller estimates current shaft torque, then adjusts the internal
-`load_cmd` so the machine torque drives RPM error toward zero.
+The dashboard-side load controller follows `Driver demand -> torque request -> WOT torque-curve inverse -> equilibrium rpm`,
+then adjusts the internal `load_cmd` so the machine settles toward that equilibrium speed.
 The primary outputs are:
 
 - `Required brake torque`
@@ -129,6 +129,9 @@ It is parsed by `AppConfig` in `src/config.rs` and checked by the plausibility a
 
 Startup-fit artifacts are saved under [../cache/startup_fit](../cache/startup_fit).
 They are reused only when both the build identity and the raw YAML config text still match.
+Startup fit itself runs in a background worker decoupled from the UI frame loop.
+The current fit contract uses coarser-than-runtime numerics plus a `10 min` cap, a fixed-`WOT` `16`-candidate release fit, and at most `6` cycles with `1200` RKF steps per candidate cycle.
+After the release fit, the app builds a `13`-point WOT torque curve over `1000..7000 rpm`, and post-fit runtime follows `Driver demand -> torque request -> WOT torque-curve inverse -> equilibrium rpm`.
 
 ### Important Sections
 
@@ -153,6 +156,10 @@ The checked-in configuration uses `false`.
 `ui.simulated_time_per_frame_s` sets the target amount of physical time to advance per GUI frame.
 The solver then chooses a numerically smaller step internally when engine speed rises.
 
+To keep the GUI responsive, the dashboard also enforces a per-frame simulation wall-clock budget.
+Under heavy conditions it may leave part of the requested simulated time as backlog for a later frame instead of blocking the UI.
+When the `Pressure` view is not open, the `p-V` diagnostics also drop to a lower background sampling density so sliders and tabs stay responsive.
+
 ## Reading The Plots Correctly
 
 ### `p-V`
@@ -167,6 +174,9 @@ It is useful for relative trends such as:
 - pumping-loss changes
 
 When combustion is active, the plot also overlays ignition, `SOC/EOC`, and `CA10/50/90` markers.
+
+While the `Pressure` view is open, this diagnostic runs at full density.
+On other views it falls back to a lighter background density, so `IMEP / eta_i` updates become coarser in exchange for better UI responsiveness.
 
 It is not the main engine-state ODE itself, and it is not a direct measured cylinder-pressure trace.
 

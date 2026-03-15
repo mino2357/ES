@@ -1,4 +1,4 @@
-﻿# ES Simulator User Manual
+﻿# ES User Manual
 
 この文書は self-contained です。
 現在の GUI 中心 simulator を build、run、操作、解釈するための manual をまとめています。
@@ -15,7 +15,7 @@
 
 ## 対象範囲
 
-`ES Simulator` は、stylized な test-cell dashboard を持つ reduced-order inline-4 engine simulator です。
+`ES` は、stylized な test-cell dashboard を持つ reduced-order inline-4 engine simulator です。
 目的は、対話的な過渡計算、物理的に解釈しやすい load response の観察、可視化です。
 
 次のものではありません。
@@ -75,12 +75,13 @@ header には次のような annunciator が並びます。
 
 - speed、torque、power、absorber torque、trapped air、intake pressure、absorber limit、indicated efficiency の digital readout
 - RPM、MAP、lambda、BMEP、exhaust temperature、absorber torque、internal EGR の gauge
-- throttle、`Target RPM`、ignition、VVT の linear meter
+- throttle、`Eq RPM`、ignition、VVT の linear meter
 
 ### Plot
 
 中央から下段には次が表示されます。
 
+- `Map` view の `Map fill` toggle で、`BSFC + limit` と `Full BSFC` を切り替えられます
 - cylinder `p-V`
 - cylinder `p-theta`
 - 図示トルク、正味トルク、正味出力、IMEP / indicated efficiency
@@ -96,7 +97,7 @@ header には次のような annunciator が並びます。
 1. application を起動する
 2. 起動直後は startup numerical fit が自動で走る
 3. その間も `p-V`、`p-theta`、図示トルクを見ながら収束を確認する
-4. fit が `READY` になったら、`Runtime` タブで `Driver demand` と `Target RPM` を使って standard runtime を動かせる
+4. fit が `READY` になったら、`Runtime` タブで `Driver demand` を使って standard runtime を動かせる
 5. actuator を直接触りたい場合は `Actuator lab` に切り替え、`Throttle override`、`Ignition override`、`VVT` を操作する
 6. 必要に応じて `Spark` と `Fuel` を切り替える
 
@@ -105,10 +106,9 @@ header には次のような annunciator が並びます。
 主要な operator input は次です。
 
 - `Driver demand`
-- `Target RPM`
 
-dashboard 側の speed-hold controller は current shaft torque を推定し、そのうえで
-RPM error が 0 に向かうよう内部の `load_cmd` を自動調整します。
+dashboard 側の load controller は `Driver demand -> torque request -> WOT torque curve inverse -> equilibrium rpm`
+を使い、その平衡回転数へ向かうよう内部の `load_cmd` を自動調整します。
 主要な output は次です。
 
 - `Required brake torque`
@@ -159,6 +159,9 @@ checked-in の既定値は `Vehicle eq.` です。
 
 startup fit artifact は [../cache/startup_fit](../cache/startup_fit) に保存されます。
 再利用条件は「同じ build identity」と「同じ生 YAML text」です。
+startup fit 自体は UI frame loop と切り離した background worker として走ります。
+fit 用 numerics は runtime より粗く、既定 contract は `10 min` cap、release fit は `WOT` 固定の `16` candidates、各 candidate 最大 `6` cycles、`1200` RKF steps / cycle です。
+release fit の後には `1000..7000 rpm` の `13` 点で WOT torque curve を構築し、post-fit runtime は `Driver demand -> torque request -> WOT torque curve inverse -> equilibrium rpm` で状態を決めます。
 
 ### 主な section
 
@@ -183,6 +186,10 @@ checked-in の設定は `false` です。
 `ui.simulated_time_per_frame_s` は 1 frame あたりに進めたい physical time を表します。
 solver は engine speed が上がると、その内部でさらに小さい numerical step を選びます。
 
+GUI の操作性を優先するため、dashboard は 1 frame あたりの simulation wall-clock 予算を持っています。
+そのため、重い条件では 1 frame で要求した simulated time を全部消化せず、次 frame へ backlog することがあります。
+また `Pressure` view を開いていない間は `p-V` 系の診断 sampling を background density に落として、slider や tab 操作を受け付けやすくしています。
+
 ## Plot の読み方
 
 ### `p-V`
@@ -197,6 +204,9 @@ solver は engine speed が上がると、その内部でさらに小さい nume
 - pumping loss の変化
 
 combustion が有効なときは ignition、`SOC/EOC`、`CA10/50/90` の marker も重ねて表示します。
+
+`Pressure` view を開いている間は、この表示用 diagnostic を full density で更新します。
+他の view では操作性優先のため background density へ落ちるので、`IMEP / eta_i` は相対的に粗い更新になります。
 
 一方で、これは main engine state ODE そのものではなく、実測 cylinder pressure でもありません。
 

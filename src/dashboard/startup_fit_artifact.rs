@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::build_info;
-use super::startup_fit::{StartupFitControls, StartupFitTorqueCurvePoint};
+use super::startup_fit::{
+    StartupFitControls, StartupFitTorqueCurvePoint, StartupFitWotTorquePoint,
+};
 use crate::config::LoadedAppConfig;
 
-const STARTUP_FIT_ARTIFACT_FORMAT_VERSION: u32 = 1;
+const STARTUP_FIT_ARTIFACT_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub(super) struct StartupFitCacheContext {
@@ -59,6 +61,7 @@ pub(super) struct StartupFitArtifactSnapshot {
     pub(super) best_required_brake_torque_nm: f64,
     pub(super) torque_margin_to_best_nm: f64,
     pub(super) torque_curve: Vec<StartupFitTorqueCurvePoint>,
+    pub(super) wot_torque_curve: Vec<StartupFitWotTorquePoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,6 +76,8 @@ pub(super) struct StartupFitArtifact {
     pub(super) best_required_brake_torque_nm: f64,
     pub(super) torque_margin_to_best_nm: f64,
     pub(super) torque_curve: Vec<StartupFitTorqueCurvePoint>,
+    #[serde(default)]
+    pub(super) wot_torque_curve: Vec<StartupFitWotTorquePoint>,
 }
 
 impl StartupFitArtifact {
@@ -91,6 +96,7 @@ impl StartupFitArtifact {
             best_required_brake_torque_nm: snapshot.best_required_brake_torque_nm,
             torque_margin_to_best_nm: snapshot.torque_margin_to_best_nm,
             torque_curve: snapshot.torque_curve,
+            wot_torque_curve: snapshot.wot_torque_curve,
         }
     }
 }
@@ -186,7 +192,9 @@ mod tests {
         StartupFitArtifact, StartupFitArtifactEvaluation, StartupFitArtifactSnapshot,
         StartupFitCacheContext, load_matching_artifact, save_artifact, stable_text_hash_hex,
     };
-    use crate::dashboard::startup_fit::{StartupFitControls, StartupFitTorqueCurvePoint};
+    use crate::dashboard::startup_fit::{
+        StartupFitControls, StartupFitTorqueCurvePoint, StartupFitWotTorquePoint,
+    };
 
     fn unique_temp_root() -> PathBuf {
         let nanos = SystemTime::now()
@@ -259,6 +267,11 @@ mod tests {
                 torque_curve: vec![StartupFitTorqueCurvePoint {
                     throttle_cmd: 0.22,
                     required_brake_torque_nm: 18.1,
+                }],
+                wot_torque_curve: vec![StartupFitWotTorquePoint {
+                    engine_speed_rpm: 2_000.0,
+                    available_brake_torque_nm: 18.1,
+                    ignition_timing_deg: 21.5,
                 }],
             },
         );

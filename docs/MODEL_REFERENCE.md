@@ -1,4 +1,4 @@
-# ES Simulator Model Reference
+﻿# ES Model Reference
 
 This document is self-contained.
 It describes the current reduced-order mathematical model, distinguishes differential states from algebraic closures, maps each part to the implementation, and lists the literature used as physical anchors.

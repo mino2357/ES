@@ -195,8 +195,9 @@ model:
   eta_base_max: 0.40
   # Lower clamp on final thermal efficiency after timing correction [-].
   eta_min: 0.02
-  # Upper clamp on final thermal efficiency after timing correction [-].
-  eta_max: 0.44
+  # Upper safety clamp on final thermal efficiency after timing correction [-].
+  # Set to 1.0 to avoid clipping plausible results below 100% efficiency.
+  eta_max: 1.00
   # Minimum RPM required before combustion may be enabled [rpm].
   combustion_enable_rpm_min: 120.0
   # Minimum intake pressure required before combustion may be enabled [Pa].
@@ -238,7 +239,7 @@ model:
   # Load exponent used in the displayed p-V combustion pressure rise model [-].
   combustion_pressure_load_exponent: 2.5
   # Absolute upper clamp on displayed peak cylinder pressure [Pa].
-  peak_pressure_max_pa: 8.0e6
+  peak_pressure_max_pa: 12.0e6
   # Lower guard on swept volume when converting sampled p-V loops into work [m^3].
   swept_volume_floor_sampling_m3: 1.0e-6
   # Lower guard on clearance volume used in the p-V reconstruction model [m^3].
@@ -249,8 +250,9 @@ model:
   eta_indicated_average_cycles: 3
   # Lower clamp on displayed indicated efficiency from the p-V loop [-].
   eta_indicated_min: -0.20
-  # Upper clamp on displayed indicated efficiency from the p-V loop [-].
-  eta_indicated_max: 0.44
+  # Upper safety clamp on displayed indicated efficiency from the p-V loop [-].
+  # Set to 1.0 to avoid clipping the displayed value below 100% efficiency.
+  eta_indicated_max: 1.00
   # Lower guard on swept volume when computing IMEP [m^3].
   imep_swept_volume_floor_m3: 1.0e-9
   # Lower guard on compression ratio in theoretical Otto-efficiency calculation [-].

@@ -1,4 +1,4 @@
-pub(super) const APP_NAME: &str = "ES Simulator Dashboard";
+pub(super) const APP_NAME: &str = "ES";
 
 pub(super) fn window_title() -> String {
     format!("{} [{}]", APP_NAME, short_badge())

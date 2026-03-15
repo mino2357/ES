@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::build_info;
 use super::panels;
-use super::state::DashboardState;
+use super::state::{DashboardState, DashboardUiLoadHint};
 use super::theme::DashboardTheme;
 use crate::config::{LoadedAppConfig, UiConfig};
 
@@ -114,12 +114,41 @@ impl CycleSubview {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MapFillMode {
+    BsfcLimit,
+    FullBsfc,
+}
+
+impl MapFillMode {
+    pub(super) const ALL: [Self; 2] = [Self::BsfcLimit, Self::FullBsfc];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::BsfcLimit => "BSFC + limit",
+            Self::FullBsfc => "Full BSFC",
+        }
+    }
+
+    pub(super) fn detail(self) -> &'static str {
+        match self {
+            Self::BsfcLimit => {
+                "Reachable cells are colored by BSFC, and cells above local WOT stay red."
+            }
+            Self::FullBsfc => {
+                "Fill the whole speed x torque table with the BSFC surrogate and keep over-WOT cells marked by a red border."
+            }
+        }
+    }
+}
+
 pub(super) struct DashboardApp {
     theme: DashboardTheme,
     ui_config: UiConfig,
     state: DashboardState,
     visualization_tab: VisualizationTab,
     operator_tab: OperatorTab,
+    map_fill_mode: MapFillMode,
     pressure_subview: PressureSubview,
     cycle_subview: CycleSubview,
     header_badge: String,
@@ -136,6 +165,7 @@ impl DashboardApp {
             state,
             visualization_tab: VisualizationTab::Map,
             operator_tab: OperatorTab::Fit,
+            map_fill_mode: MapFillMode::FullBsfc,
             pressure_subview: PressureSubview::Pv,
             cycle_subview: CycleSubview::Rpm,
             header_badge: build_info::header_badge(),
@@ -146,6 +176,10 @@ impl DashboardApp {
 impl eframe::App for DashboardApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.state.apply_shortcuts(ctx, &self.ui_config);
+        self.state.set_ui_load_hint(DashboardUiLoadHint {
+            pressure_tab_visible: self.visualization_tab == VisualizationTab::Pressure,
+            interaction_active: ui_interaction_active(ctx),
+        });
         self.state.advance_simulation(&self.ui_config);
 
         panels::render_simple_dashboard(
@@ -155,6 +189,7 @@ impl eframe::App for DashboardApp {
             &mut self.state,
             &mut self.visualization_tab,
             &mut self.operator_tab,
+            &mut self.map_fill_mode,
             &mut self.pressure_subview,
             &mut self.cycle_subview,
             &self.header_badge,
@@ -163,6 +198,25 @@ impl eframe::App for DashboardApp {
         let frame_ms = 1000u64 / self.ui_config.repaint_hz.max(1) as u64;
         ctx.request_repaint_after(Duration::from_millis(frame_ms.max(1)));
     }
+}
+
+fn ui_interaction_active(ctx: &egui::Context) -> bool {
+    ctx.input(|i| {
+        i.pointer.any_down()
+            || i.raw_scroll_delta != egui::Vec2::ZERO
+            || !i.keys_down.is_empty()
+            || i.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::PointerButton { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Cut
+                        | egui::Event::Copy
+                        | egui::Event::Key { pressed: true, .. }
+                )
+            })
+    })
 }
 
 fn run_app_with_options(

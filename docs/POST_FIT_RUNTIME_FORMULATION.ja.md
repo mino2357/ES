@@ -13,6 +13,12 @@
 
 です。
 
+2026-03-15 の現行実装では、standard runtime は
+`per-throttle MBT curve` を逆読みする方式から、
+`WOT torque curve` を逆読みして equilibrium RPM を作る方式へ移っています。
+したがってこの文書のうち `baseline throttle` を per-throttle inverse map として説明している節は、
+次の改訂で `WOT baseline + torque request -> equilibrium RPM` の式へ更新します。
+
 ## 関連文書
 
 - [CALIBRATION_MAP_RUNTIME_DECISION_MEMO.ja.md](CALIBRATION_MAP_RUNTIME_DECISION_MEMO.ja.md): 設計判断の整理

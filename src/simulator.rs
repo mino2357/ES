@@ -312,6 +312,7 @@ pub(crate) struct Simulator {
     net_torque_cycle_recent_nm: VecDeque<f64>,
     torque_net_filtered_nm: f64,
     step_count: u64,
+    pressure_trace_output_enabled: bool,
 }
 
 impl Simulator {
@@ -387,7 +388,12 @@ impl Simulator {
             ),
             torque_net_filtered_nm: 0.0,
             step_count: 0,
+            pressure_trace_output_enabled: true,
         }
+    }
+
+    pub(crate) fn set_pressure_trace_output_enabled(&mut self, enabled: bool) {
+        self.pressure_trace_output_enabled = enabled;
     }
 
     pub(crate) fn seed_operating_point(
@@ -2132,7 +2138,7 @@ impl Simulator {
         if pv_display_active {
             self.trim_pv_history();
         }
-        let pv_points = if pv_display_active {
+        let pv_points = if pv_display_active && self.pressure_trace_output_enabled {
             self.build_pv_display_points()
         } else {
             Vec::new()

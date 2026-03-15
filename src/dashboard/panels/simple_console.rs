@@ -3,7 +3,9 @@ use std::f64::consts::PI;
 use eframe::egui;
 use egui_plot::{Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, VLine};
 
-use super::super::app::{CycleSubview, OperatorTab, PressureSubview, VisualizationTab};
+use super::super::app::{
+    CycleSubview, MapFillMode, OperatorTab, PressureSubview, VisualizationTab,
+};
 use super::super::build_info;
 use super::super::simple_view_model::{
     OPERATING_POINT_BRAKE_LABELS, OPERATING_POINT_SPEED_LABELS, OperatingPointCellHeatViewModel,
@@ -40,11 +42,12 @@ pub(crate) fn render_simple_dashboard(
     state: &mut DashboardState,
     active_tab: &mut VisualizationTab,
     operator_tab: &mut OperatorTab,
+    map_fill_mode: &mut MapFillMode,
     pressure_subview: &mut PressureSubview,
     cycle_subview: &mut CycleSubview,
     header_badge: &str,
 ) {
-    let view = SimpleDashboardViewModel::from_state(state, ui_config);
+    let view = SimpleDashboardViewModel::from_state(state, ui_config, *map_fill_mode);
     render_header(ctx, theme, &view, header_badge);
     render_controls_panel(
         ctx,
@@ -62,6 +65,7 @@ pub(crate) fn render_simple_dashboard(
         state,
         &view,
         active_tab,
+        map_fill_mode,
         pressure_subview,
         cycle_subview,
     );
@@ -81,7 +85,7 @@ fn render_header(
                 ui.vertical(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.heading(
-                            egui::RichText::new("ES Simulator")
+                            egui::RichText::new("ES")
                                 .color(theme.text_main)
                                 .strong(),
                         );
@@ -133,9 +137,9 @@ fn render_controls_panel(
     header_badge: &str,
 ) {
     egui::SidePanel::left("simple_controls_v2")
-        .default_width(336.0)
+        .default_width(352.0)
         .min_width(320.0)
-        .max_width(380.0)
+        .max_width(420.0)
         .resizable(true)
         .show(ctx, |ui| {
             theme.rack_frame().show(ui, |ui| {
@@ -165,6 +169,7 @@ fn render_visualization_panel(
     state: &DashboardState,
     view: &SimpleDashboardViewModel,
     active_tab: &mut VisualizationTab,
+    map_fill_mode: &mut MapFillMode,
     pressure_subview: &mut PressureSubview,
     cycle_subview: &mut CycleSubview,
 ) {
@@ -191,7 +196,7 @@ fn render_visualization_panel(
                     VisualizationTab::Overview => {
                         render_overview_tab(ui, theme, ui_config, state, view)
                     }
-                    VisualizationTab::Map => render_map_tab(ui, theme, view),
+                    VisualizationTab::Map => render_map_tab(ui, theme, view, map_fill_mode),
                     VisualizationTab::Fit => {
                         render_fit_diagnostics_tab(ui, theme, ui_config, state, &fit_status)
                     }
@@ -235,22 +240,20 @@ fn render_status_tab(
     ui.separator();
     ui.label(&view.live_status_message);
     ui.separator();
-    egui::Grid::new("live_status_grid")
-        .num_columns(2)
-        .spacing(egui::vec2(12.0, 8.0))
-        .show(ui, |ui| {
-            for row in &view.live_rows {
-                render_status_row(ui, row);
-            }
-        });
+    for row in &view.live_rows {
+        render_status_row(ui, row);
+    }
 }
 
 fn render_status_row(ui: &mut egui::Ui, row: &StatusRow) {
-    ui.label(row.label);
-    ui.vertical(|ui| {
-        ui.label(&row.value);
+    ui.horizontal_top(|ui| {
+        ui.add_sized([128.0, 0.0], egui::Label::new(row.label));
+        ui.add_sized(
+            [safe_available_width(ui, 160.0), 0.0],
+            egui::Label::new(row.value.as_str()).wrap(),
+        );
     });
-    ui.end_row();
+    ui.add_space(4.0);
 }
 
 fn render_operator_tabs(ui: &mut egui::Ui, theme: DashboardTheme, operator_tab: &mut OperatorTab) {
@@ -264,30 +267,30 @@ fn render_operator_tabs(ui: &mut egui::Ui, theme: DashboardTheme, operator_tab: 
 }
 
 fn render_fit_panel(ui: &mut egui::Ui, theme: DashboardTheme, view: &SimpleDashboardViewModel) {
-    ui.label(&view.fit_detail);
+    ui.add(egui::Label::new(view.fit_detail.as_str()).wrap());
     theme.instrument_frame(theme.cyan).show(ui, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.colored_label(
                 fit_status_color(theme, view.fit_phase),
                 egui::RichText::new(view.fit_status_value).strong(),
             );
-            ui.label(egui::RichText::new(&view.fit_progress_label).color(theme.text_soft));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(view.fit_progress_label.as_str()).color(theme.text_soft),
+                )
+                .wrap(),
+            );
         });
         ui.add(
             egui::ProgressBar::new(view.fit_progress_fraction)
                 .desired_width(safe_available_width(ui, 220.0))
-                .text(view.fit_progress_label.clone()),
+                .text(""),
         );
     });
     ui.add_space(6.0);
-    egui::Grid::new("fit_grid")
-        .num_columns(2)
-        .spacing(egui::vec2(12.0, 6.0))
-        .show(ui, |ui| {
-            for row in &view.fit_rows {
-                render_status_row(ui, row);
-            }
-        });
+    for row in &view.fit_rows {
+        render_status_row(ui, row);
+    }
 }
 
 fn render_manual_panel(
@@ -343,13 +346,10 @@ fn render_manual_panel(
                 state.post_fit_baseline.vvt_intake_deg,
                 state.post_fit_baseline.vvt_exhaust_deg
             ));
-            ui.add(
-                egui::Slider::new(
-                    &mut state.load_target_rpm,
-                    0.0..=state.sim.params.max_rpm,
-                )
-                .text("Target RPM"),
-            );
+            ui.label(format!(
+                "Map equilibrium RPM: {:.0}",
+                state.post_fit_baseline.equilibrium_rpm
+            ));
             state.refresh_post_fit_preview();
             ui.label(format!(
                 "Required brake torque: {:.1} Nm / RPM err {:+.0}",
@@ -618,7 +618,7 @@ fn render_overview_tab(
                 max: state.sim.params.max_rpm,
                 unit: "rpm",
                 accent: theme.cyan,
-                footer: &format!("target {:.0} rpm", state.load_target_rpm),
+                footer: &format!("target {:.0} rpm", state.displayed_target_rpm()),
                 width: 148.0,
                 height: 104.0,
             },
@@ -745,8 +745,13 @@ fn render_overview_tab(
     });
 }
 
-fn render_map_tab(ui: &mut egui::Ui, theme: DashboardTheme, view: &SimpleDashboardViewModel) {
-    render_operating_point_table(ui, theme, &view.operating_point_table);
+fn render_map_tab(
+    ui: &mut egui::Ui,
+    theme: DashboardTheme,
+    view: &SimpleDashboardViewModel,
+    map_fill_mode: &mut MapFillMode,
+) {
+    render_operating_point_table(ui, theme, &view.operating_point_table, map_fill_mode);
 }
 
 fn render_fit_diagnostics_tab(
@@ -756,6 +761,11 @@ fn render_fit_diagnostics_tab(
     state: &DashboardState,
     fit: &StartupFitStatus,
 ) {
+    if !fit.active && !fit.wot_torque_curve.is_empty() {
+        render_wot_fit_diagnostics_tab(ui, theme, ui_config, state, fit);
+        return;
+    }
+
     let mut series = Vec::new();
     let coarse_series = build_fit_torque_curve_series(
         "Coarse MBT best",
@@ -813,7 +823,7 @@ fn render_fit_diagnostics_tab(
     ui.horizontal_wrapped(|ui| {
         ui.label(
             egui::RichText::new(
-                "Each point is the per-throttle MBT result; y is the brake torque required to hold the target RPM.",
+                "Each point is the WOT MBT result at the fit target RPM; y is the brake torque required to hold that fixed speed.",
             )
             .color(theme.text_soft)
             .monospace()
@@ -879,6 +889,89 @@ fn render_fit_diagnostics_tab(
     );
 }
 
+fn render_wot_fit_diagnostics_tab(
+    ui: &mut egui::Ui,
+    theme: DashboardTheme,
+    ui_config: &UiConfig,
+    state: &DashboardState,
+    fit: &StartupFitStatus,
+) {
+    let series = vec![build_wot_torque_curve_series(
+        "WOT torque curve",
+        theme.green,
+        &fit.wot_torque_curve,
+    )];
+    let markers = vec![
+        PlotMarker {
+            name: Some("Selected release".to_owned()),
+            color: theme.green,
+            point: [fit.release_avg_rpm, fit.release_required_brake_torque_nm],
+            shape: MarkerShape::Circle,
+            radius: 6.0,
+        },
+        PlotMarker {
+            name: Some("Live point".to_owned()),
+            color: theme.cyan,
+            point: [state.latest.rpm, state.latest.torque_load_nm],
+            shape: MarkerShape::Square,
+            radius: 5.5,
+        },
+    ];
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(
+                "Post-fit runtime uses this WOT brake-torque curve. Driver demand chooses a torque request, and the inverse curve defines the equilibrium RPM.",
+            )
+            .color(theme.text_soft)
+            .monospace()
+            .size(10.0),
+        );
+    });
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(
+            theme.green,
+            format!(
+                "REL {:.0} rpm / {:+.1} Nm / spark {:.1}",
+                fit.release_avg_rpm,
+                fit.release_required_brake_torque_nm,
+                fit.release_ignition_timing_deg
+            ),
+        );
+        ui.separator();
+        ui.colored_label(
+            theme.cyan,
+            format!(
+                "LIVE {:.0} rpm / load {:+.1} Nm / throttle {:.1}%",
+                state.latest.rpm,
+                state.latest.torque_load_nm,
+                state.sim.control.throttle_cmd * 100.0
+            ),
+        );
+    });
+    ui.add_space(6.0);
+
+    let plot_height = bounded_plot_height(ui, ui_config.plot_height_px * 1.9, 260.0, 460.0, 170.0);
+    render_line_plot(
+        ui,
+        theme,
+        ui_config,
+        "startup_fit_wot_curve_plot",
+        "WOT torque curve",
+        "Available brake torque at WOT across engine speed",
+        theme.green,
+        "Engine speed [rpm]",
+        "Available brake torque [Nm]",
+        bounds_from_series(&series, 0, (800.0, 7_200.0), 250.0, 0.08, Some(0.0)),
+        bounds_from_series(&series, 1, (0.0, 40.0), 10.0, 0.14, Some(0.0)),
+        &series,
+        &markers,
+        None,
+        plot_height,
+    );
+}
+
 fn build_fit_torque_curve_series(
     name: &str,
     color: egui::Color32,
@@ -897,10 +990,29 @@ fn build_fit_torque_curve_series(
     }
 }
 
+fn build_wot_torque_curve_series(
+    name: &str,
+    color: egui::Color32,
+    curve: &[crate::dashboard::startup_fit::StartupFitWotTorquePoint],
+) -> PlotSeries {
+    PlotSeries {
+        name: Some(name.to_owned()),
+        color,
+        points: curve
+            .iter()
+            .filter_map(|point| {
+                let plot_point = [point.engine_speed_rpm, point.available_brake_torque_nm];
+                point_is_finite(plot_point).then_some(plot_point)
+            })
+            .collect(),
+    }
+}
+
 fn render_operating_point_table(
     ui: &mut egui::Ui,
     theme: DashboardTheme,
     table: &OperatingPointTableViewModel,
+    map_fill_mode: &mut MapFillMode,
 ) {
     monitor_heading(
         ui,
@@ -912,11 +1024,69 @@ fn render_operating_point_table(
     theme.instrument_frame(theme.green).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.label(
+                egui::RichText::new("Map fill")
+                    .color(theme.text_soft)
+                    .monospace()
+                    .size(10.0),
+            );
+            for mode in MapFillMode::ALL {
+                let active = *map_fill_mode == mode;
+                let button =
+                    egui::Button::new(egui::RichText::new(mode.label()).color(if active {
+                        theme.text_main
+                    } else {
+                        theme.text_soft
+                    }))
+                    .fill(if active {
+                        theme.panel_alt_bg
+                    } else {
+                        theme.panel_bg
+                    })
+                    .stroke(egui::Stroke::new(
+                        if active { 1.4 } else { 1.0 },
+                        if active { theme.amber } else { theme.bezel },
+                    ));
+                if ui.add(button).clicked() {
+                    *map_fill_mode = mode;
+                }
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new(map_fill_mode.detail())
+                    .color(theme.text_soft)
+                    .monospace()
+                    .size(10.0),
+            );
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
                 egui::RichText::new(table.note)
                     .color(theme.text_soft)
                     .monospace()
                     .size(10.0),
             );
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(theme.cyan, "BSFC good");
+            ui.separator();
+            ui.colored_label(theme.green, "BSFC mid");
+            ui.separator();
+            ui.colored_label(theme.amber, "BSFC high");
+            ui.separator();
+            ui.colored_label(
+                theme.red,
+                if *map_fill_mode == MapFillMode::FullBsfc {
+                    "Over WOT border"
+                } else {
+                    "Above WOT"
+                },
+            );
+            ui.separator();
+            ui.colored_label(egui::Color32::from_rgb(70, 105, 138), "Coarse hit");
+            ui.separator();
+            ui.colored_label(theme.green, "Refine hit");
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -1031,13 +1201,18 @@ fn paint_operating_point_table(
             let live_here = table.live_marker.cell.row == row && table.live_marker.cell.col == col;
             let stroke = if fit_here || result_here || live_here {
                 egui::Stroke::new(1.2, theme.chrome)
+            } else if table.fill_mode == MapFillMode::FullBsfc
+                && cell_heat.wot_envelope_known
+                && cell_heat.wot_ratio > 1.0
+            {
+                egui::Stroke::new(1.1, theme.red.gamma_multiply(0.9))
             } else {
                 egui::Stroke::new(1.0, theme.bezel)
             };
             painter.rect_filled(
                 cell_rect,
                 6.0,
-                operating_point_cell_fill(theme, cell_heat, table.max_heat_hits),
+                operating_point_cell_fill(theme, cell_heat, table.max_heat_hits, table.fill_mode),
             );
             painter.rect_stroke(cell_rect, 6.0, stroke, egui::StrokeKind::Inside);
             paint_operating_point_count(&painter, cell_rect, band_font.clone(), theme, cell_heat);
@@ -1058,13 +1233,9 @@ fn operating_point_cell_fill(
     theme: DashboardTheme,
     heat: OperatingPointCellHeatViewModel,
     max_hits: u16,
+    fill_mode: MapFillMode,
 ) -> egui::Color32 {
-    let total_hits = heat.coarse_hits.saturating_add(heat.refine_hits);
-    if total_hits == 0 || max_hits == 0 {
-        return theme.panel_alt_bg;
-    }
-
-    let mut fill = theme.panel_alt_bg;
+    let mut fill = operating_point_bsfc_fill(theme, heat, fill_mode);
     if heat.coarse_hits > 0 {
         let coarse_ratio = (heat.coarse_hits as f32 / max_hits as f32).clamp(0.0, 1.0);
         fill = mix_color(
@@ -1078,6 +1249,41 @@ fn operating_point_cell_fill(
         fill = mix_color(fill, theme.green, 0.18 + 0.44 * refine_ratio);
     }
     fill
+}
+
+fn operating_point_bsfc_fill(
+    theme: DashboardTheme,
+    heat: OperatingPointCellHeatViewModel,
+    fill_mode: MapFillMode,
+) -> egui::Color32 {
+    let base = theme.panel_alt_bg;
+    if !heat.wot_envelope_known {
+        return base;
+    }
+
+    if fill_mode == MapFillMode::BsfcLimit && heat.wot_ratio > 1.0 {
+        let overshoot = ((heat.wot_ratio - 1.0) / 0.40).clamp(0.0, 1.0);
+        return mix_color(base, theme.red, 0.22 + 0.32 * overshoot);
+    }
+
+    if !heat.bsfc_known {
+        return mix_color(base, theme.chrome, 0.12);
+    }
+
+    let bsfc = heat.estimated_bsfc_g_per_kwh;
+    if bsfc <= 260.0 {
+        let quality = ((260.0 - bsfc) / 40.0).clamp(0.0, 1.0);
+        mix_color(base, theme.cyan, 0.28 + 0.20 * quality)
+    } else if bsfc <= 320.0 {
+        let quality = ((320.0 - bsfc) / 60.0).clamp(0.0, 1.0);
+        mix_color(base, theme.green, 0.24 + 0.18 * quality)
+    } else if bsfc <= 420.0 {
+        let penalty = ((bsfc - 320.0) / 100.0).clamp(0.0, 1.0);
+        mix_color(base, theme.amber, 0.22 + 0.18 * penalty)
+    } else {
+        let penalty = ((bsfc - 420.0) / 180.0).clamp(0.0, 1.0);
+        mix_color(base, theme.red, 0.18 + 0.22 * penalty)
+    }
 }
 
 fn paint_operating_point_count(
@@ -1188,117 +1394,123 @@ fn render_pressure_tab(
     state: &DashboardState,
     pressure_subview: &mut PressureSubview,
 ) {
-    let pv_points: Vec<[f64; 2]> = state
-        .latest
-        .pv_points
-        .iter()
-        .filter_map(|(volume, pressure_pa)| {
-            let point = [*volume, *pressure_pa * 1.0e-3];
-            point_is_finite(point).then_some(point)
-        })
-        .collect();
-    let pv_series = vec![PlotSeries {
-        name: Some("p-V".to_owned()),
-        color: egui::Color32::from_rgb(255, 170, 40),
-        points: pv_points,
-    }];
-    let log_series = vec![PlotSeries {
-        name: Some("log10 p-V".to_owned()),
-        color: theme.cyan,
-        points: build_log_log_pv_points(&state.latest.pv_points),
-    }];
-    let ptheta_curves = state
-        .sim
-        .build_ptheta_display_curves(ptheta_display_sample_count(
-            ui.available_width().max(320.0),
-            state.sim.model.pv_display_bins,
-        ));
-    let ptheta_series: Vec<PlotSeries> = ptheta_curves
-        .iter()
-        .enumerate()
-        .map(|(idx, curve)| PlotSeries {
-            name: Some(format!("Cyl {}", idx + 1)),
-            color: cylinder_trace_color(idx),
-            points: curve
-                .iter()
-                .filter_map(|(theta, pressure_pa)| {
-                    let point = [*theta, *pressure_pa * 1.0e-3];
-                    point_is_finite(point).then_some(point)
-                })
-                .collect(),
-        })
-        .collect();
-    let pv_markers = pv_combustion_markers(state, theme);
     render_pressure_subtabs(ui, theme, pressure_subview);
     ui.add_space(6.0);
     let plot_height = bounded_plot_height(ui, ui_config.pv_plot_height_px, 220.0, 360.0, 210.0);
 
     match *pressure_subview {
-        PressureSubview::Pv => render_line_plot(
-            ui,
-            theme,
-            ui_config,
-            "simple_pv_plot",
-            "Cylinder p-V",
-            "single-zone diagnostic loop",
-            theme.amber,
-            "Normalized volume [-]",
-            "Pressure [kPa]",
-            (state.sim.plot.pv_x_min, state.sim.plot.pv_x_max),
-            bounds_from_series(
+        PressureSubview::Pv => {
+            let pv_points: Vec<[f64; 2]> = state
+                .latest
+                .pv_points
+                .iter()
+                .filter_map(|(volume, pressure_pa)| {
+                    let point = [*volume, *pressure_pa * 1.0e-3];
+                    point_is_finite(point).then_some(point)
+                })
+                .collect();
+            let pv_series = vec![PlotSeries {
+                name: Some("p-V".to_owned()),
+                color: egui::Color32::from_rgb(255, 170, 40),
+                points: pv_points,
+            }];
+            let pv_markers = pv_combustion_markers(state, theme);
+            render_line_plot(
+                ui,
+                theme,
+                ui_config,
+                "simple_pv_plot",
+                "Cylinder p-V",
+                "single-zone diagnostic loop",
+                theme.amber,
+                "Normalized volume [-]",
+                "Pressure [kPa]",
+                (state.sim.plot.pv_x_min, state.sim.plot.pv_x_max),
+                bounds_from_series(
+                    &pv_series,
+                    1,
+                    (state.sim.plot.pv_y_min_kpa, state.sim.plot.pv_y_max_kpa),
+                    20.0,
+                    0.08,
+                    Some(state.sim.plot.pv_y_min_kpa),
+                ),
                 &pv_series,
-                1,
-                (state.sim.plot.pv_y_min_kpa, state.sim.plot.pv_y_max_kpa),
-                20.0,
-                0.08,
-                Some(state.sim.plot.pv_y_min_kpa),
-            ),
-            &pv_series,
-            &pv_markers,
-            None,
-            plot_height,
-        ),
-        PressureSubview::LogPv => render_line_plot(
-            ui,
-            theme,
-            ui_config,
-            "simple_log_pv_plot",
-            "Cylinder p-V (log-log)",
-            "log10 volume vs log10 pressure",
-            theme.cyan,
-            "log10 Normalized volume [-]",
-            "log10 Pressure [kPa]",
-            bounds_from_series(&log_series, 0, (-3.0, 0.5), 0.1, 0.06, None),
-            bounds_from_series(&log_series, 1, (0.0, 3.5), 0.1, 0.06, None),
-            &log_series,
-            &[],
-            None,
-            plot_height,
-        ),
-        PressureSubview::Ptheta => render_line_plot(
-            ui,
-            theme,
-            ui_config,
-            "simple_ptheta_plot",
-            "Cylinder p-theta",
-            "4-cylinder overlay / 0..720 degCA",
-            theme.green,
-            "Crank angle [degCA]",
-            "Pressure [kPa]",
-            (0.0, 720.0),
-            bounds_from_series(
+                &pv_markers,
+                None,
+                plot_height,
+            )
+        }
+        PressureSubview::LogPv => {
+            let log_series = vec![PlotSeries {
+                name: Some("log10 p-V".to_owned()),
+                color: theme.cyan,
+                points: build_log_log_pv_points(&state.latest.pv_points),
+            }];
+            render_line_plot(
+                ui,
+                theme,
+                ui_config,
+                "simple_log_pv_plot",
+                "Cylinder p-V (log-log)",
+                "log10 volume vs log10 pressure",
+                theme.cyan,
+                "log10 Normalized volume [-]",
+                "log10 Pressure [kPa]",
+                bounds_from_series(&log_series, 0, (-3.0, 0.5), 0.1, 0.06, None),
+                bounds_from_series(&log_series, 1, (0.0, 3.5), 0.1, 0.06, None),
+                &log_series,
+                &[],
+                None,
+                plot_height,
+            )
+        }
+        PressureSubview::Ptheta => {
+            let ptheta_curves = state
+                .sim
+                .build_ptheta_display_curves(ptheta_display_sample_count(
+                    ui.available_width().max(320.0),
+                    state.sim.model.pv_display_bins,
+                ));
+            let ptheta_series: Vec<PlotSeries> = ptheta_curves
+                .iter()
+                .enumerate()
+                .map(|(idx, curve)| PlotSeries {
+                    name: Some(format!("Cyl {}", idx + 1)),
+                    color: cylinder_trace_color(idx),
+                    points: curve
+                        .iter()
+                        .filter_map(|(theta, pressure_pa)| {
+                            let point = [*theta, *pressure_pa * 1.0e-3];
+                            point_is_finite(point).then_some(point)
+                        })
+                        .collect(),
+                })
+                .collect();
+            render_line_plot(
+                ui,
+                theme,
+                ui_config,
+                "simple_ptheta_plot",
+                "Cylinder p-theta",
+                "4-cylinder overlay / 0..720 degCA",
+                theme.green,
+                "Crank angle [degCA]",
+                "Pressure [kPa]",
+                (0.0, 720.0),
+                bounds_from_series(
+                    &ptheta_series,
+                    1,
+                    (state.sim.plot.pv_y_min_kpa, state.sim.plot.pv_y_max_kpa),
+                    20.0,
+                    0.08,
+                    Some(state.sim.plot.pv_y_min_kpa),
+                ),
                 &ptheta_series,
-                1,
-                (state.sim.plot.pv_y_min_kpa, state.sim.plot.pv_y_max_kpa),
-                20.0,
-                0.08,
-                Some(state.sim.plot.pv_y_min_kpa),
-            ),
-            &ptheta_series,
-            &[],
-            None,
-            plot_height,
-        ),
+                &[],
+                None,
+                plot_height,
+            )
+        }
     }
 }
 

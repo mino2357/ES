@@ -1705,7 +1705,7 @@ fn audit_model(cfg: &AppConfig, report: &mut ConfigAuditReport) {
         "model.intake_pressure_max_pa",
     );
 
-    if model.eta_indicated_max > 0.52 {
+    if model.eta_indicated_max > 0.52 && model.eta_indicated_max < 0.999 {
         report.warning(format!(
             "'model.eta_indicated_max' = {} is above a typical SI indicated-efficiency ceiling",
             model.eta_indicated_max

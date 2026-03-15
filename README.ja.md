@@ -1,6 +1,6 @@
-﻿# ES Simulator
+﻿# ES
 
-`ES Simulator` は、EDM 風の操作盤を持つ inline-4 engine simulator です。
+`ES` は、EDM 風の操作盤を持つ inline-4 engine simulator です。
 主眼は、GUI 上で reduced-order の過渡 engine model を動かし、物理的に解釈しやすい load response と `p-V` / `p-theta` 可視化を一体で扱うことにあります。
 
 この repository で現在サポートしている製品経路は 1 つだけです。
@@ -8,10 +8,11 @@
 - desktop GUI simulation
 - reduced-order transient engine model
 - physically interpretable external-load modeling
-- operator 側の `Throttle cmd` と `Target RPM` 入力、それに対する brake torque / power 表示
+- operator 側の `Driver demand` 入力と、教育用 `Actuator lab` での manual throttle / ignition / VVT override
 - `p-V` と `p-theta` の可視化
 
-別系統の offline solver はありません。
+別製品としての offline solver はありません。
+ただし startup fit 自体は、UI frame loop と切り離した background worker / headless runner で実行します。
 audio synthesis path もありません。
 
 ## 用語
@@ -95,6 +96,17 @@ checked-in の `sim.yaml` は、
 
 startup fit が `READY` になると、その結果は `cache/startup_fit/` に YAML artifact として保存されます。
 次回起動時に build identity と入力 YAML text が一致すれば、その artifact を読み込んで重い fit を再実行しません。
+
+startup fit の既定 contract は次です。
+
+- wall-clock 合格条件: `10 min` 以内
+- release fit 候補数: `WOT` 固定 x (`10` coarse ignition + `6` local-refine ignition) = `16` candidates
+- post-fit WOT torque curve: `1000..7000 rpm` の `13` 点を headless sweep して構築
+- 1 候補あたりの上限: `6` cycles, `1200` RKF steps / cycle
+- fit 専用 numerics: `accuracy_target_deg_per_step = 4.5 deg`, `accuracy_dt_max_s = 2.5 ms`, `rpm_link_dt_min_floor_s = 0.1 ms`
+
+したがって release fit 本体の worst-case accepted RKF step budget は `16 x 6 x 1200 = 115,200` steps です。
+post-fit runtime では throttle baseline は基本 `WOT` に固定し、`Driver demand -> torque request -> WOT torque curve inverse -> equilibrium rpm` の経路で状態を決めます。
 
 ## 実装の入口
 

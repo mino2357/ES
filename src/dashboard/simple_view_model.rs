@@ -1,8 +1,11 @@
+use super::app::MapFillMode;
 use super::startup_fit::{
-    StartupFitPhase, StartupFitStatus, startup_fit_wall_limit_label, startup_fit_wall_limit_s,
+    StartupFitPhase, StartupFitStatus, StartupFitWotTorquePoint, startup_fit_wall_limit_label,
+    startup_fit_wall_limit_s,
 };
 use super::state::DashboardState;
-use crate::config::UiConfig;
+use crate::config::{ModelConfig, UiConfig};
+use crate::constants::FUEL_LHV_J_PER_KG;
 
 pub(super) struct StatusRow {
     pub(super) label: &'static str,
@@ -23,9 +26,14 @@ pub(super) struct OperatingPointMarkerViewModel {
 pub(super) struct OperatingPointCellHeatViewModel {
     pub(super) coarse_hits: u16,
     pub(super) refine_hits: u16,
+    pub(super) wot_envelope_known: bool,
+    pub(super) wot_ratio: f32,
+    pub(super) estimated_bsfc_g_per_kwh: f32,
+    pub(super) bsfc_known: bool,
 }
 
 pub(super) struct OperatingPointTableViewModel {
+    pub(super) fill_mode: MapFillMode,
     pub(super) fit_marker: OperatingPointMarkerViewModel,
     pub(super) result_marker: Option<OperatingPointMarkerViewModel>,
     pub(super) live_marker: OperatingPointMarkerViewModel,
@@ -74,7 +82,11 @@ pub(super) struct SimpleDashboardViewModel {
 }
 
 impl SimpleDashboardViewModel {
-    pub(super) fn from_state(state: &DashboardState, ui_config: &UiConfig) -> Self {
+    pub(super) fn from_state(
+        state: &DashboardState,
+        ui_config: &UiConfig,
+        map_fill_mode: MapFillMode,
+    ) -> Self {
         let fit = state.startup_fit_status();
         let wall_limit_label = startup_fit_wall_limit_label();
         let wall_limit_s = startup_fit_wall_limit_s();
@@ -102,7 +114,7 @@ impl SimpleDashboardViewModel {
             )
         };
         let live_status_message = if fit.active {
-            "Discrete startup-fit search is evaluating throttle bins, local MBT spark, and required brake torque until the selected point holds the target speed."
+            "Discrete startup-fit search is evaluating WOT ignition bins and required brake torque until the selected WOT point is fixed."
                 .to_owned()
         } else if fit.loaded_from_cache {
             "Cached startup-fit map loaded from disk: the heavy startup-fit search was skipped, and post-fit runtime control is live immediately."
@@ -126,7 +138,7 @@ impl SimpleDashboardViewModel {
             fit_status_value,
             header_fit_text,
             header_rpm_text: format!("RPM {:.0}", state.latest.rpm),
-            header_target_text: format!("Target {:.0}", state.load_target_rpm),
+            header_target_text: format!("Target {:.0}", state.displayed_target_rpm()),
             header_error_text: format!("RPM err {:+.0}", state.rpm_error()),
             fit_detail: if fit.loaded_from_cache {
                 "startup-fit artifact was restored from a saved cache, so standard runtime and actuator-lab features start from the previously fitted map".to_owned()
@@ -197,18 +209,18 @@ impl SimpleDashboardViewModel {
             ],
             manual_control_hint: fit.active.then_some(match wall_limit_s {
                 Some(_) => format!(
-                    "Startup fit is running. Manual actuator edits stay locked until the MBT search and finite-cycle verification finish, or the {} cap is reached.",
+                    "Startup fit is running. Manual actuator edits stay locked until the WOT MBT search finishes, or the {} cap is reached.",
                     wall_limit_label
                 ),
-                None => "Startup fit is running. Manual actuator edits stay locked until the MBT search and finite-cycle verification finish.".to_owned(),
+                None => "Startup fit is running. Manual actuator edits stay locked until the WOT MBT search finishes.".to_owned(),
             }),
             external_load_note: if state.post_fit_mode
                 == super::state::PostFitRuntimeMode::StandardRuntime
             {
-                "This dashboard uses a brake-dyno bench load for startup fit and RPM hold; driver demand sets torque request while throttle, ignition, and VVT follow the auto baseline."
+                "This dashboard uses a brake-dyno bench load for startup fit and WOT-map runtime; driver demand sets torque request while throttle stays at the WOT baseline and ignition/VVT follow the auto map."
                     .to_owned()
             } else {
-                "This dashboard uses a brake-dyno bench load for startup fit and RPM hold; actuator lab keeps the same torque-request path but exposes manual overrides against the auto baseline."
+                "This dashboard uses a brake-dyno bench load for startup fit and WOT-map runtime; actuator lab keeps the same torque-request path but exposes manual overrides against the auto baseline."
                     .to_owned()
             },
             live_status_message,
@@ -226,8 +238,8 @@ impl SimpleDashboardViewModel {
                     value: format!("{:.0} rpm", state.latest.rpm),
                 },
                 StatusRow {
-                    label: "Target speed",
-                    value: format!("{:.0} rpm", state.load_target_rpm),
+                    label: "Eq speed",
+                    value: format!("{:.0} rpm", state.post_fit_baseline.equilibrium_rpm),
                 },
                 StatusRow {
                     label: "Demand / torque req",
@@ -290,7 +302,7 @@ impl SimpleDashboardViewModel {
                     ),
                 },
             ],
-            operating_point_table: build_operating_point_table(state, &fit),
+            operating_point_table: build_operating_point_table(state, &fit, map_fill_mode),
         }
     }
 }
@@ -298,6 +310,7 @@ impl SimpleDashboardViewModel {
 fn build_operating_point_table(
     state: &DashboardState,
     fit: &StartupFitStatus,
+    fill_mode: MapFillMode,
 ) -> OperatingPointTableViewModel {
     let fit_label = if fit.active {
         "CAND"
@@ -328,6 +341,12 @@ fn build_operating_point_table(
         let index = row * OPERATING_POINT_SPEED_LABELS.len() + col;
         cell_heat[index].refine_hits = cell_heat[index].refine_hits.saturating_add(1);
     }
+    populate_wot_envelope_heat(
+        &mut cell_heat,
+        &fit.wot_torque_curve,
+        &state.sim.model,
+        fill_mode,
+    );
     let max_heat_hits = cell_heat
         .iter()
         .map(|cell| cell.coarse_hits.saturating_add(cell.refine_hits))
@@ -335,6 +354,7 @@ fn build_operating_point_table(
         .unwrap_or(0);
 
     OperatingPointTableViewModel {
+        fill_mode,
         fit_marker: OperatingPointMarkerViewModel {
             cell: OperatingPointCell {
                 row: operating_point_brake_index(fit.release_required_brake_torque_nm),
@@ -351,16 +371,15 @@ fn build_operating_point_table(
             },
         },
         fit_summary: format!(
-            "{} {:.0} rpm / {:+.1} Nm / thr {:.3} / spark {:.1}",
+            "{} {:.0} rpm / {:+.1} Nm / WOT / spark {:.1}",
             fit_label,
             fit.release_avg_rpm,
             fit.release_required_brake_torque_nm,
-            fit.release_throttle_cmd,
             fit.release_ignition_timing_deg
         ),
         result_summary: (!fit.active).then_some(format!(
-            "RES {:.0} rpm / {:+.1} Nm / thr {:.3} / spark {:.1}",
-            fit.avg_rpm, fit.required_brake_torque_nm, fit.throttle_cmd, fit.ignition_timing_deg
+            "RES {:.0} rpm / {:+.1} Nm / WOT / spark {:.1}",
+            fit.avg_rpm, fit.required_brake_torque_nm, fit.ignition_timing_deg
         )),
         live_summary: format!(
             "LIVE {:.0} rpm / req {:+.1} / load {:+.1} / thr {:.3} / spark {:.1}",
@@ -370,7 +389,14 @@ fn build_operating_point_table(
             state.sim.control.throttle_cmd,
             state.sim.control.ignition_timing_deg
         ),
-        note: "16 x 16 bands. Cell color fills as candidates are evaluated: cool=coarse, green=refined. F=selected fit release, R=post-fit result, L=current live point under the active torque-request path.",
+        note: match fill_mode {
+            MapFillMode::BsfcLimit => {
+                "Speed x required-brake-torque table. Background fill shows estimated BSFC inside the fitted WOT envelope: cyan/green=better BSFC, amber=heavier fuel use, red=above available WOT torque. Candidate hits add cool/coarse and green/refined tint. F=selected WOT release, R=post-fit result, L=current live point."
+            }
+            MapFillMode::FullBsfc => {
+                "Speed x required-brake-torque table. Background fill extrapolates the BSFC surrogate across the whole map, while cells above local WOT keep a red border. Candidate hits add cool/coarse and green/refined tint. F=selected WOT release, R=post-fit result, L=current live point."
+            }
+        },
     }
 }
 
@@ -387,6 +413,146 @@ fn band_index(value: f64, upper_bounds: &[f64]) -> usize {
         .iter()
         .position(|bound| value < *bound)
         .unwrap_or(upper_bounds.len())
+}
+
+fn populate_wot_envelope_heat(
+    cell_heat: &mut [OperatingPointCellHeatViewModel],
+    wot_curve: &[StartupFitWotTorquePoint],
+    model: &ModelConfig,
+    fill_mode: MapFillMode,
+) {
+    if wot_curve.is_empty() {
+        return;
+    }
+
+    let cols = OPERATING_POINT_SPEED_LABELS.len();
+    let full_map_torque_reference_nm = full_map_torque_reference_nm(wot_curve);
+    for row in 0..OPERATING_POINT_BRAKE_LABELS.len() {
+        let representative_brake_nm = band_midpoint(row, &OPERATING_POINT_BRAKE_UPPER_BOUNDS_NM);
+        let required_brake_nm = representative_brake_nm.max(0.0);
+        for col in 0..cols {
+            let Some(available_brake_nm) = interpolate_wot_available_brake_torque(
+                band_midpoint(col, &OPERATING_POINT_SPEED_UPPER_BOUNDS_RPM),
+                wot_curve,
+            ) else {
+                continue;
+            };
+            let index = row * cols + col;
+            if let Some(cell) = cell_heat.get_mut(index) {
+                cell.wot_envelope_known = true;
+                let available = available_brake_nm.max(1.0e-6);
+                cell.wot_ratio = (required_brake_nm / available).max(0.0) as f32;
+                if required_brake_nm > 0.0 {
+                    let load_proxy = match fill_mode {
+                        MapFillMode::BsfcLimit if required_brake_nm <= available => {
+                            (required_brake_nm / available).clamp(model.load_min, model.load_max)
+                        }
+                        MapFillMode::FullBsfc => (required_brake_nm / full_map_torque_reference_nm
+                            * model.load_max)
+                            .clamp(model.load_min, model.load_max),
+                        _ => 0.0,
+                    };
+                    if load_proxy > 0.0 {
+                        cell.bsfc_known = true;
+                        cell.estimated_bsfc_g_per_kwh = estimate_bsfc_g_per_kwh(
+                            model,
+                            band_midpoint(col, &OPERATING_POINT_SPEED_UPPER_BOUNDS_RPM),
+                            load_proxy,
+                        ) as f32;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn full_map_torque_reference_nm(wot_curve: &[StartupFitWotTorquePoint]) -> f64 {
+    let wot_max = wot_curve
+        .iter()
+        .map(|point| point.available_brake_torque_nm)
+        .fold(0.0, f64::max);
+    let table_max = band_midpoint(
+        OPERATING_POINT_BRAKE_LABELS.len().saturating_sub(1),
+        &OPERATING_POINT_BRAKE_UPPER_BOUNDS_NM,
+    );
+    wot_max.max(table_max).max(1.0)
+}
+
+fn estimate_bsfc_g_per_kwh(model: &ModelConfig, rpm: f64, load_proxy: f64) -> f64 {
+    let eta = (model.eta_base_offset + model.eta_load_coeff * load_proxy
+        - model.eta_rpm_abs_coeff * (rpm - model.eta_rpm_reference).abs())
+    .clamp(model.eta_base_min, model.eta_base_max)
+    .max(1.0e-6);
+    3.6e9 / (eta * FUEL_LHV_J_PER_KG)
+}
+
+fn interpolate_wot_available_brake_torque(
+    rpm: f64,
+    wot_curve: &[StartupFitWotTorquePoint],
+) -> Option<f64> {
+    let first = *wot_curve.first()?;
+    if rpm <= first.engine_speed_rpm {
+        return Some(first.available_brake_torque_nm.max(0.0));
+    }
+    let last = *wot_curve.last().unwrap_or(&first);
+    if rpm >= last.engine_speed_rpm {
+        return Some(last.available_brake_torque_nm.max(0.0));
+    }
+
+    for window in wot_curve.windows(2) {
+        let a = window[0];
+        let b = window[1];
+        if rpm <= b.engine_speed_rpm {
+            let span = (b.engine_speed_rpm - a.engine_speed_rpm)
+                .abs()
+                .max(f64::EPSILON);
+            let t = ((rpm - a.engine_speed_rpm) / span).clamp(0.0, 1.0);
+            return Some(
+                (a.available_brake_torque_nm
+                    + t * (b.available_brake_torque_nm - a.available_brake_torque_nm))
+                    .max(0.0),
+            );
+        }
+    }
+    Some(last.available_brake_torque_nm.max(0.0))
+}
+
+fn band_midpoint(index: usize, upper_bounds: &[f64]) -> f64 {
+    let lower = if index == 0 {
+        first_band_lower_bound(upper_bounds)
+    } else {
+        upper_bounds
+            .get(index.saturating_sub(1))
+            .copied()
+            .unwrap_or_else(|| first_band_lower_bound(upper_bounds))
+    };
+    let upper = upper_bounds.get(index).copied().unwrap_or_else(|| {
+        upper_bounds.last().copied().unwrap_or(0.0) + last_band_width(upper_bounds)
+    });
+    0.5 * (lower + upper)
+}
+
+fn first_band_lower_bound(upper_bounds: &[f64]) -> f64 {
+    let Some(first) = upper_bounds.first().copied() else {
+        return 0.0;
+    };
+    (first - first_band_width(upper_bounds)).min(first)
+}
+
+fn first_band_width(upper_bounds: &[f64]) -> f64 {
+    match upper_bounds {
+        [first, second, ..] => (second - first).abs().max(f64::EPSILON),
+        [first] => first.abs().max(1.0),
+        [] => 1.0,
+    }
+}
+
+fn last_band_width(upper_bounds: &[f64]) -> f64 {
+    match upper_bounds {
+        [.., prev, last] => (last - prev).abs().max(f64::EPSILON),
+        [last] => last.abs().max(1.0),
+        [] => 1.0,
+    }
 }
 
 fn fit_status_value(phase: StartupFitPhase) -> &'static str {
@@ -431,7 +597,7 @@ fn fit_progress_label(status: &StartupFitStatus) -> String {
             ),
         },
         StartupFitPhase::Optimizing => format!(
-            "iter {}/{} / {} / brake {:+.1} / {:.1}s",
+            "iter {}/{} / {} / {:+.1} Nm / {:.1}s",
             status.iteration,
             status.max_iterations,
             status.candidate_label,
@@ -462,8 +628,12 @@ fn fit_progress_label(status: &StartupFitStatus) -> String {
 mod tests {
     use super::{
         OPERATING_POINT_BRAKE_LABELS, OPERATING_POINT_SPEED_LABELS, OperatingPointCell,
-        operating_point_brake_index, operating_point_speed_index,
+        OperatingPointCellHeatViewModel, StartupFitWotTorquePoint, band_midpoint,
+        estimate_bsfc_g_per_kwh, interpolate_wot_available_brake_torque,
+        operating_point_brake_index, operating_point_speed_index, populate_wot_envelope_heat,
     };
+    use crate::config::ModelConfig;
+    use crate::dashboard::app::MapFillMode;
 
     #[test]
     fn operating_point_speed_bands_cover_target_bin_edges() {
@@ -492,5 +662,120 @@ mod tests {
     fn operating_point_cell_is_copyable_for_table_markers() {
         let cell = OperatingPointCell { row: 2, col: 3 };
         assert_eq!(cell, OperatingPointCell { row: 2, col: 3 });
+    }
+
+    #[test]
+    fn band_midpoint_extends_outer_buckets_reasonably() {
+        assert!((band_midpoint(0, &[500.0, 1000.0, 1500.0]) - 250.0).abs() < 1.0e-12);
+        assert!((band_midpoint(3, &[500.0, 1000.0, 1500.0]) - 1750.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn wot_torque_interpolation_tracks_curve_between_points() {
+        let curve = [
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 1_500.0,
+                available_brake_torque_nm: 20.0,
+                ignition_timing_deg: 18.0,
+            },
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 3_000.0,
+                available_brake_torque_nm: 40.0,
+                ignition_timing_deg: 22.0,
+            },
+        ];
+        let interpolated =
+            interpolate_wot_available_brake_torque(2_250.0, &curve).expect("interpolated torque");
+        assert!((interpolated - 30.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn wot_envelope_heat_marks_cells_above_and_below_limit() {
+        let cols = OPERATING_POINT_SPEED_LABELS.len();
+        let mut heat = vec![
+            OperatingPointCellHeatViewModel::default();
+            cols * OPERATING_POINT_BRAKE_LABELS.len()
+        ];
+        let curve = [
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 1_500.0,
+                available_brake_torque_nm: 20.0,
+                ignition_timing_deg: 18.0,
+            },
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 3_000.0,
+                available_brake_torque_nm: 40.0,
+                ignition_timing_deg: 22.0,
+            },
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 6_000.0,
+                available_brake_torque_nm: 60.0,
+                ignition_timing_deg: 28.0,
+            },
+        ];
+
+        populate_wot_envelope_heat(
+            &mut heat,
+            &curve,
+            &ModelConfig::default(),
+            MapFillMode::BsfcLimit,
+        );
+
+        let below_idx =
+            operating_point_brake_index(17.0) * cols + operating_point_speed_index(2_000.0);
+        let above_idx =
+            operating_point_brake_index(47.0) * cols + operating_point_speed_index(2_000.0);
+        assert!(heat[below_idx].wot_envelope_known);
+        assert!(heat[below_idx].wot_ratio < 1.0);
+        assert!(heat[below_idx].bsfc_known);
+        assert!(heat[above_idx].wot_ratio > 1.0);
+        assert!(!heat[above_idx].bsfc_known);
+    }
+
+    #[test]
+    fn full_bsfc_mode_fills_cells_above_local_wot_limit() {
+        let cols = OPERATING_POINT_SPEED_LABELS.len();
+        let mut heat = vec![
+            OperatingPointCellHeatViewModel::default();
+            cols * OPERATING_POINT_BRAKE_LABELS.len()
+        ];
+        let curve = [
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 1_500.0,
+                available_brake_torque_nm: 20.0,
+                ignition_timing_deg: 18.0,
+            },
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 3_000.0,
+                available_brake_torque_nm: 40.0,
+                ignition_timing_deg: 22.0,
+            },
+            StartupFitWotTorquePoint {
+                engine_speed_rpm: 6_000.0,
+                available_brake_torque_nm: 60.0,
+                ignition_timing_deg: 28.0,
+            },
+        ];
+
+        populate_wot_envelope_heat(
+            &mut heat,
+            &curve,
+            &ModelConfig::default(),
+            MapFillMode::FullBsfc,
+        );
+
+        let above_idx =
+            operating_point_brake_index(47.0) * cols + operating_point_speed_index(2_000.0);
+        assert!(heat[above_idx].wot_ratio > 1.0);
+        assert!(heat[above_idx].bsfc_known);
+        assert!(heat[above_idx].estimated_bsfc_g_per_kwh.is_finite());
+    }
+
+    #[test]
+    fn estimated_bsfc_improves_with_higher_load_near_eta_peak() {
+        let model = ModelConfig::default();
+        let light = estimate_bsfc_g_per_kwh(&model, 2_500.0, 0.20);
+        let heavy = estimate_bsfc_g_per_kwh(&model, 2_500.0, 0.90);
+        assert!(heavy < light);
     }
 }

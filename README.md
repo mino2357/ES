@@ -1,6 +1,6 @@
-# ES Simulator
+﻿# ES
 
-`ES Simulator` is a GUI-centered inline-4 engine simulator with an EDM-style dashboard.
+`ES` is a GUI-centered inline-4 engine simulator with an EDM-style dashboard.
 It focuses on transient reduced-order engine simulation, physically interpretable load response, and diagnostic plots.
 
 This repository supports one product path only:
@@ -8,10 +8,12 @@ This repository supports one product path only:
 - desktop GUI simulation
 - reduced-order transient engine model
 - physically interpretable external-load modeling
-- operator-side `Throttle cmd` and `Target RPM` inputs with displayed brake torque and power
+- operator-side `Driver demand` input plus manual throttle / ignition / VVT override in the educational actuator lab
 - `p-V` and `p-theta` visualization
 
-There is no separate offline high-precision solver and there is no audio synthesis path.
+There is no separate offline product solver.
+Startup fit itself, however, runs through a background worker / headless runner that is decoupled from the UI frame loop.
+There is no audio synthesis path.
 
 ## Terms
 
@@ -91,6 +93,17 @@ That means the default path is an accuracy-first transient simulation with a veh
 
 When startup fit reaches `READY`, the result is saved as a YAML artifact under `cache/startup_fit/`.
 On the next launch, the app reuses that artifact instead of rerunning the heavy fit when both the build identity and the raw YAML text still match.
+
+The current startup-fit contract is:
+
+- wall-clock acceptance target: within `10 min`
+- release-fit candidate count: fixed `WOT` x (`10` coarse ignition + `6` local-refine ignition) = `16` candidates
+- post-fit WOT torque curve: built from a headless `13`-point sweep over `1000..7000 rpm`
+- per-candidate ceiling: `6` cycles and `1200` RKF steps per cycle
+- fit-only numerics: `accuracy_target_deg_per_step = 4.5 deg`, `accuracy_dt_max_s = 2.5 ms`, `rpm_link_dt_min_floor_s = 0.1 ms`
+
+That yields a worst-case accepted-RKF-step budget of `16 x 6 x 1200 = 115,200` steps for the release fit itself.
+Post-fit runtime keeps throttle at the WOT baseline and follows `Driver demand -> torque request -> WOT torque-curve inverse -> equilibrium rpm`.
 
 ## Code Entry Points
 
