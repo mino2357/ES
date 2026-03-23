@@ -916,3 +916,27 @@ x_n + \Delta t
 13. Froude, "Texcel V12 PRO Controller," official product page. https://www.froudedyno.com/products/control-systems/texcel-v12-controller
 
 14. Froude, "InCell Control and Data Acquisition System," official product page. https://www.froudedyno.com/products/control-systems/incell-control-and-data-acquisition-system
+
+
+## 教育用 verification の考え方
+
+本 repository では、厳密な実験同定とは別に、CLI sweep 後に `torque_curve_assessment.md` を生成して
+「その curve が内燃機関の full-load curve として読みやすいか」を簡易監査します。
+
+使っている判定は次の 4 つです。
+
+- `\tau_b(rpm) > 0` が全点で成り立つか
+- 低回転側から peak まで概ね `d\tau_b/drpm \ge 0` か
+- peak 以後で概ね `d\tau_b/drpm \le 0` か
+- `P_b = \tau_b \omega` の peak が torque peak 以後に現れるか
+
+これらは物理法則そのものではなく、dyno chart を読むときの first-pass heuristic です。
+したがって、この report が `needs review` を返した場合は solver が必ず誤りという意味ではなく、
+仕様、較正、または sweep 範囲のどれかを追加点検すべきという意味です。
+
+外部文献:
+
+- Heywood, *Internal Combustion Engine Fundamentals* (2nd ed.).
+- Stone, *Introduction to Internal Combustion Engines* (4th ed.).
+- NPTEL lecture notes on SI-engine volumetric efficiency and performance: https://nptel.ac.in/
+- MIT OpenCourseWare thermodynamics / combustion related references: https://ocw.mit.edu/

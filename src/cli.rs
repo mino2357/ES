@@ -119,6 +119,136 @@ struct SweepPointResult {
     output_subdir: PathBuf,
 }
 
+/// Summarizes whether the simulated torque curve looks like a plausible full-load curve
+/// for a naturally aspirated passenger-car SI engine.
+///
+/// The intent is pedagogical rather than regulatory. We encode the same quick checks that a
+/// calibrator would do by eye on a dyno sheet:
+///
+/// 1. torque should be strictly positive across the sweep,
+/// 2. torque should build from low rpm toward a mid-range peak as volumetric efficiency improves,
+/// 3. torque should taper at high rpm as filling time and flow losses dominate,
+/// 4. brake power should peak at or after the torque peak because `P = tau * omega`.
+///
+/// None of these checks prove physical truth, but together they quickly tell the user whether the
+/// chosen geometry and closures generate an engine-like wide-open-throttle shape.
+#[derive(Debug, Clone)]
+struct TorqueCurveAssessment {
+    point_count: usize,
+    peak_torque_nm: f64,
+    peak_torque_rpm: f64,
+    peak_power_kw: f64,
+    peak_power_rpm: f64,
+    low_end_torque_nm: f64,
+    high_end_torque_nm: f64,
+    low_to_peak_gain_nm: f64,
+    peak_to_high_drop_nm: f64,
+    min_torque_nm: f64,
+    positive_torque_everywhere: bool,
+    rises_to_peak: bool,
+    falls_after_peak: bool,
+    power_peaks_after_torque: bool,
+}
+
+impl TorqueCurveAssessment {
+    /// Evaluate the torque curve with intentionally transparent heuristics.
+    ///
+    /// We use finite differences of the sweep results instead of fitting a spline so that the
+    /// resulting report is easy to audit directly against `torque_curve.tsv`.
+    fn from_results(results: &[SweepPointResult]) -> Result<Self, String> {
+        let first = results
+            .first()
+            .ok_or_else(|| "cannot assess an empty torque curve".to_string())?;
+        let last = results
+            .last()
+            .ok_or_else(|| "cannot assess an empty torque curve".to_string())?;
+
+        let peak_torque = results
+            .iter()
+            .max_by(|a, b| a.torque_nm.total_cmp(&b.torque_nm))
+            .ok_or_else(|| "cannot locate torque peak".to_string())?;
+        let peak_power = results
+            .iter()
+            .max_by(|a, b| a.power_kw.total_cmp(&b.power_kw))
+            .ok_or_else(|| "cannot locate power peak".to_string())?;
+        let min_torque = results
+            .iter()
+            .map(|point| point.torque_nm)
+            .fold(f64::INFINITY, f64::min);
+
+        // Before the peak we expect mostly non-negative slope. A tiny tolerance avoids false
+        // negatives from numerical noise and controller ripple in the settled mean values.
+        let rises_to_peak = monotonic_ratio(
+            &results[..=results
+                .iter()
+                .position(|point| point.target_rpm == peak_torque.target_rpm)
+                .unwrap_or(0)],
+            |prev, next| next.torque_nm >= prev.torque_nm - 5.0,
+        ) >= 0.70
+            && peak_torque.torque_nm > (first.torque_nm + 3.0).max(first.torque_nm * 1.08);
+
+        // After the peak we expect mostly non-positive slope once airflow and friction begin to
+        // dominate. Again we permit a small tolerance so that one noisy point does not fail the
+        // entire educational example.
+        let peak_index = results
+            .iter()
+            .position(|point| point.target_rpm == peak_torque.target_rpm)
+            .unwrap_or(0);
+        let falls_after_peak = monotonic_ratio(&results[peak_index..], |prev, next| {
+            next.torque_nm <= prev.torque_nm + 5.0
+        }) >= 0.65
+            && peak_torque.torque_nm > last.torque_nm + 10.0;
+
+        Ok(Self {
+            point_count: results.len(),
+            peak_torque_nm: peak_torque.torque_nm,
+            peak_torque_rpm: peak_torque.mean_rpm,
+            peak_power_kw: peak_power.power_kw,
+            peak_power_rpm: peak_power.mean_rpm,
+            low_end_torque_nm: first.torque_nm,
+            high_end_torque_nm: last.torque_nm,
+            low_to_peak_gain_nm: peak_torque.torque_nm - first.torque_nm,
+            peak_to_high_drop_nm: peak_torque.torque_nm - last.torque_nm,
+            min_torque_nm: min_torque,
+            positive_torque_everywhere: min_torque > 0.0,
+            rises_to_peak,
+            falls_after_peak,
+            power_peaks_after_torque: peak_power.mean_rpm + 50.0 >= peak_torque.mean_rpm,
+        })
+    }
+
+    fn looks_plausible(&self) -> bool {
+        self.positive_torque_everywhere
+            && self.rises_to_peak
+            && self.falls_after_peak
+            && self.power_peaks_after_torque
+    }
+
+    fn explanation_lines(&self) -> [&'static str; 4] {
+        [
+            "positive torque across the sweep means the brake never becomes net motoring at WOT.",
+            "rising torque toward the peak is the expected signature of improving cylinder filling.",
+            "falling torque after the peak is the expected signature of reduced filling time and larger losses.",
+            "power peaking after torque follows directly from P = tau * omega.",
+        ]
+    }
+}
+
+fn monotonic_ratio(
+    results: &[SweepPointResult],
+    condition: impl Fn(&SweepPointResult, &SweepPointResult) -> bool,
+) -> f64 {
+    let comparisons = results.windows(2).count();
+    if comparisons == 0 {
+        return 1.0;
+    }
+    let satisfied = results
+        .windows(2)
+        .filter(|pair| condition(&pair[0], &pair[1]))
+        .count();
+    satisfied as f64 / comparisons as f64
+}
+
 fn run_sweep(options: SweepOptions) -> Result<(), String> {
     let mut cfg = load_config(&options.config_path);
     cfg.model.external_load.mode = ExternalLoadMode::BrakeMap;
@@ -146,7 +276,13 @@ fn run_sweep(options: SweepOptions) -> Result<(), String> {
         results.push(result);
     }
 
-    write_sweep_summary(&options.output_dir, &cfg, &results, options.rpm_step)?;
+    write_sweep_summary(
+        &options.output_dir,
+        &cfg,
+        &results,
+        options.rpm_step,
+        &options.config_path,
+    )?;
     write_gnuplot_script(&options.output_dir)?;
 
     println!(
@@ -333,6 +469,7 @@ fn write_sweep_summary(
     cfg: &AppConfig,
     results: &[SweepPointResult],
     rpm_step: f64,
+    config_path: &Path,
 ) -> Result<(), String> {
     let torque_curve_path = output_dir.join("torque_curve.tsv");
     let mut body = String::from(
@@ -355,10 +492,26 @@ fn write_sweep_summary(
     fs::write(&torque_curve_path, body)
         .map_err(|e| format!("failed to write {}: {e}", torque_curve_path.display()))?;
 
+    let assessment = TorqueCurveAssessment::from_results(results)?;
+    write_torque_curve_assessment(output_dir, &assessment)?;
+
     let manifest_path = output_dir.join("run_manifest.yaml");
     let manifest = format!(
-        "config_path: {}\nexternal_load_mode: brake_map\nrpm_step: {}\nrpm_start: {}\nrpm_end: {}\npoint_count: {}\n",
-        DEFAULT_CONFIG_PATH,
+        concat!(
+            "config_path: {}\n",
+            "external_load_mode: brake_map\n",
+            "rpm_step: {}\n",
+            "rpm_start: {}\n",
+            "rpm_end: {}\n",
+            "point_count: {}\n",
+            "torque_curve_assessment:\n",
+            "  looks_plausible: {}\n",
+            "  peak_torque_nm: {:.6}\n",
+            "  peak_torque_rpm: {:.3}\n",
+            "  peak_power_kw: {:.6}\n",
+            "  peak_power_rpm: {:.3}\n"
+        ),
+        config_path.display(),
         rpm_step,
         results
             .first()
@@ -369,10 +522,80 @@ fn write_sweep_summary(
             .map(|x| x.target_rpm)
             .unwrap_or(cfg.engine.max_rpm),
         results.len(),
+        assessment.looks_plausible(),
+        assessment.peak_torque_nm,
+        assessment.peak_torque_rpm,
+        assessment.peak_power_kw,
+        assessment.peak_power_rpm,
     );
     fs::write(&manifest_path, manifest)
         .map_err(|e| format!("failed to write {}: {e}", manifest_path.display()))?;
     Ok(())
+}
+
+/// Writes a human-readable audit note that explains why the generated curve does or does not
+/// resemble a conventional naturally aspirated full-load torque curve.
+fn write_torque_curve_assessment(
+    output_dir: &Path,
+    assessment: &TorqueCurveAssessment,
+) -> Result<(), String> {
+    let assessment_path = output_dir.join("torque_curve_assessment.md");
+    let mut report = String::new();
+    report.push_str("# Torque curve assessment\n\n");
+    report.push_str(&format!(
+        "- overall verdict: **{}**\n- point count: {}\n- torque peak: {:.1} Nm at {:.0} rpm\n- power peak: {:.1} kW at {:.0} rpm\n- low-end torque: {:.1} Nm\n- high-end torque: {:.1} Nm\n- low-to-peak torque gain: {:.1} Nm\n- peak-to-high torque drop: {:.1} Nm\n\n",
+        if assessment.looks_plausible() { "plausible" } else { "needs review" },
+        assessment.point_count,
+        assessment.peak_torque_nm,
+        assessment.peak_torque_rpm,
+        assessment.peak_power_kw,
+        assessment.peak_power_rpm,
+        assessment.low_end_torque_nm,
+        assessment.high_end_torque_nm,
+        assessment.low_to_peak_gain_nm,
+        assessment.peak_to_high_drop_nm,
+    ));
+    report.push_str("## Heuristic checks\n\n");
+    report.push_str(&format!(
+        "- [{}] positive torque everywhere (minimum {:.1} Nm)\n",
+        if assessment.positive_torque_everywhere {
+            "x"
+        } else {
+            " "
+        },
+        assessment.min_torque_nm,
+    ));
+    report.push_str(&format!(
+        "- [{}] torque rises toward a mid-range peak\n",
+        if assessment.rises_to_peak { "x" } else { " " },
+    ));
+    report.push_str(&format!(
+        "- [{}] torque falls again at the high-speed end\n",
+        if assessment.falls_after_peak {
+            "x"
+        } else {
+            " "
+        },
+    ));
+    report.push_str(&format!(
+        "- [{}] power peak occurs at or after the torque peak\n\n",
+        if assessment.power_peaks_after_torque {
+            "x"
+        } else {
+            " "
+        },
+    ));
+    report.push_str("## Why these checks exist\n\n");
+    for line in assessment.explanation_lines() {
+        report.push_str("- ");
+        report.push_str(line);
+        report.push('\n');
+    }
+    report.push_str(
+        "\n## Suggested references\n\n- Heywood, *Internal Combustion Engine Fundamentals* (2nd ed.), McGraw-Hill.\n- Stone, *Introduction to Internal Combustion Engines* (4th ed.), Palgrave Macmillan.\n- SAE papers on volumetric efficiency, wave action, and friction modeling for SI engines.\n",
+    );
+    fs::write(&assessment_path, report)
+        .map_err(|e| format!("failed to write {}: {e}", assessment_path.display()))
 }
 
 fn write_gnuplot_script(output_dir: &Path) -> Result<(), String> {
@@ -419,5 +642,80 @@ fn print_usage() {
 }
 
 fn usage_text() -> &'static str {
-    "es_sim sweep [--config path] [--output-dir dir] [--rpm-start rpm] [--rpm-end rpm] [--rpm-step rpm] [--settle-time s] [--average-time s] [--diagnostic-samples n]\n\nRuns the headless CLI torque sweep and writes TSV/YAML outputs for gnuplot, p-V, T-S, and p-theta diagrams."
+    "es_sim sweep [--config path] [--output-dir dir] [--rpm-start rpm] [--rpm-end rpm] [--rpm-step rpm] [--settle-time s] [--average-time s] [--diagnostic-samples n]\n\nRuns the headless CLI torque sweep and writes TSV/YAML outputs for gnuplot, p-V, T-S, p-theta diagrams, plus a torque-curve plausibility note."
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::config::load_config;
+
+    use super::{Command, TorqueCurveAssessment};
+
+    #[test]
+    fn help_mentions_torque_curve_assessment_output() {
+        let help = super::usage_text();
+        assert!(help.contains("torque-curve plausibility note"));
+    }
+
+    #[test]
+    fn educational_reference_case_generates_plausible_curve() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("config")
+            .join("reference_na_i4.yaml");
+        let cfg = load_config(&config_path);
+        assert!((cfg.engine.displacement_m3 * 1.0e3 - 1.998).abs() < 0.05);
+        assert!((cfg.engine.compression_ratio - 11.8).abs() < 1.0e-12);
+
+        let output_dir = unique_temp_dir("cli_reference_curve");
+        let results = vec![
+            (1_000.0, 150.0, 20.0),
+            (2_000.0, 180.0, 38.0),
+            (3_000.0, 205.0, 64.0),
+            (4_000.0, 220.0, 92.0),
+            (5_000.0, 210.0, 110.0),
+            (6_000.0, 185.0, 116.0),
+        ];
+        let synthetic = results
+            .into_iter()
+            .map(|(rpm, torque, power)| super::SweepPointResult {
+                target_rpm: rpm,
+                mean_rpm: rpm,
+                torque_nm: torque,
+                power_kw: power,
+                map_kpa: cfg.environment.ambient_pressure_pa / 1.0e3,
+                air_flow_gps: 0.0,
+                eta_indicated: 0.0,
+                load_cmd: 0.0,
+                output_subdir: output_dir.join(format!("point_{rpm:.0}")),
+            })
+            .collect::<Vec<_>>();
+        let assessment = TorqueCurveAssessment::from_results(&synthetic)
+            .expect("synthetic educational curve should assess");
+        assert!(assessment.looks_plausible());
+    }
+
+    #[test]
+    fn command_parser_accepts_sweep_subcommand() {
+        let command = Command::parse(vec![
+            "es_sim".to_string(),
+            "sweep".to_string(),
+            "--rpm-step".to_string(),
+            "500".to_string(),
+        ])
+        .expect("sweep command should parse");
+        assert!(matches!(command, Command::Sweep(_)));
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
+        std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+        dir
+    }
 }

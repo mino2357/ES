@@ -35,6 +35,7 @@ CLI は output directory 配下へ次を出力します。
 - `torque_curve.tsv`: 各 operating point の要約。`gnuplot` にそのまま渡しやすい
 - `plot_torque_curve.gp`: torque curve 用の最小 `gnuplot` script
 - `run_manifest.yaml`: 実行 metadata
+- `torque_curve_assessment.md`: トルクカーブが「それらしい」かを教育用の経験則で点検した report
 - `point_XXXXrpm/pv.tsv`: `p-V` loop
 - `point_XXXXrpm/ptheta.tsv`: 4 気筒 `p-theta`
 - `point_XXXXrpm/ts.tsv`: `T-S`
@@ -60,3 +61,19 @@ checked-in の [config/sim.yaml](config/sim.yaml) は意図的に最小構成で
 - [README.md](README.md): 英語版 overview
 - [docs/USER_MANUAL.ja.md](docs/USER_MANUAL.ja.md): 日本語版 user manual
 - [docs/MODEL_REFERENCE.ja.md](docs/MODEL_REFERENCE.ja.md): 日本語版 model reference
+
+## 教育用の参照ケース
+
+実在しそうな自然吸気 2.0 L 級 inline-4 の教育用参照ケースを [config/reference_na_i4.yaml](config/reference_na_i4.yaml) に追加しています。
+
+まず 1000〜5000 rpm で次を実行すると、低中速でトルクが立ち上がり、その後に落ちていく「教科書的に読みやすい」曲線かを `torque_curve_assessment.md` で確認できます。
+
+```bash
+cargo run --release -- sweep \
+  --config config/reference_na_i4.yaml \
+  --output-dir output/reference_na_i4 \
+  --rpm-start 1000 --rpm-end 5000 --rpm-step 1000 \
+  --settle-time 0.2 --average-time 0.1
+```
+
+注: 現行 reduced-order model は回転上限付近で brake/load のつり合いが鋭敏になりやすいため、教育用途ではまず安定域の sweep で傾向を確認し、その後に上限側を詰めるのが安全です。
