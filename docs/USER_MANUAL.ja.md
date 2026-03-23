@@ -10,7 +10,7 @@
 ```bash
 cargo run --release -- sweep \
   --config config/reference_na_i4.yaml \
-  --output-dir output/reference_s2000_like \
+  --output-dir output/reference_high_rev_na \
   --rpm-start 1000 \
   --rpm-end 8500 \
   --rpm-step 1000 \
@@ -75,8 +75,8 @@ speed-hold された dyno 的な sweep では、通常ほしいのは residual a
 
 ## 5. 高回転型自然吸気 2.0 L reference table
 
-現在の checked-in reference case は、添付画像に対して **近似的** な一致を狙ったものです。
-目的は、文書化された reduced-order model と妥当な物理定数を使って「高回転型 NA engine らしい大勢」を再現することであり、production 実機の dyno を完全再現することではありません。
+現在の checked-in reference case は、汎用的な高回転自然吸気 torque trend に対して **近似的** な一致を狙ったものです。
+目的は、文書化された reduced-order model と妥当な物理定数を使って「高回転型 NA engine らしい大勢」を再現することです。
 
 上の推奨 command で得られる代表結果:
 
@@ -95,13 +95,13 @@ speed-hold された dyno 的な sweep では、通常ほしいのは residual a
 読み方:
 
 - 現在の model は、正の WOT brake torque と、torque peak より後ろにある power peak は捉えています
-- 一方で、実際の高回転型自然吸気 2.0 L が示す高回転側の torque 保持はまだ過小評価です
+- 一方で、高回転側の torque retention は現状でも弱く、この差を詰めるには数理 model と高回転域の gas exchange 物理の見直しが必要です
 - この不一致を隠さずに明記することで、今後の calibration がどの model 項に由来するか追跡しやすくしています
 
 ## 6. gnuplot 例
 
 ```bash
-gnuplot -e "cd 'output/reference_s2000_like'" plot_torque_curve.gp
+gnuplot -e "cd 'output/reference_high_rev_na'" plot_torque_curve.gp
 ```
 
 ## 7. model と code の対応
@@ -123,3 +123,19 @@ reference case の文書化と parameter 選定では、次を明示的な ancho
 4. Woschni 系の cylinder heat transfer と、single-zone heat-release / pressure reconstruction の標準文献。
 
 calibration や文書を更新するときは、これらの出典を見える形で残してください。
+
+
+## 9. model 改良 workflow
+
+計算した torque curve が現実から離れたときにやるべきことは、外部補正の経路を足すことではありません。
+やるべきことは、文書化された ODE 系を解くことに専念しつつ、現在の closure で捉えられていない物理現象を特定し、その現象を数理 model に組み込んで、更新後の系をもう一度解くことです。
+
+この repository では、次の反復を基本にします。
+
+- ODE model を operating-point sweep で解く
+- curve が期待挙動から外れる箇所を確認する
+- 足りない、または単純化しすぎた物理現象を特定する
+- reduced-order model と closure を改良する
+- 改良後の ODE 系を再び解いて結果を確認する
+
+優先すべきなのは、別経路の補正ではなく、数理 model そのものの改善です。
