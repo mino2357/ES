@@ -1,83 +1,125 @@
 # ES User Manual
 
-## Scope
+## 1. Purpose
 
 `ES` is a CLI tool for sweeping steady operating points of the repository's inline-4 engine model.
-It uses YAML input, solves the physical model transiently until each operating point settles, and writes text files for later plotting.
+Every operating point is solved by transiently integrating the same ODE system documented in `MODEL_REFERENCE.md`; the CLI does **not** switch to a separate map-only runtime for the exported torque curve.
 
-## Build And Run
+## 2. Recommended reference run
 
 ```bash
-cargo run --release -- sweep --config config/sim.yaml --output-dir output/cli
+cargo run --release -- sweep \
+  --config config/reference_na_i4.yaml \
+  --output-dir output/reference_s2000_like \
+  --rpm-start 1000 \
+  --rpm-end 8500 \
+  --rpm-step 1000 \
+  --settle-time 0.30 \
+  --average-time 0.10 \
+  --diagnostic-samples 180
 ```
 
-## Command-Line Options
+This is the repository's recommended educational run when you want a dyno-style naturally aspirated 2.0 L brake torque curve with enough settling time to suppress controller transients.
 
-- `--config <path>`: YAML file to load. Missing sections fall back to defaults.
-- `--output-dir <dir>`: destination directory for all generated files.
-- `--rpm-start <rpm>`: optional sweep start. Default is `engine.default_target_rpm`.
-- `--rpm-end <rpm>`: optional sweep end. Default is `engine.max_rpm`.
-- `--rpm-step <rpm>`: sweep interval. Default is `200`.
-- `--settle-time <s>`: transient settling time before averaging. Default is `12`.
-- `--average-time <s>`: averaging window after settling. Default is `1.5`.
-- `--diagnostic-samples <n>`: samples used for `p-theta` and `T-S`. Minimum is `180`, default is `720`.
+## 3. Why the CLI reports brake torque
 
-## Minimal YAML
+For a speed-held dyno-style sweep, users normally expect **brake torque**, not residual acceleration torque.
+The CLI therefore writes:
 
-The checked-in configuration is intentionally minimal:
+- `brake_torque_nm = net_torque_nm + load_torque_nm`
+- `brake_power_kw = brake_torque_nm * omega`
+- `net_torque_nm`: residual shaft acceleration torque after subtracting absorber load
+- `load_torque_nm`: torque currently carried by the brake / absorber model
 
-```yaml
-environment:
-  ambient_pressure_pa: 101325.0
-  intake_temp_k: 305.0
-  exhaust_temp_k: 880.0
-  dt: 0.001
-engine:
-  compression_ratio: 13.0
-  bore_m: 0.0805
-  stroke_m: 0.0976
-  default_target_rpm: 850.0
-  max_rpm: 7000.0
-control_defaults:
-  ignition_timing_deg: 12.0
-```
+This makes the exported torque curve comparable to published dyno charts while still preserving the internal ODE bookkeeping.
 
-The CLI fills the rest from Rust defaults.
+## 4. Output files
 
-## Output Files
-
-### `torque_curve.tsv`
+### 4.1 `torque_curve.tsv`
 
 Columns:
 
 - `target_rpm`
 - `mean_rpm`
-- `torque_nm`
-- `power_kw`
+- `brake_torque_nm`
+- `brake_power_kw`
+- `net_torque_nm`
+- `load_torque_nm`
 - `map_kpa`
 - `air_flow_gps`
 - `eta_indicated`
 - `load_cmd`
 - `output_dir`
 
-### Per-point directories
+### 4.2 `point_XXXXrpm/summary.tsv`
 
-Each `point_XXXXrpm/` directory contains:
+Per-point summary columns:
+
+- `rpm`
+- `brake_torque_nm`
+- `brake_power_kw`
+- `net_torque_nm`
+- `load_torque_nm`
+- `brake_bmep_bar`
+- `map_kpa`
+- `air_flow_gps`
+- `eta_indicated`
+
+### 4.3 Diagnostic traces
+
+Each `point_XXXXrpm/` directory also contains:
 
 - `pv.tsv`: `volume_ratio`, `pressure_pa`
-- `ptheta.tsv`: crank angle and four cylinder pressure traces
-- `ts.tsv`: crank angle, apparent single-zone temperature, relative entropy, pressure, and volume ratio
-- `summary.tsv`: single-row summary of the settled operating point
+- `ptheta.tsv`: crank angle and four-cylinder pressure traces
+- `ts.tsv`: crank angle, temperature, relative entropy, pressure, and volume ratio
 
-## Quick gnuplot Usage
+## 5. High-rev naturally aspirated 2.0 L reference table
+
+The current checked-in reference case is intentionally only an **approximate** match to the attached high-rev naturally aspirated torque curve.
+Its goal is to reproduce the broad naturally aspirated high-rev trend using the documented reduced-order model and plausible constants, not to reproduce every production-dyno detail.
+
+Representative result from the recommended command above:
+
+| Mean rpm | Brake torque [Nm] | Brake power [kW] | Net torque [Nm] |
+|---:|---:|---:|---:|
+| 1005 | 157.6 | 16.6 | 16.3 |
+| 1999 | 134.3 | 28.1 | 15.5 |
+| 2999 | 173.0 | 54.3 | 8.9 |
+| 4002 | 178.5 | 74.8 | 6.8 |
+| 5000 | 149.4 | 78.2 | 4.4 |
+| 6000 | 158.5 | 99.6 | 4.6 |
+| 6999 | 141.6 | 103.8 | 3.4 |
+| 7999 | 92.9 | 77.8 | 2.0 |
+| 8499 | 68.4 | 60.9 | 1.1 |
+
+Interpretation:
+
+- the model currently captures a positive WOT brake curve and a power peak after the torque peak
+- it still under-predicts the late high-rpm torque retention of a real high-rev naturally aspirated 2.0 L dyno sheet
+- the documentation keeps this mismatch explicit so further calibration can be traced back to the exact model terms involved
+
+## 6. gnuplot example
 
 ```bash
-gnuplot -e "cd 'output/cli'" plot_torque_curve.gp
+gnuplot -e "cd 'output/reference_s2000_like'" plot_torque_curve.gp
 ```
 
-You can also plot any point-level file directly, for example:
+## 7. Model-to-code traceability
 
-```gnuplot
-plot 'point_3000rpm/pv.tsv' using 'volume_ratio':'pressure_pa' with lines
-plot 'point_3000rpm/ts.tsv' using 'entropy_rel_j_per_kgk':'temperature_k' with lines
-```
+When adjusting the curve, start from these documented code paths:
+
+- CLI sweep and brake-torque export: `src/cli.rs`
+- ODE state integration and torque bookkeeping: `src/simulator.rs`
+- parameter defaults and config schema: `src/config.rs`
+- high-rev naturally aspirated 2.0 L reference case: `config/reference_na_i4.yaml`
+
+## 8. Sources used for the reference case
+
+The following sources are the explicit anchors for the documentation and parameter choices:
+
+1. public catalog / brochure specs for high-rev naturally aspirated 2.0 L SI-engine power and torque envelopes.
+2. Heywood, *Internal Combustion Engine Fundamentals* (2nd ed.), for filling-and-emptying, throttling, and indicated-work interpretation.
+3. Stone, *Introduction to Internal Combustion Engines* (4th ed.), for naturally aspirated SI-engine trend ranges.
+4. Woschni-style cylinder heat-transfer practice and standard single-zone heat-release modeling literature for the heat-loss / display-side pressure reconstruction assumptions.
+
+Keep these references visible whenever you change the calibration or the documentation.
