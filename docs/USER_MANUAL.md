@@ -10,7 +10,7 @@ Every operating point is solved by transiently integrating the same ODE system d
 ```bash
 cargo run --release -- sweep \
   --config config/reference_na_i4.yaml \
-  --output-dir output/reference_s2000_like \
+  --output-dir output/reference_high_rev_na \
   --rpm-start 1000 \
   --rpm-end 8500 \
   --rpm-step 1000 \
@@ -19,7 +19,7 @@ cargo run --release -- sweep \
   --diagnostic-samples 180
 ```
 
-This is the repository's recommended educational run when you want a dyno-style naturally aspirated 2.0 L brake torque curve with enough settling time to suppress controller transients.
+This is the repository's recommended reference run when you want a dyno-style naturally aspirated 2.0 L brake torque curve with enough settling time to suppress controller transients.
 
 ## 3. Why the CLI reports brake torque
 
@@ -75,8 +75,8 @@ Each `point_XXXXrpm/` directory also contains:
 
 ## 5. High-rev naturally aspirated 2.0 L reference table
 
-The current checked-in reference case is intentionally only an **approximate** match to the attached high-rev naturally aspirated torque curve.
-Its goal is to reproduce the broad naturally aspirated high-rev trend using the documented reduced-order model and plausible constants, not to reproduce every production-dyno detail.
+The current checked-in reference case is intentionally only an **approximate** match to a generic high-rev naturally aspirated torque trend.
+Its goal is to reproduce the broad naturally aspirated high-rev trend using the documented reduced-order model and plausible constants.
 
 Representative result from the recommended command above:
 
@@ -95,13 +95,13 @@ Representative result from the recommended command above:
 Interpretation:
 
 - the model currently captures a positive WOT brake curve and a power peak after the torque peak
-- it still under-predicts the late high-rpm torque retention of a real high-rev naturally aspirated 2.0 L dyno sheet
+- high-rpm torque retention remains the weakest part of the current reference sweep, so closing that gap requires revisiting the mathematical model and the missing high-speed gas-exchange physics
 - the documentation keeps this mismatch explicit so further calibration can be traced back to the exact model terms involved
 
 ## 6. gnuplot example
 
 ```bash
-gnuplot -e "cd 'output/reference_s2000_like'" plot_torque_curve.gp
+gnuplot -e "cd 'output/reference_high_rev_na'" plot_torque_curve.gp
 ```
 
 ## 7. Model-to-code traceability
@@ -123,3 +123,19 @@ The following sources are the explicit anchors for the documentation and paramet
 4. Woschni-style cylinder heat-transfer practice and standard single-zone heat-release modeling literature for the heat-loss / display-side pressure reconstruction assumptions.
 
 Keep these references visible whenever you change the calibration or the documentation.
+
+
+## 9. Model refinement workflow
+
+When the computed torque curve drifts away from reality, the next step is not to bolt on an external correction layer.
+Instead, keep solving the documented ODE system, identify which physical effects are missing from the current closures, add those effects to the mathematical model, and solve the updated system again.
+
+In practice this repository should repeat the same loop:
+
+- solve the ODE model over the operating-point sweep
+- inspect where the curve departs from expected behavior
+- identify the missing or oversimplified physical phenomenon
+- revise the reduced-order model and its closures
+- rerun the ODE solve and inspect the new result
+
+The priority is to improve the mathematical model itself, not to mask the error with a separate correction path.
