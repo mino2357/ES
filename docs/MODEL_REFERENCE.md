@@ -6,7 +6,6 @@ It describes the current reduced-order mathematical model, distinguishes differe
 ## Terms And Symbols
 
 - `ODE`: ordinary differential equation
-- `MVEM`: mean value engine model
 - `SI engine`: spark-ignition engine
 - `degCA`: crank-angle degrees
 - `IMEP`: indicated mean effective pressure
@@ -51,7 +50,7 @@ The maintained CLI workflow uses the following implementation split:
 - `src/simulator.rs`: integrates the ODE state, evaluates algebraic closures, reconstructs `p-V` / `p-theta` / `T-S`, and keeps torque bookkeeping consistent
 - `src/cli.rs`: selects the WOT operating-point policy, holds target speed with the absorber model, and exports brake-torque-centered artifacts
 - `src/config.rs`: defines default parameter values and YAML schema
-- `config/reference_na_i4.yaml`: high-rev naturally aspirated 2.0 L teaching calibration used by the manuals
+- `config/reference_na_i4.yaml`: high-rev naturally aspirated 2.0 L reference calibration used by the manuals
 
 For the CLI artifacts, the exported dyno-style brake quantity is
 
@@ -63,7 +62,7 @@ which matches a speed-held dynamometer interpretation better than reporting `tau
 
 ## Literature Anchors
 
-The current teaching calibration and documentation are anchored to the following source families:
+The current reference calibration and documentation are anchored to the following source families:
 
 1. public brochure / catalog specifications for high-rev naturally aspirated 2.0 L SI engines.
 2. Heywood, *Internal Combustion Engine Fundamentals* (2nd ed.), for filling-and-emptying, throttling, and indicated work interpretation.
@@ -92,6 +91,8 @@ p_{er} &
 ```
 
 In the code, this corresponds to `EngineState` in `src/simulator.rs`.
+
+When the computed curve departs from reality, the preferred response in this repository is to revisit the mathematical model itself, identify the missing physical phenomena, extend the closures or state equations accordingly, and solve the updated ODE system again.
 
 ### Algebraic And Reconstructed Quantities
 
@@ -170,7 +171,7 @@ Everything else described later in this document enters through the algebraic cl
 
 ## Governing Differential Equations
 
-The solver uses a compact MVEM-style structure.
+The solver uses a compact reduced-order state-space structure.
 The nonlinear terms are first evaluated by `Simulator::eval()`, then injected into the ODE right-hand side in `Simulator::derivatives()`.
 
 ### Crankshaft Dynamics
@@ -874,7 +875,7 @@ x_n + \Delta t
 
 Literature-anchored structures:
 
-- compact MVEM state selection and filling-and-emptying formulation
+- compact reduced-order state selection and filling-and-emptying formulation
 - residual-gas and EGR interpretation
 - Woschni-style heat-transfer scaling
 - Wiebe-function burn-rate shaping
@@ -941,7 +942,7 @@ What is currently defensible:
 - physically interpretable vehicle-equivalent loading
 - reduced-order visualization of manifold, runner, and reconstructed cylinder behavior
 
-What still requires calibration before claiming realism against a specific engine:
+What still requires model refinement before claiming stronger realism:
 
 - absolute torque level over the full map
 - exact combustion phasing and burn duration
