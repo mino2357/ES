@@ -278,7 +278,7 @@ pub(crate) struct CycleHistorySample {
 }
 
 #[derive(Debug, Clone)]
-// Owns the continuous engine state plus the cycle-averaged quantities shown in the GUI.
+// Owns the continuous engine state plus the cycle-averaged quantities exported by the CLI workflow.
 pub(crate) struct Simulator {
     pub(crate) env: EnvironmentConfig,
     pub(crate) cam: CamConfig,
@@ -3036,7 +3036,7 @@ pub(crate) fn cam_profile_points(
     cam: &CamConfig,
     model: &ModelConfig,
 ) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
-    // Sample both lobes over the full 720 deg cycle so the GUI can overlay lift and crank cursor.
+    // Sample both lobes over the full 720 deg cycle so the CLI artifacts can retain complete valve-lift traces.
     let samples = model.cam_profile_samples.max(2);
     let intake_center = cam.intake_centerline_deg - control.vvt_intake_deg;
     let exhaust_center = cam.exhaust_centerline_deg + control.vvt_exhaust_deg;
