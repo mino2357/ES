@@ -3,7 +3,7 @@
 ## 1. Purpose
 
 `ES` is a CLI tool for sweeping steady operating points of the repository's inline-4 engine model.
-Every operating point is solved by transiently integrating the same ODE system documented in `MODEL_REFERENCE.md`; the CLI does **not** switch to a separate map-only runtime for the exported torque curve.
+Every operating point is solved by transiently integrating the same ODE system documented in `MODEL_REFERENCE.md`; the CLI does **not** switch to a separate map-only runtime, surrogate runtime, or MVEM runtime for the exported torque curve.
 
 ## 2. Recommended reference run
 
@@ -19,7 +19,7 @@ cargo run --release -- sweep \
   --diagnostic-samples 180
 ```
 
-This is the repository's recommended reference run when you want a dyno-style naturally aspirated 2.0 L brake torque curve with enough settling time to suppress controller transients.
+This is the repository's recommended reference run when you want a dyno-style naturally aspirated 2.0 L brake torque curve while keeping the YAML-defined ignition and VVT inputs fixed and letting only the documented ODE system settle.
 
 ## 3. Why the CLI reports brake torque
 
@@ -127,7 +127,7 @@ Keep these references visible whenever you change the calibration or the documen
 
 ## 9. Model refinement workflow
 
-When the computed torque curve drifts away from reality, the next step is not to bolt on an external correction layer.
+When the computed torque curve drifts away from reality, the next step is not to bolt on an external correction layer, a surrogate correction, or an MVEM side path.
 Instead, keep solving the documented ODE system, identify which physical effects are missing from the current closures, add those effects to the mathematical model, and solve the updated system again.
 
 In practice this repository should repeat the same loop:

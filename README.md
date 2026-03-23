@@ -1,7 +1,7 @@
 # ES
 
 `ES` is a headless CLI inline-4 engine simulator for accuracy-first operating-point sweeps.
-It integrates the repository's documented 0D ODE model and exports brake-torque-centered TSV artifacts for later analysis with `gnuplot` or spreadsheets.
+It integrates the repository's documented 0D ODE model, without switching to a surrogate runtime or MVEM path, and exports brake-torque-centered TSV artifacts for later analysis with `gnuplot` or spreadsheets.
 
 ## Scope
 
@@ -56,7 +56,7 @@ The checked-in `config/reference_na_i4.yaml` is now tuned as an **high-rev natur
 
 - geometry remains approximately `1.998 L` (`86 mm x 86 mm`)
 - redline-side sweep extends to `8600 rpm`
-- VE and wave-action surrogates are biased toward a high-speed naturally aspirated character
+- VE and wave-action closures are biased toward a high-speed naturally aspirated character
 - the target is a curve that roughly resembles published high-rev naturally aspirated 2.0 L trends
 
 A representative sweep generated with the current model is summarized in `docs/USER_MANUAL.md` and `docs/USER_MANUAL.ja.md`.

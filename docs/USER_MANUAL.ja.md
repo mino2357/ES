@@ -3,7 +3,7 @@
 ## 1. 目的
 
 `ES` は、repository 内の inline-4 engine model の周期定常 operating point を sweep するための CLI tool です。
-各 operating point は `MODEL_REFERENCE.ja.md` に書いた同じ ODE を過渡積分して求めます。つまり、torque curve 出力のためだけの別 map runtime には切り替えていません。
+各 operating point は `MODEL_REFERENCE.ja.md` に書いた同じ ODE を過渡積分して求めます。torque curve 出力のためだけの別 map runtime、surrogate runtime、MVEM runtime には切り替えていません。
 
 ## 2. 推奨 reference run
 
@@ -19,7 +19,7 @@ cargo run --release -- sweep \
   --diagnostic-samples 180
 ```
 
-高回転型自然吸気 2.0 L の brake torque curve を、controller 過渡をある程度抑えつつ確認したいときの標準 run です。
+高回転型自然吸気 2.0 L の brake torque curve を、YAML で与えた点火時期・VVT を固定したまま ODE 積分だけで確認したいときの標準 run です。
 
 ## 3. なぜ CLI は brake torque を出すのか
 
@@ -106,7 +106,7 @@ gnuplot -e "cd 'output/reference_high_rev_na'" plot_torque_curve.gp
 
 ## 7. model と code の対応
 
-curve 調整時は、まず次の code path を見るのが安全です。
+curve 調整時は、まず次の code path を見るのが安全です。CLI sweep は hidden MBT/VVT 推定器を使わないため、ここに挙げる code path がそのまま実行経路です。
 
 - CLI sweep と brake torque 出力: `src/cli.rs`
 - ODE 積分と torque bookkeeping: `src/simulator.rs`

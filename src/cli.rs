@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::config::{AppConfig, ExternalLoadMode, load_config};
 use crate::constants::DEFAULT_CONFIG_PATH;
 use crate::simulator::{
-    Observation, Simulator, accuracy_priority_dt, estimate_mbt_deg,
-    external_load_command_for_torque_nm, rpm_to_rad_s, shaft_power_kw, vvt_optimal_targets_deg,
+    Observation, Simulator, accuracy_priority_dt, external_load_command_for_torque_nm,
+    rpm_to_rad_s, shaft_power_kw,
 };
 
 const DEFAULT_OUTPUT_DIR: &str = "output/cli";
@@ -306,16 +306,10 @@ fn solve_operating_point(
     sim.control.spark_cmd = true;
     sim.control.fuel_cmd = true;
     sim.control.throttle_cmd = 1.0;
-    // For a full-load sweep we hold each operating point at the VVT phasing favored by the VE
-    // surrogate itself. This keeps the sweep policy aligned with the documented algebraic model
-    // instead of introducing a separate hidden calibrator map in the CLI path.
-    let (vvt_intake_deg, vvt_exhaust_deg) =
-        vvt_optimal_targets_deg(target_rpm, &cfg.model.volumetric_efficiency);
-    sim.control.vvt_intake_deg = vvt_intake_deg;
-    sim.control.vvt_exhaust_deg = vvt_exhaust_deg;
-    let seed_load = (cfg.environment.ambient_pressure_pa / cfg.environment.ambient_pressure_pa)
-        .clamp(sim.model.load_min, sim.model.load_max);
-    sim.control.ignition_timing_deg = estimate_mbt_deg(&sim.model, target_rpm, seed_load);
+    // The CLI sweep intentionally keeps the operator commands explicit: ignition timing and VVT
+    // stay at the configured values instead of being replaced by a hidden speed-scheduled helper.
+    // Each point is therefore obtained only by integrating the documented ODE system under the
+    // requested controls plus the dyno load needed to hold the target speed.
     sim.seed_operating_point(target_rpm, 1.0, sim.control.ignition_timing_deg);
 
     let dt = accuracy_priority_dt(target_rpm, &sim.numerics).min(cfg.environment.dt);
@@ -327,9 +321,6 @@ fn solve_operating_point(
     let mut last_obs = sim.step(dt);
 
     for _ in 0..settle_steps.max(1) {
-        let load = (last_obs.map_kpa * 1.0e3 / sim.env.ambient_pressure_pa)
-            .clamp(sim.model.load_min, sim.model.load_max);
-        sim.control.ignition_timing_deg = estimate_mbt_deg(&sim.model, last_obs.rpm, load);
         let rpm_error = last_obs.rpm - target_rpm;
         rpm_integral = (rpm_integral + rpm_error * dt).clamp(-8_000.0, 8_000.0);
         let desired_load_torque = (last_obs.torque_load_nm + kp * rpm_error + ki * rpm_integral)
@@ -352,9 +343,6 @@ fn solve_operating_point(
     let mut air_sum = 0.0;
     let mut eta_sum = 0.0;
     for _ in 0..average_steps.max(1) {
-        let load = (last_obs.map_kpa * 1.0e3 / sim.env.ambient_pressure_pa)
-            .clamp(sim.model.load_min, sim.model.load_max);
-        sim.control.ignition_timing_deg = estimate_mbt_deg(&sim.model, last_obs.rpm, load);
         let rpm_error = last_obs.rpm - target_rpm;
         rpm_integral = (rpm_integral + rpm_error * dt).clamp(-8_000.0, 8_000.0);
         let desired_load_torque = (last_obs.torque_load_nm + kp * rpm_error + ki * rpm_integral)
