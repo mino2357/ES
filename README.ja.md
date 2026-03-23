@@ -37,7 +37,7 @@ output directory 直下に次を書き出します。
 - `torque_curve.tsv`: `brake_torque_nm`、`brake_power_kw`、`net_torque_nm`、`load_torque_nm` を含む torque curve
 - `plot_torque_curve.gp`: brake torque 用の最小 `gnuplot` script
 - `run_manifest.yaml`: 実行 metadata と簡易妥当性評価
-- `torque_curve_assessment.md`: brake torque curve のヒューリスティック評価
+- `torque_curve_assessment.md`: brake torque curve の評価記録
 - `point_XXXXrpm/pv.tsv`: `p-V`
 - `point_XXXXrpm/ptheta.tsv`: 4 気筒 `p-theta`
 - `point_XXXXrpm/ts.tsv`: `T-S`
@@ -46,17 +46,17 @@ output directory 直下に次を書き出します。
 例:
 
 ```bash
-gnuplot -e "cd 'output/reference_s2000_like'" plot_torque_curve.gp
+gnuplot -e "cd 'output/reference_high_rev_na'" plot_torque_curve.gp
 ```
 
 ## 参照 calibration の意図
 
-checked-in の `config/reference_na_i4.yaml` は、**高回転型自然吸気 2.0 L の教育用ケース**として調整しています。
+checked-in の `config/reference_na_i4.yaml` は、**高回転型自然吸気 2.0 L の参照ケース**として調整しています。
 
 - 幾何はほぼ `1.998 L` (`86 mm x 86 mm`)
 - 赤線側の sweep を `8600 rpm` まで拡張
 - VE と wave-action surrogate を高回転型の自然吸気らしい傾向へ寄せる
-- 目的は 高回転型自然吸気 2.0 L の公開 torque trend におおよそ似た曲線を作ることであり、production 実機の完全再現ではない
+- 目的は 高回転型自然吸気 2.0 L の公開 torque trend におおよそ似た曲線を作ること
 
 現在の代表 sweep 結果は `docs/USER_MANUAL.md` / `docs/USER_MANUAL.ja.md` に数表で記載しています。
 
