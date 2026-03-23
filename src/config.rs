@@ -976,13 +976,6 @@ impl AppConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct LoadedAppConfig {
-    pub(crate) config: AppConfig,
-    pub(crate) resolved_path: Option<PathBuf>,
-    pub(crate) source_text: Option<String>,
-}
-
 fn push_config_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !candidates.iter().any(|existing| existing == &candidate) {
         candidates.push(candidate);
@@ -1011,7 +1004,7 @@ fn config_candidate_paths(path: &Path, executable_dir: Option<&Path>) -> Vec<Pat
     candidates
 }
 
-pub(crate) fn load_config_with_metadata(path: impl AsRef<Path>) -> LoadedAppConfig {
+pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
     // Fall back to defaults on missing or malformed YAML so the app remains runnable.
     let path = path.as_ref();
     let executable_dir = std::env::current_exe()
@@ -1025,32 +1018,15 @@ pub(crate) fn load_config_with_metadata(path: impl AsRef<Path>) -> LoadedAppConf
             Err(_) => None,
         })
     else {
-        return LoadedAppConfig {
-            config: AppConfig::default(),
-            resolved_path: None,
-            source_text: None,
-        };
+        return AppConfig::default();
     };
 
     let resolved_path = resolved_path.canonicalize().unwrap_or(resolved_path);
     let source_name = resolved_path.display().to_string();
     match parse_config_text(&text, &source_name) {
-        Some(config) => LoadedAppConfig {
-            config,
-            resolved_path: Some(resolved_path),
-            source_text: Some(text),
-        },
-        None => LoadedAppConfig {
-            config: AppConfig::default(),
-            resolved_path: Some(resolved_path),
-            source_text: None,
-        },
+        Some(config) => config,
+        None => AppConfig::default(),
     }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn load_config(path: impl AsRef<Path>) -> AppConfig {
-    load_config_with_metadata(path).config
 }
 
 fn parse_config_text(text: &str, source_name: impl AsRef<str>) -> Option<AppConfig> {
