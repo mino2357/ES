@@ -68,6 +68,7 @@ control_defaults:
 - `ptheta.tsv`: crank angle と 4 気筒 pressure trace
 - `ts.tsv`: crank angle、apparent single-zone temperature、relative entropy、pressure、volume ratio
 - `summary.tsv`: その operating point の 1 行要約
+- `../torque_curve_assessment.md`: sweep 全体に対する教育用 plausibility report
 
 ## gnuplot の簡単な使い方
 
@@ -81,3 +82,18 @@ gnuplot -e "cd 'output/cli'" plot_torque_curve.gp
 plot 'point_3000rpm/pv.tsv' using 'volume_ratio':'pressure_pa' with lines
 plot 'point_3000rpm/ts.tsv' using 'entropy_rel_j_per_kgk':'temperature_k' with lines
 ```
+
+
+## 教育用の plausibility check
+
+`torque_curve_assessment.md` では、次の 4 つの経験則を明示します。
+
+1. sweep 全域で正のトルクか
+2. 低回転から中回転へ向かってトルクが立ち上がるか
+3. 高回転端でトルクが再び低下するか
+4. `P = \tau \omega` に従い power peak が torque peak 以後に来るか
+
+これは厳密な妥当性証明ではありませんが、研究メモや教育演習で「まず何を見るべきか」を共有する簡潔な監査票として使えます。
+
+推奨の教育用参照ケースは [../config/reference_na_i4.yaml](../config/reference_na_i4.yaml) です。
+まずは `--rpm-end 5000` 付近までの sweep で、極端な上限回転数 artifacts を避けつつ曲線形状を確認してください。

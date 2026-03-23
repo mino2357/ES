@@ -45,6 +45,7 @@
 - per-point `ptheta.tsv`
 - per-point `ts.tsv`
 - run metadata
+- torque-curve plausibility note (`torque_curve_assessment.md`)
 
 ## 4. 実装判断の優先順位
 

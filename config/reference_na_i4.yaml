@@ -1,0 +1,120 @@
+# Educational reference case: a plausible naturally aspirated 2.0 L inline-4.
+#
+# The numbers are not copied from a single production engine. Instead they are chosen to sit in a
+# realistic envelope for a modern port- or direct-injected passenger-car SI engine so that the CLI
+# sweep can be used as a teaching example.
+#
+# Approximate real-world intent:
+# - displacement: about 2.0 L total
+# - compression ratio: moderately high for a modern NA engine
+# - peak-speed range: 6,000 to 6,500 rpm
+# - manifold / runner volumes: compact passenger-car intake and exhaust hardware
+#
+# Suggested background reading:
+# - Heywood, Internal Combustion Engine Fundamentals, 2nd ed.
+# - Stone, Introduction to Internal Combustion Engines, 4th ed.
+
+environment:
+  ambient_pressure_pa: 101325.0
+  intake_temp_k: 300.0
+  exhaust_temp_k: 900.0
+  dt: 0.0012
+
+engine:
+  compression_ratio: 11.8
+  bore_m: 0.0860
+  stroke_m: 0.0860
+  inertia_kgm2: 0.19
+  friction_c0_nm: 9.0
+  friction_c1_nms: 0.0100
+  friction_c2_nms2: 0.000120
+  intake_volume_m3: 0.0038
+  intake_runner_volume_m3: 0.00046
+  exhaust_volume_m3: 0.0056
+  exhaust_runner_volume_m3: 0.00060
+  throttle_area_max_m2: 0.0034
+  tailpipe_area_m2: 0.0027
+  default_target_rpm: 900.0
+  max_rpm: 6000.0
+
+cam:
+  intake_centerline_deg: 468.0
+  exhaust_centerline_deg: 248.0
+  intake_duration_deg: 252.0
+  exhaust_duration_deg: 248.0
+  intake_max_lift_mm: 10.8
+  exhaust_max_lift_mm: 10.0
+
+control_defaults:
+  ignition_timing_deg: 18.0
+  vvt_intake_deg: 4.0
+  vvt_exhaust_deg: -2.0
+
+model:
+  initial_intake_pressure_pa: 100000.0
+  initial_throttle_eff: 0.10
+  mbt_base_deg: 23.0
+  mbt_rpm_slope_deg_per_rpm: 0.0010
+  mbt_rpm_reference: 1000.0
+  mbt_load_coeff: 5.0
+  mbt_min_deg: 10.0
+  mbt_max_deg: 34.0
+  combustion_pressure_gain: 3.20
+  combustion_efficiency: 0.965
+  burn_start_base_deg: 348.0
+  burn_start_vvt_intake_coeff: 0.16
+  burn_duration_base_deg: 56.0
+  burn_duration_throttle_coeff: 16.0
+  burn_duration_min_deg: 34.0
+  burn_duration_max_deg: 82.0
+  wiebe_a: 5.5
+  wiebe_m: 2.1
+  lambda_base: 0.96
+  lambda_throttle_coeff: -0.08
+  lambda_min: 0.88
+  lambda_max: 1.02
+  eta_base_offset: 0.42
+  eta_load_coeff: 0.14
+  eta_rpm_abs_coeff: 0.000055
+  eta_rpm_reference: 4200.0
+  eta_base_min: 0.28
+  eta_base_max: 0.48
+  heat_transfer:
+    base_h_w_m2k: 135.0
+    gas_temp_rise_gain: 0.34
+    heat_loss_fraction_max: 0.09
+  volumetric_efficiency:
+    rpm_base: 0.84
+    rpm_gain: 0.28
+    rpm_center: 3600.0
+    rpm_width: 2.2e6
+    rpm_min: 0.68
+    rpm_max: 1.00
+    throttle_base: 0.44
+    throttle_gain: 0.58
+    throttle_min: 0.44
+    throttle_max: 1.04
+    overall_min: 0.36
+    overall_max: 1.10
+  gas_path:
+    intake_runner_length_m: 0.41
+    exhaust_runner_length_m: 0.78
+    intake_runner_diameter_m: 0.035
+    exhaust_runner_diameter_m: 0.038
+    intake_runner_friction_factor: 0.028
+    exhaust_runner_friction_factor: 0.032
+  wave_action:
+    intake_runner_length_m: 0.41
+    exhaust_primary_length_m: 0.78
+    intake_pressure_gain: 0.03
+    exhaust_pressure_gain: 0.04
+    intake_ram_gain: 0.10
+    exhaust_scavenge_gain: 0.08
+  external_load:
+    mode: brake_map
+    base_torque_nm: 30.0
+    speed_linear_nms: 0.010
+    speed_quadratic_nms2: 0.00012
+    torque_min_nm: 0.0
+    torque_max_nm: 320.0
+    absorber_power_limit_kw: 220.0
