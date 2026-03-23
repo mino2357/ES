@@ -92,7 +92,7 @@ p_{er} &
 
 In the code, this corresponds to `EngineState` in `src/simulator.rs`.
 
-When the computed curve departs from reality, the preferred response in this repository is to revisit the mathematical model itself, identify the missing physical phenomena, extend the closures or state equations accordingly, and solve the updated ODE system again.
+When the computed curve departs from reality, the preferred response in this repository is to revisit the mathematical model itself rather than adding a surrogate correction or an MVEM side path, identify the missing physical phenomena, extend the closures or state equations accordingly, and solve the updated ODE system again.
 
 ### Algebraic And Reconstructed Quantities
 
@@ -952,7 +952,6 @@ What still requires model refinement before claiming stronger realism:
 
 ## Literature Sources
 
-1. Hendricks, E., and Sorenson, S. C., "Mean Value SI Engine Model for Control Studies," American Control Conference, 1990. DTU entry: https://orbit.dtu.dk/en/publications/mean-value-si-engine-model-for-control-studies/ . DOI-listed citation: https://doi.org/10.4271/900616
 
 2. Hendricks, E., and Vesterholm, T., "The Analysis of Mean Value SI Engine Models," SAE Technical Paper 920682, 1992. https://doi.org/10.4271/920682
 

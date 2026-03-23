@@ -6,7 +6,7 @@
 ## 1. 目標
 
 - 物理ベースの `0D CAE` engine model を保つ
-- 平均化 model へ逃げず、数理 model の式を忠実に解く
+- サロゲート model や MVEM 系へ逃げず、明示した ODE と closure だけを解く
 - idle 回転数から高回転までの torque curve を CLI から再現可能に出力する
 - 各 operating point で `p-V`、`p-theta`、`T-S` を再描画できるデータを残す
 - 必要最低限の YAML で再現できる headless workflow を維持する
@@ -70,3 +70,10 @@
 - user manual には、代表 run の数表を載せ、reference case が code とどう結び付くかを書く
 - model reference には、式だけでなく `src/cli.rs`、`src/simulator.rs`、`src/config.rs`、`config/reference_na_i4.yaml` の対応を書く
 - torque curve を出す artifact は、`net torque` と `brake torque` を混同しない
+
+## 7. ユーザー明示 override: surrogate / MVEM を使わない
+
+- ユーザーが今回明示した通り、CLI sweep では hidden surrogate、speed-scheduled helper、MVEM 系の別 runtime を導入しない
+- operating point ごとの差は、YAML で与えた control input と、speed hold 用 absorber 負荷だけで作る
+- 点火時期や VVT は、追加の近似推定器で rpm ごとに再設定せず、明示入力または将来追加する ODE state として扱う
+- 文書では `surrogate` という語で sweep policy を正当化しない

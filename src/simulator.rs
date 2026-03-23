@@ -1408,7 +1408,7 @@ impl Simulator {
         load: f64,
         ignition_timing_deg: f64,
     ) -> (f64, f64, f64, bool, f64) {
-        // MBT is represented as a reduced-order map plus asymmetric penalties for advance/retard.
+        // Ignition phasing uses the currently configured algebraic closure plus asymmetric penalties for advance/retard.
         let mbt_deg = estimate_mbt_deg(&self.model, rpm, load);
         let spark_error_deg = ignition_timing_deg - mbt_deg;
         let phase_eff = if spark_error_deg >= 0.0 {
@@ -1815,7 +1815,7 @@ impl Simulator {
         eval_1: EvalPoint,
         dt: f64,
     ) -> EngineState {
-        // Midpoint RK2 is the production integrator for the mean-value state vector.
+        // Midpoint RK2 is the production integrator for the explicit ODE state vector.
         let k1 = self.derivatives(state, eval_1);
         let mid = integrate_state(state, k1, 0.5 * dt);
         let eval_2 = self.eval(mid);
@@ -2644,11 +2644,12 @@ pub(crate) fn volumetric_efficiency(
     (rpm_term * vvt_term * throttle_term).clamp(ve_model.overall_min, ve_model.overall_max)
 }
 
-/// Returns the simple speed-scheduled VVT targets implied by the VE surrogate itself.
+/// Returns the simple speed-scheduled VVT targets implied by the VE closure itself.
 ///
 /// The CLI full-load sweep uses this as a transparent operating-point policy: instead of adding a
-/// second optimization layer, it asks the same VE model what intake / exhaust phasing it prefers
+/// second optimization layer, it asks the same VE closure what intake / exhaust phasing it prefers
 /// between its low- and high-speed anchors, then holds those values while the ODE settles.
+#[allow(dead_code)]
 pub(crate) fn vvt_optimal_targets_deg(
     rpm: f64,
     ve_model: &VolumetricEfficiencyConfig,
