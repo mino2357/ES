@@ -1,3 +1,6 @@
-fn main() -> eframe::Result {
-    es_sim::launch_desktop()
+fn main() {
+    if let Err(err) = es_sim::run_cli() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 }

@@ -258,6 +258,15 @@ pub(crate) struct PvSample {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct TsSample {
+    pub(crate) theta_deg: f64,
+    pub(crate) temperature_k: f64,
+    pub(crate) entropy_rel_j_per_kgk: f64,
+    pub(crate) pressure_pa: f64,
+    pub(crate) volume_ratio: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct SingleZonePressureTraceInput {
     compression_ratio: f64,
     swept_volume_cyl_m3: f64,
@@ -1310,6 +1319,56 @@ impl Simulator {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn build_ts_diagram(&self, samples: usize) -> Vec<TsSample> {
+        let count = samples.max(180);
+        let reference_pressure_pa = self.env.ambient_pressure_pa.max(1.0);
+        let reference_temp_k = self.env.intake_temp_k.max(1.0);
+        let cp = GAMMA_AIR * R_AIR / (GAMMA_AIR - 1.0);
+        let mut out = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let theta_deg = 720.0 * i as f64 / count as f64;
+            let sample_state = EngineState {
+                theta_rad: theta_deg.to_radians(),
+                ..self.state
+            };
+            let eval = self.eval(sample_state);
+            let (volume_ratio, pressure_pa) = instantaneous_pv_sample(
+                sample_state.theta_rad,
+                SingleZonePressureTraceInput {
+                    compression_ratio: self.params.compression_ratio,
+                    swept_volume_cyl_m3: self.params.displacement_m3 / FIXED_CYLINDER_COUNT as f64,
+                    p_intake_pa: eval.p_intake_cyl_pa,
+                    p_exhaust_pa: eval.p_exhaust_cyl_pa,
+                    fuel_mass_cycle_cyl_kg: eval.fuel_mass_cycle_cyl_kg,
+                    heat_loss_cycle_j: eval.heat_loss_cycle_j,
+                    combustion_enabled: eval.combustion_enabled,
+                    soc_deg: eval.burn_start_deg,
+                    eoc_deg: eval.burn_start_deg + eval.burn_duration_deg,
+                    mixture_gamma: eval.mixture_gamma,
+                    peak_pressure_limit_pa: self.model.peak_pressure_max_pa,
+                },
+                self.model.wiebe_a,
+                self.model.wiebe_m,
+                &self.model.pv_model,
+            );
+            let temperature_k = reference_temp_k
+                * (pressure_pa / reference_pressure_pa)
+                * volume_ratio.max(1.0e-9);
+            let entropy_rel_j_per_kgk = cp * (temperature_k / reference_temp_k).ln()
+                - R_AIR * (pressure_pa / reference_pressure_pa).ln();
+            out.push(TsSample {
+                theta_deg,
+                temperature_k,
+                entropy_rel_j_per_kgk,
+                pressure_pa,
+                volume_ratio,
+            });
+        }
+
+        out
+    }
+
     pub(crate) fn build_ptheta_display_curves(&self, samples: usize) -> Vec<Vec<(f64, f64)>> {
         let rpm = rad_s_to_rpm(self.state.omega_rad_s.max(0.0));
         if !self.pv_display_active(rpm, self.state) {
