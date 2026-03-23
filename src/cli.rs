@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::{load_config, AppConfig, ExternalLoadMode};
+use crate::config::{AppConfig, ExternalLoadMode, load_config};
 use crate::constants::DEFAULT_CONFIG_PATH;
 use crate::simulator::{
-    accuracy_priority_dt, estimate_mbt_deg, external_load_command_for_torque_nm, rpm_to_rad_s,
-    shaft_power_kw, Observation, Simulator,
+    Observation, Simulator, accuracy_priority_dt, estimate_mbt_deg,
+    external_load_command_for_torque_nm, rpm_to_rad_s, shaft_power_kw,
 };
 
 const DEFAULT_OUTPUT_DIR: &str = "output/cli";
@@ -124,9 +124,11 @@ fn run_sweep(options: SweepOptions) -> Result<(), String> {
     cfg.model.external_load.mode = ExternalLoadMode::BrakeMap;
     cfg.model.external_load.base_torque_nm = cfg.model.external_load.base_torque_nm.max(400.0);
     cfg.model.external_load.torque_max_nm = cfg.model.external_load.torque_max_nm.max(500.0);
-    cfg.model.external_load.absorber_power_limit_kw = cfg.model.external_load.absorber_power_limit_kw.max(500.0);
+    cfg.model.external_load.absorber_power_limit_kw =
+        cfg.model.external_load.absorber_power_limit_kw.max(500.0);
     cfg.model.external_load.speed_linear_nms = cfg.model.external_load.speed_linear_nms.max(0.0);
-    cfg.model.external_load.speed_quadratic_nms2 = cfg.model.external_load.speed_quadratic_nms2.max(0.0);
+    cfg.model.external_load.speed_quadratic_nms2 =
+        cfg.model.external_load.speed_quadratic_nms2.max(0.0);
     let rpm_start = options
         .rpm_start
         .unwrap_or(cfg.engine.default_target_rpm.round());
@@ -273,7 +275,9 @@ fn write_operating_point_outputs(
     let ptheta_path = point_dir.join("ptheta.tsv");
     let curves = sim.build_ptheta_display_curves(diagnostic_samples);
     let count = curves.iter().map(Vec::len).max().unwrap_or(0);
-    let mut ptheta = String::from("theta_deg\tcyl1_pressure_pa\tcyl2_pressure_pa\tcyl3_pressure_pa\tcyl4_pressure_pa\n");
+    let mut ptheta = String::from(
+        "theta_deg\tcyl1_pressure_pa\tcyl2_pressure_pa\tcyl3_pressure_pa\tcyl4_pressure_pa\n",
+    );
     for i in 0..count {
         let theta = curves
             .first()
@@ -292,7 +296,9 @@ fn write_operating_point_outputs(
 
     let ts_path = point_dir.join("ts.tsv");
     let ts = sim.build_ts_diagram(diagnostic_samples);
-    let mut ts_body = String::from("theta_deg\ttemperature_k\tentropy_rel_j_per_kgk\tpressure_pa\tvolume_ratio\n");
+    let mut ts_body = String::from(
+        "theta_deg\ttemperature_k\tentropy_rel_j_per_kgk\tpressure_pa\tvolume_ratio\n",
+    );
     for sample in ts {
         ts_body.push_str(&format!(
             "{:.3}\t{:.6}\t{:.6}\t{:.3}\t{:.8}\n",
@@ -354,8 +360,14 @@ fn write_sweep_summary(
         "config_path: {}\nexternal_load_mode: brake_map\nrpm_step: {}\nrpm_start: {}\nrpm_end: {}\npoint_count: {}\n",
         DEFAULT_CONFIG_PATH,
         rpm_step,
-        results.first().map(|x| x.target_rpm).unwrap_or(cfg.engine.default_target_rpm),
-        results.last().map(|x| x.target_rpm).unwrap_or(cfg.engine.max_rpm),
+        results
+            .first()
+            .map(|x| x.target_rpm)
+            .unwrap_or(cfg.engine.default_target_rpm),
+        results
+            .last()
+            .map(|x| x.target_rpm)
+            .unwrap_or(cfg.engine.max_rpm),
         results.len(),
     );
     fs::write(&manifest_path, manifest)
