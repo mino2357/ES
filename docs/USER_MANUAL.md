@@ -1,211 +1,83 @@
-﻿# ES User Manual
-
-This document is self-contained.
-It explains how to build, run, operate, and interpret the current GUI-centered simulator.
-
-## Terms
-
-- `GUI`: graphical user interface
-- `dyno`: a dynamometer or absorber load path
-- `lambda`: air-fuel equivalence ratio
-- `VVT`: variable valve timing
-- `FHD`: full high definition, typically `1920x1080`
-- `WQHD`: wide quad high definition, typically `2560x1440`
-- `vehicle-equivalent load`: a road-load model based on vehicle mass and driveline parameters
+# ES User Manual
 
 ## Scope
 
-`ES` is a reduced-order inline-4 engine simulator with a stylized test-cell dashboard.
-It is intended for interactive transient studies, physically interpretable load-response studies, and visualization.
-
-It is not:
-
-- CFD
-- a full 1D gas-dynamics solver
-- a certified emissions model
-- a substitute for production ECU calibration data
+`ES` is a CLI tool for sweeping steady operating points of the repository's inline-4 engine model.
+It uses YAML input, solves the physical model transiently until each operating point settles, and writes text files for later plotting.
 
 ## Build And Run
 
-Start the desktop application:
-
 ```bash
-cargo run --release
+cargo run --release -- sweep --config config/sim.yaml --output-dir output/cli
 ```
 
-Run the automated tests:
+## Command-Line Options
 
-```bash
-cargo test -- --nocapture
+- `--config <path>`: YAML file to load. Missing sections fall back to defaults.
+- `--output-dir <dir>`: destination directory for all generated files.
+- `--rpm-start <rpm>`: optional sweep start. Default is `engine.default_target_rpm`.
+- `--rpm-end <rpm>`: optional sweep end. Default is `engine.max_rpm`.
+- `--rpm-step <rpm>`: sweep interval. Default is `200`.
+- `--settle-time <s>`: transient settling time before averaging. Default is `12`.
+- `--average-time <s>`: averaging window after settling. Default is `1.5`.
+- `--diagnostic-samples <n>`: samples used for `p-theta` and `T-S`. Minimum is `180`, default is `720`.
+
+## Minimal YAML
+
+The checked-in configuration is intentionally minimal:
+
+```yaml
+environment:
+  ambient_pressure_pa: 101325.0
+  intake_temp_k: 305.0
+  exhaust_temp_k: 880.0
+  dt: 0.001
+engine:
+  compression_ratio: 13.0
+  bore_m: 0.0805
+  stroke_m: 0.0976
+  default_target_rpm: 850.0
+  max_rpm: 7000.0
+control_defaults:
+  ignition_timing_deg: 12.0
 ```
 
-## Main Screen Layout
+The CLI fills the rest from Rust defaults.
 
-The GUI is organized like a compact engine test cell.
+## Output Files
 
-### Header
+### `torque_curve.tsv`
 
-The header shows machine-state annunciators such as:
+Columns:
 
-- `RUN`
-- `FUEL`
-- `SPARK`
-- `MOTOR`
-- `FIRING`
-- `LOAD CTRL`
-- `PWR LIM`
-- `ACCURACY`
+- `target_rpm`
+- `mean_rpm`
+- `torque_nm`
+- `power_kw`
+- `map_kpa`
+- `air_flow_gps`
+- `eta_indicated`
+- `load_cmd`
+- `output_dir`
 
-`ACCURACY` means the simulator is not forcing wall-clock synchronization and is instead advancing a fixed amount of simulated time per rendered frame.
+### Per-point directories
 
-### Operator Rack
+Each `point_XXXXrpm/` directory contains:
 
-The left rack now shows the `Startup Numerical Fit` status together with the manual controls:
+- `pv.tsv`: `volume_ratio`, `pressure_pa`
+- `ptheta.tsv`: crank angle and four cylinder pressure traces
+- `ts.tsv`: crank angle, apparent single-zone temperature, relative entropy, pressure, and volume ratio
+- `summary.tsv`: single-row summary of the settled operating point
 
-- on first fire, each throttle bin gets a local `MBT` spark search and the required brake torque for the requested RPM is solved numerically
-- manual actuator edits stay locked until that startup fit converges
-- once the fit reaches `READY`, its result is saved under `cache/startup_fit/` and reused on the next launch when the build identity and raw YAML config text still match
-- once the fit is ready, throttle, spark, fuel, ignition, and VVT can be edited manually
+## Quick gnuplot Usage
 
-### Operator Display
+```bash
+gnuplot -e "cd 'output/cli'" plot_torque_curve.gp
+```
 
-The top-center display shows:
+You can also plot any point-level file directly, for example:
 
-- large digital readouts for speed, torque, power, trapped air, intake pressure, and indicated efficiency
-- gauges for RPM, MAP, lambda, BMEP, exhaust temperature, combustion power, and internal EGR
-- linear meters for throttle, `Eq RPM`, ignition, and VVT
-
-### Plots
-
-The center and lower areas show:
-
-- the `Map` view includes a `Map fill` toggle with `BSFC + limit` and `Full BSFC`
-- cylinder `p-V`
-- cylinder `p-theta`
-- indicated torque, net torque, net shaft power, and IMEP / indicated efficiency
-
-These remain visible while the startup fit is running.
-
-The central region is scrollable when the full layout does not fit vertically.
-
-## Basic Operation
-
-### Manual Transient Operation
-
-1. Start the application.
-2. Let the startup numerical fit run immediately after first fire.
-3. Watch `p-V`, `p-theta`, and indicated torque while the fit converges.
-4. Once the fit reaches `READY`, use `Driver demand` for standard runtime, or switch to `Actuator lab` for manual throttle / ignition / VVT overrides.
-5. Toggle `Spark` and `Fuel` as needed.
-
-### Operator Inputs And Outputs
-
-The primary operator inputs are:
-
-- `Driver demand`
-
-The dashboard-side load controller follows `Driver demand -> torque request -> WOT torque-curve inverse -> equilibrium rpm`,
-then adjusts the internal `load_cmd` so the machine settles toward that equilibrium speed.
-The primary outputs are:
-
-- `Required brake torque`
-- `Brake power`
-- `RPM error`
-- `Machine torque act / shaft est`
-
-### Choosing A Load Model
-
-In `Actuator Deck`, `Load model` can be:
-
-- `Brake dyno`: a speed-dependent absorber torque surrogate with absorber power limit
-- `Vehicle eq.`: a road-load model reflected to engine torque and engine-side inertia
-
-`Vehicle eq.` is the default checked-in path because it gives a more interpretable transient response.
-
-## Configuration
-
-The runtime configuration file is [../config/sim.yaml](../config/sim.yaml).
-It is parsed by `AppConfig` in `src/config.rs` and checked by the plausibility audit in `src/config/audit.rs`.
-
-Startup-fit artifacts are saved under [../cache/startup_fit](../cache/startup_fit).
-They are reused only when both the build identity and the raw YAML config text still match.
-Startup fit itself runs in a background worker decoupled from the UI frame loop.
-The current fit contract uses coarser-than-runtime numerics plus a `10 min` cap, a fixed-`WOT` `16`-candidate release fit, and at most `6` cycles with `1200` RKF steps per candidate cycle.
-After the release fit, the app builds a `13`-point WOT torque curve over `1000..7000 rpm`, and post-fit runtime follows `Driver demand -> torque request -> WOT torque-curve inverse -> equilibrium rpm`.
-
-### Important Sections
-
-- `environment`: ambient pressure, temperature, and base timestep
-- `engine`: displacement geometry, inertia, default target RPM, manifold volumes, runner dimensions
-- `cam`: valve event locations and durations
-- `control_defaults`: initial throttle, spark, fuel, load, and calibration commands
-- `model`: combustion, flow, friction, internal-EGR, and load closures
-- `numerics`: timestep ceilings, floors, and accuracy-target settings
-- `ui`: window size, scroll behavior, and wall-clock versus accuracy-first stepping
-- `plot`: plot histories and p-V sampling
-
-### Accuracy-First Mode
-
-`ui.sync_to_wall_clock` selects the stepping policy:
-
-- `true`: try to follow wall clock
-- `false`: integrate a fixed amount of physical time per rendered frame
-
-The checked-in configuration uses `false`.
-
-`ui.simulated_time_per_frame_s` sets the target amount of physical time to advance per GUI frame.
-The solver then chooses a numerically smaller step internally when engine speed rises.
-
-To keep the GUI responsive, the dashboard also enforces a per-frame simulation wall-clock budget.
-Under heavy conditions it may leave part of the requested simulated time as backlog for a later frame instead of blocking the UI.
-When the `Pressure` view is not open, the `p-V` diagnostics also drop to a lower background sampling density so sliders and tabs stay responsive.
-
-## Reading The Plots Correctly
-
-### `p-V`
-
-The displayed `p-V` loop uses a display-oriented single-zone cylinder-pressure solve.
-Over the closed cycle it integrates `dp/dtheta` from the Wiebe burn fraction and the cycle heat-loss estimate,
-then blends the gas-exchange strokes back to the intake and exhaust boundary pressures.
-It is useful for relative trends such as:
-
-- indicated work changes
-- combustion phasing changes
-- pumping-loss changes
-
-When combustion is active, the plot also overlays ignition, `SOC/EOC`, and `CA10/50/90` markers.
-
-While the `Pressure` view is open, this diagnostic runs at full density.
-On other views it falls back to a lighter background density, so `IMEP / eta_i` updates become coarser in exchange for better UI responsiveness.
-
-It is not the main engine-state ODE itself, and it is not a direct measured cylinder-pressure trace.
-
-### `p-theta`
-
-The `p-theta` view overlays all four cylinders over `0..720 degCA`.
-It is intended to show:
-
-- phase spacing between cylinders
-- pressure-peak movement with ignition or VVT changes
-- cycle-shape differences under changing load and charge conditions
-
-## What To Use This Simulator For
-
-Good uses:
-
-- studying transient trends with physically interpretable controls
-- comparing load-model behavior
-- visualizing the qualitative effect of ignition and VVT changes
-- studying load transients with `Brake dyno` and `Vehicle eq.`
-
-Poor uses:
-
-- final calibration numbers for a production ECU
-- exact emissions prediction
-- exact in-cylinder pressure reconstruction without experimental calibration
-
-## Related Documents
-
-- [../README.md](../README.md): repository overview
-- [MODEL_REFERENCE.md](MODEL_REFERENCE.md): equations, closures, implementation map, and sources
-- [USER_MANUAL.ja.md](USER_MANUAL.ja.md): Japanese version of this manual
+```gnuplot
+plot 'point_3000rpm/pv.tsv' using 'volume_ratio':'pressure_pa' with lines
+plot 'point_3000rpm/ts.tsv' using 'entropy_rel_j_per_kgk':'temperature_k' with lines
+```

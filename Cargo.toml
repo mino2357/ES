@@ -6,17 +6,10 @@ edition = "2024"
 [lib]
 crate-type = ["rlib"]
 
-[features]
-default = ["gui"]
-gui = ["dep:eframe", "dep:egui_plot", "dep:serde", "dep:serde_yaml"]
-
 [dependencies]
-eframe = { version = "0.31", optional = true }
-egui_plot = { version = "0.31", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_yaml = { version = "0.9", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 
 [[bin]]
 name = "es_sim"
 path = "src/main.rs"
-required-features = ["gui"]
