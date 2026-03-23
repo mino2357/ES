@@ -37,7 +37,7 @@ The CLI writes these files under the output directory:
 - `torque_curve.tsv`: one row per operating point with `brake_torque_nm`, `brake_power_kw`, `net_torque_nm`, and `load_torque_nm`
 - `plot_torque_curve.gp`: minimal `gnuplot` script for the brake torque curve
 - `run_manifest.yaml`: run metadata and high-level plausibility summary
-- `torque_curve_assessment.md`: heuristic audit of the generated brake torque curve
+- `torque_curve_assessment.md`: audit note for the generated brake torque curve
 - `point_XXXXrpm/pv.tsv`: `p-V` loop data
 - `point_XXXXrpm/ptheta.tsv`: four-cylinder `p-theta` data
 - `point_XXXXrpm/ts.tsv`: `T-S` data
@@ -46,17 +46,18 @@ The CLI writes these files under the output directory:
 Example:
 
 ```bash
-gnuplot -e "cd 'output/reference_s2000_like'" plot_torque_curve.gp
+gnuplot -e "cd 'output/reference_high_rev_na'" plot_torque_curve.gp
 ```
+
 
 ## Reference Calibration Intent
 
-The checked-in `config/reference_na_i4.yaml` is now tuned as an **high-rev naturally aspirated 2.0 L teaching case**:
+The checked-in `config/reference_na_i4.yaml` is now tuned as an **high-rev naturally aspirated 2.0 L reference case**:
 
 - geometry remains approximately `1.998 L` (`86 mm x 86 mm`)
 - redline-side sweep extends to `8600 rpm`
 - VE and wave-action surrogates are biased toward a high-speed naturally aspirated character
-- the target is a curve that roughly resembles published high-rev naturally aspirated 2.0 L trends, not an exact production re-creation
+- the target is a curve that roughly resembles published high-rev naturally aspirated 2.0 L trends
 
 A representative sweep generated with the current model is summarized in `docs/USER_MANUAL.md` and `docs/USER_MANUAL.ja.md`.
 

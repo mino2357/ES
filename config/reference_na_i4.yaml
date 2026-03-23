@@ -1,14 +1,14 @@
 # Educational reference case: a high-rev naturally aspirated 2.0 L inline-4.
 #
-# This file intentionally sits between catalog data and a reduced-order teaching model:
+# This file intentionally sits between catalog data and a reduced-order reference model:
 # - bore / stroke remain square at 86 x 86 mm so the displacement is about 1.998 L
 # - the redline-side operating window is extended toward 8,600 rpm to resemble a high-speed naturally aspirated performance-engine case
 # - volumetric-efficiency and wave-action parameters are biased toward a modest high-rpm ram effect
-# - the goal is not exact AP1/AP2 duplication, but a physically plausible dyno-style brake curve
+# - the goal is a physically plausible dyno-style brake curve
 #   that rises through the mid-range and peaks in the upper-speed band like the attached reference
 #   image
 #
-# Intended literature / catalog anchors for this teaching case are documented in
+# Intended literature / catalog anchors for this reference case are documented in
 # `docs/MODEL_REFERENCE*.md` and `docs/USER_MANUAL*.md`.
 
 environment:
