@@ -2095,6 +2095,7 @@ impl Simulator {
                 0.0
             };
 
+        let brake_torque_nm = torque_net_inst_nm + eval_final.torque_load_nm;
         let observation = Observation {
             rpm,
             map_kpa: self.state.p_intake_pa * 1e-3,
@@ -2112,10 +2113,7 @@ impl Simulator {
             torque_load_nm: eval_final.torque_load_nm,
             torque_net_inst_nm,
             torque_net_nm: self.torque_net_filtered_nm,
-            brake_bmep_bar: torque_to_bmep_bar(
-                self.torque_net_filtered_nm,
-                self.params.displacement_m3,
-            ),
+            brake_bmep_bar: torque_to_bmep_bar(brake_torque_nm, self.params.displacement_m3),
             air_flow_gps: eval_final.m_dot_cyl_mean * 1e3,
             trapped_air_mg,
             volumetric_efficiency: eval_final.ve_effective,
@@ -2644,6 +2642,35 @@ pub(crate) fn volumetric_efficiency(
     let throttle_term = (ve_model.throttle_base + ve_model.throttle_gain * throttle_eff.sqrt())
         .clamp(ve_model.throttle_min, ve_model.throttle_max);
     (rpm_term * vvt_term * throttle_term).clamp(ve_model.overall_min, ve_model.overall_max)
+}
+
+/// Returns the simple speed-scheduled VVT targets implied by the VE surrogate itself.
+///
+/// The CLI full-load sweep uses this as a transparent operating-point policy: instead of adding a
+/// second optimization layer, it asks the same VE model what intake / exhaust phasing it prefers
+/// between its low- and high-speed anchors, then holds those values while the ODE settles.
+pub(crate) fn vvt_optimal_targets_deg(
+    rpm: f64,
+    ve_model: &VolumetricEfficiencyConfig,
+) -> (f64, f64) {
+    let rpm_blend = if (ve_model.vvt_rpm_high - ve_model.vvt_rpm_low).abs() <= f64::EPSILON {
+        1.0
+    } else {
+        ((rpm - ve_model.vvt_rpm_low) / (ve_model.vvt_rpm_high - ve_model.vvt_rpm_low))
+            .clamp(0.0, 1.0)
+    };
+    (
+        lerp(
+            ve_model.vvt_intake_opt_low_deg,
+            ve_model.vvt_intake_opt_high_deg,
+            rpm_blend,
+        ),
+        lerp(
+            ve_model.vvt_exhaust_opt_low_deg,
+            ve_model.vvt_exhaust_opt_high_deg,
+            rpm_blend,
+        ),
+    )
 }
 
 pub(crate) fn engine_air_consumption(

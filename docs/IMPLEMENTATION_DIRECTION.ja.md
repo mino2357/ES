@@ -62,3 +62,11 @@
 - GUI 前提の説明は残さない
 - 最小 YAML の例と出力 file の使い方を必ず記す
 - 数式説明は model reference に集約し、操作説明は user manual に集約する
+
+
+## 6. 追跡可能な出典と calibration
+
+- calibration や基準 curve を更新するときは、どの公開 spec / 文献 / 教科書を anchor にしたかを文書へ明記する
+- user manual には、代表 run の数表を載せ、reference case が code とどう結び付くかを書く
+- model reference には、式だけでなく `src/cli.rs`、`src/simulator.rs`、`src/config.rs`、`config/reference_na_i4.yaml` の対応を書く
+- torque curve を出す artifact は、`net torque` と `brake torque` を混同しない

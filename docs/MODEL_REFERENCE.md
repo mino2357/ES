@@ -39,9 +39,36 @@ It is therefore:
 ## Related Documents
 
 - [../README.md](../README.md): repository overview and document map
-- [USER_MANUAL.md](USER_MANUAL.md): GUI operation and configuration usage
+- [USER_MANUAL.md](USER_MANUAL.md): CLI operation, exported artifacts, and reference sweep interpretation
 - [MODEL_REFERENCE.ja.md](MODEL_REFERENCE.ja.md): Japanese version of this model reference
 - [../ENGINE_MODEL_WORKLOG.md](../ENGINE_MODEL_WORKLOG.md): chronological implementation log
+
+
+## Documentation And Code Traceability
+
+The maintained CLI workflow uses the following implementation split:
+
+- `src/simulator.rs`: integrates the ODE state, evaluates algebraic closures, reconstructs `p-V` / `p-theta` / `T-S`, and keeps torque bookkeeping consistent
+- `src/cli.rs`: selects the WOT operating-point policy, holds target speed with the absorber model, and exports brake-torque-centered artifacts
+- `src/config.rs`: defines default parameter values and YAML schema
+- `config/reference_na_i4.yaml`: high-rev naturally aspirated 2.0 L teaching calibration used by the manuals
+
+For the CLI artifacts, the exported dyno-style brake quantity is
+
+```math
+\tau_{brake} = \tau_{net} + \tau_{load}
+```
+
+which matches a speed-held dynamometer interpretation better than reporting `tau_net` alone.
+
+## Literature Anchors
+
+The current teaching calibration and documentation are anchored to the following source families:
+
+1. public brochure / catalog specifications for high-rev naturally aspirated 2.0 L SI engines.
+2. Heywood, *Internal Combustion Engine Fundamentals* (2nd ed.), for filling-and-emptying, throttling, and indicated work interpretation.
+3. Stone, *Introduction to Internal Combustion Engines* (4th ed.), for plausible naturally aspirated SI trend ranges.
+4. Woschni-style cylinder heat-transfer literature and standard single-zone heat-release references for the display-side pressure reconstruction assumptions.
 
 ## State Partition
 
@@ -869,8 +896,8 @@ Implementation-specific surrogates:
 | algebraic closures | `src/simulator.rs` |
 | configuration schema | `src/config.rs` |
 | parameter plausibility audit | `src/config/audit.rs` |
-| dashboard controls and status display | `src/dashboard.rs` |
-| `p-V` / `p-theta` plotting | `src/dashboard.rs` |
+| CLI sweep orchestration and output writing | `src/cli.rs` |
+| `p-V` / `p-theta` / `T-S` artifact reconstruction | `src/simulator.rs`, `src/cli.rs` |
 
 Useful entry points:
 

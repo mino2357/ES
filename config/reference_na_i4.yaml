@@ -1,18 +1,15 @@
-# Educational reference case: a plausible naturally aspirated 2.0 L inline-4.
+# Educational reference case: a high-rev naturally aspirated 2.0 L inline-4.
 #
-# The numbers are not copied from a single production engine. Instead they are chosen to sit in a
-# realistic envelope for a modern port- or direct-injected passenger-car SI engine so that the CLI
-# sweep can be used as a teaching example.
+# This file intentionally sits between catalog data and a reduced-order teaching model:
+# - bore / stroke remain square at 86 x 86 mm so the displacement is about 1.998 L
+# - the redline-side operating window is extended toward 8,600 rpm to resemble a high-speed naturally aspirated performance-engine case
+# - volumetric-efficiency and wave-action parameters are biased toward a modest high-rpm ram effect
+# - the goal is not exact AP1/AP2 duplication, but a physically plausible dyno-style brake curve
+#   that rises through the mid-range and peaks in the upper-speed band like the attached reference
+#   image
 #
-# Approximate real-world intent:
-# - displacement: about 2.0 L total
-# - compression ratio: moderately high for a modern NA engine
-# - peak-speed range: 6,000 to 6,500 rpm
-# - manifold / runner volumes: compact passenger-car intake and exhaust hardware
-#
-# Suggested background reading:
-# - Heywood, Internal Combustion Engine Fundamentals, 2nd ed.
-# - Stone, Introduction to Internal Combustion Engines, 4th ed.
+# Intended literature / catalog anchors for this teaching case are documented in
+# `docs/MODEL_REFERENCE*.md` and `docs/USER_MANUAL*.md`.
 
 environment:
   ambient_pressure_pa: 101325.0
@@ -27,7 +24,7 @@ engine:
   inertia_kgm2: 0.19
   friction_c0_nm: 9.0
   friction_c1_nms: 0.0100
-  friction_c2_nms2: 0.000120
+  friction_c2_nms2: 0.000090
   intake_volume_m3: 0.0038
   intake_runner_volume_m3: 0.00046
   exhaust_volume_m3: 0.0056
@@ -35,7 +32,7 @@ engine:
   throttle_area_max_m2: 0.0034
   tailpipe_area_m2: 0.0027
   default_target_rpm: 900.0
-  max_rpm: 6000.0
+  max_rpm: 8600.0
 
 cam:
   intake_centerline_deg: 468.0
@@ -46,9 +43,9 @@ cam:
   exhaust_max_lift_mm: 10.0
 
 control_defaults:
-  ignition_timing_deg: 18.0
-  vvt_intake_deg: 4.0
-  vvt_exhaust_deg: -2.0
+  ignition_timing_deg: 22.0
+  vvt_intake_deg: 10.0
+  vvt_exhaust_deg: -6.0
 
 model:
   initial_intake_pressure_pa: 100000.0
@@ -59,7 +56,7 @@ model:
   mbt_load_coeff: 5.0
   mbt_min_deg: 10.0
   mbt_max_deg: 34.0
-  combustion_pressure_gain: 3.20
+  combustion_pressure_gain: 3.55
   combustion_efficiency: 0.965
   burn_start_base_deg: 348.0
   burn_start_vvt_intake_coeff: 0.16
@@ -73,43 +70,43 @@ model:
   lambda_throttle_coeff: -0.08
   lambda_min: 0.88
   lambda_max: 1.02
-  eta_base_offset: 0.42
-  eta_load_coeff: 0.14
-  eta_rpm_abs_coeff: 0.000055
-  eta_rpm_reference: 4200.0
-  eta_base_min: 0.28
-  eta_base_max: 0.48
+  eta_base_offset: 0.44
+  eta_load_coeff: 0.15
+  eta_rpm_abs_coeff: 0.000045
+  eta_rpm_reference: 5200.0
+  eta_base_min: 0.30
+  eta_base_max: 0.50
   heat_transfer:
-    base_h_w_m2k: 135.0
-    gas_temp_rise_gain: 0.34
-    heat_loss_fraction_max: 0.09
+    base_h_w_m2k: 125.0
+    gas_temp_rise_gain: 0.32
+    heat_loss_fraction_max: 0.08
   volumetric_efficiency:
-    rpm_base: 0.84
-    rpm_gain: 0.28
-    rpm_center: 3600.0
-    rpm_width: 2.2e6
-    rpm_min: 0.68
-    rpm_max: 1.00
+    rpm_base: 0.80
+    rpm_gain: 0.36
+    rpm_center: 6400.0
+    rpm_width: 7.5e6
+    rpm_min: 0.70
+    rpm_max: 1.08
     throttle_base: 0.44
     throttle_gain: 0.58
     throttle_min: 0.44
-    throttle_max: 1.04
+    throttle_max: 1.06
     overall_min: 0.36
-    overall_max: 1.10
+    overall_max: 1.12
   gas_path:
-    intake_runner_length_m: 0.41
-    exhaust_runner_length_m: 0.78
+    intake_runner_length_m: 0.36
+    exhaust_runner_length_m: 0.82
     intake_runner_diameter_m: 0.035
     exhaust_runner_diameter_m: 0.038
     intake_runner_friction_factor: 0.028
     exhaust_runner_friction_factor: 0.032
   wave_action:
-    intake_runner_length_m: 0.41
-    exhaust_primary_length_m: 0.78
-    intake_pressure_gain: 0.03
-    exhaust_pressure_gain: 0.04
-    intake_ram_gain: 0.10
-    exhaust_scavenge_gain: 0.08
+    intake_runner_length_m: 0.36
+    exhaust_primary_length_m: 0.82
+    intake_pressure_gain: 0.05
+    exhaust_pressure_gain: 0.06
+    intake_ram_gain: 0.18
+    exhaust_scavenge_gain: 0.12
   external_load:
     mode: brake_map
     base_torque_nm: 30.0

@@ -5,7 +5,7 @@ use crate::config::{AppConfig, ExternalLoadMode, load_config};
 use crate::constants::DEFAULT_CONFIG_PATH;
 use crate::simulator::{
     Observation, Simulator, accuracy_priority_dt, estimate_mbt_deg,
-    external_load_command_for_torque_nm, rpm_to_rad_s, shaft_power_kw,
+    external_load_command_for_torque_nm, rpm_to_rad_s, shaft_power_kw, vvt_optimal_targets_deg,
 };
 
 const DEFAULT_OUTPUT_DIR: &str = "output/cli";
@@ -110,8 +110,10 @@ impl SweepOptions {
 struct SweepPointResult {
     target_rpm: f64,
     mean_rpm: f64,
-    torque_nm: f64,
-    power_kw: f64,
+    brake_torque_nm: f64,
+    brake_power_kw: f64,
+    net_torque_nm: f64,
+    load_torque_nm: f64,
     map_kpa: f64,
     air_flow_gps: f64,
     eta_indicated: f64,
@@ -135,15 +137,15 @@ struct SweepPointResult {
 #[derive(Debug, Clone)]
 struct TorqueCurveAssessment {
     point_count: usize,
-    peak_torque_nm: f64,
+    peak_brake_torque_nm: f64,
     peak_torque_rpm: f64,
-    peak_power_kw: f64,
+    peak_brake_power_kw: f64,
     peak_power_rpm: f64,
-    low_end_torque_nm: f64,
-    high_end_torque_nm: f64,
+    low_end_brake_torque_nm: f64,
+    high_end_brake_torque_nm: f64,
     low_to_peak_gain_nm: f64,
     peak_to_high_drop_nm: f64,
-    min_torque_nm: f64,
+    min_brake_torque_nm: f64,
     positive_torque_everywhere: bool,
     rises_to_peak: bool,
     falls_after_peak: bool,
@@ -165,15 +167,15 @@ impl TorqueCurveAssessment {
 
         let peak_torque = results
             .iter()
-            .max_by(|a, b| a.torque_nm.total_cmp(&b.torque_nm))
+            .max_by(|a, b| a.brake_torque_nm.total_cmp(&b.brake_torque_nm))
             .ok_or_else(|| "cannot locate torque peak".to_string())?;
         let peak_power = results
             .iter()
-            .max_by(|a, b| a.power_kw.total_cmp(&b.power_kw))
+            .max_by(|a, b| a.brake_power_kw.total_cmp(&b.brake_power_kw))
             .ok_or_else(|| "cannot locate power peak".to_string())?;
         let min_torque = results
             .iter()
-            .map(|point| point.torque_nm)
+            .map(|point| point.brake_torque_nm)
             .fold(f64::INFINITY, f64::min);
 
         // Before the peak we expect mostly non-negative slope. A tiny tolerance avoids false
@@ -183,9 +185,10 @@ impl TorqueCurveAssessment {
                 .iter()
                 .position(|point| point.target_rpm == peak_torque.target_rpm)
                 .unwrap_or(0)],
-            |prev, next| next.torque_nm >= prev.torque_nm - 5.0,
+            |prev, next| next.brake_torque_nm >= prev.brake_torque_nm - 5.0,
         ) >= 0.70
-            && peak_torque.torque_nm > (first.torque_nm + 3.0).max(first.torque_nm * 1.08);
+            && peak_torque.brake_torque_nm
+                > (first.brake_torque_nm + 3.0).max(first.brake_torque_nm * 1.08);
 
         // After the peak we expect mostly non-positive slope once airflow and friction begin to
         // dominate. Again we permit a small tolerance so that one noisy point does not fail the
@@ -195,21 +198,21 @@ impl TorqueCurveAssessment {
             .position(|point| point.target_rpm == peak_torque.target_rpm)
             .unwrap_or(0);
         let falls_after_peak = monotonic_ratio(&results[peak_index..], |prev, next| {
-            next.torque_nm <= prev.torque_nm + 5.0
+            next.brake_torque_nm <= prev.brake_torque_nm + 5.0
         }) >= 0.65
-            && peak_torque.torque_nm > last.torque_nm + 10.0;
+            && peak_torque.brake_torque_nm > last.brake_torque_nm + 10.0;
 
         Ok(Self {
             point_count: results.len(),
-            peak_torque_nm: peak_torque.torque_nm,
+            peak_brake_torque_nm: peak_torque.brake_torque_nm,
             peak_torque_rpm: peak_torque.mean_rpm,
-            peak_power_kw: peak_power.power_kw,
+            peak_brake_power_kw: peak_power.brake_power_kw,
             peak_power_rpm: peak_power.mean_rpm,
-            low_end_torque_nm: first.torque_nm,
-            high_end_torque_nm: last.torque_nm,
-            low_to_peak_gain_nm: peak_torque.torque_nm - first.torque_nm,
-            peak_to_high_drop_nm: peak_torque.torque_nm - last.torque_nm,
-            min_torque_nm: min_torque,
+            low_end_brake_torque_nm: first.brake_torque_nm,
+            high_end_brake_torque_nm: last.brake_torque_nm,
+            low_to_peak_gain_nm: peak_torque.brake_torque_nm - first.brake_torque_nm,
+            peak_to_high_drop_nm: peak_torque.brake_torque_nm - last.brake_torque_nm,
+            min_brake_torque_nm: min_torque,
             positive_torque_everywhere: min_torque > 0.0,
             rises_to_peak,
             falls_after_peak,
@@ -226,9 +229,9 @@ impl TorqueCurveAssessment {
 
     fn explanation_lines(&self) -> [&'static str; 4] {
         [
-            "positive torque across the sweep means the brake never becomes net motoring at WOT.",
-            "rising torque toward the peak is the expected signature of improving cylinder filling.",
-            "falling torque after the peak is the expected signature of reduced filling time and larger losses.",
+            "positive brake torque across the sweep means the shaft never becomes net motoring at WOT.",
+            "rising brake torque toward the peak is the expected signature of improving cylinder filling.",
+            "falling brake torque after the peak is the expected signature of reduced filling time and larger losses.",
             "power peaking after torque follows directly from P = tau * omega.",
         ]
     }
@@ -303,8 +306,13 @@ fn solve_operating_point(
     sim.control.spark_cmd = true;
     sim.control.fuel_cmd = true;
     sim.control.throttle_cmd = 1.0;
-    sim.control.vvt_intake_deg = cfg.control_defaults.vvt_intake_deg;
-    sim.control.vvt_exhaust_deg = cfg.control_defaults.vvt_exhaust_deg;
+    // For a full-load sweep we hold each operating point at the VVT phasing favored by the VE
+    // surrogate itself. This keeps the sweep policy aligned with the documented algebraic model
+    // instead of introducing a separate hidden calibrator map in the CLI path.
+    let (vvt_intake_deg, vvt_exhaust_deg) =
+        vvt_optimal_targets_deg(target_rpm, &cfg.model.volumetric_efficiency);
+    sim.control.vvt_intake_deg = vvt_intake_deg;
+    sim.control.vvt_exhaust_deg = vvt_exhaust_deg;
     let seed_load = (cfg.environment.ambient_pressure_pa / cfg.environment.ambient_pressure_pa)
         .clamp(sim.model.load_min, sim.model.load_max);
     sim.control.ignition_timing_deg = estimate_mbt_deg(&sim.model, target_rpm, seed_load);
@@ -336,8 +344,10 @@ fn solve_operating_point(
     }
 
     let mut rpm_sum = 0.0;
-    let mut torque_sum = 0.0;
-    let mut power_sum = 0.0;
+    let mut brake_torque_sum = 0.0;
+    let mut brake_power_sum = 0.0;
+    let mut net_torque_sum = 0.0;
+    let mut load_torque_sum = 0.0;
     let mut map_sum = 0.0;
     let mut air_sum = 0.0;
     let mut eta_sum = 0.0;
@@ -356,9 +366,15 @@ fn solve_operating_point(
         )
         .clamp(0.0, 1.0);
         last_obs = sim.step(dt);
+        // A speed-held dyno sweep should report shaft brake torque, not residual acceleration
+        // torque. Under steady hold, brake torque is what the engine produces before the
+        // absorber subtracts `torque_load_nm`, so it is `net + load`.
+        let brake_torque_nm = last_obs.torque_net_nm + last_obs.torque_load_nm;
         rpm_sum += last_obs.rpm;
-        torque_sum += last_obs.torque_net_nm;
-        power_sum += shaft_power_kw(last_obs.rpm, last_obs.torque_net_nm);
+        brake_torque_sum += brake_torque_nm;
+        brake_power_sum += shaft_power_kw(last_obs.rpm, brake_torque_nm);
+        net_torque_sum += last_obs.torque_net_nm;
+        load_torque_sum += last_obs.torque_load_nm;
         map_sum += last_obs.map_kpa;
         air_sum += last_obs.air_flow_gps;
         eta_sum += last_obs.eta_thermal_indicated_pv;
@@ -383,8 +399,10 @@ fn solve_operating_point(
     Ok(SweepPointResult {
         target_rpm,
         mean_rpm,
-        torque_nm: torque_sum / denom,
-        power_kw: power_sum / denom,
+        brake_torque_nm: brake_torque_sum / denom,
+        brake_power_kw: brake_power_sum / denom,
+        net_torque_nm: net_torque_sum / denom,
+        load_torque_nm: load_torque_sum / denom,
         map_kpa: map_sum / denom,
         air_flow_gps: air_sum / denom,
         eta_indicated: eta_sum / denom,
@@ -449,11 +467,15 @@ fn write_operating_point_outputs(
         .map_err(|e| format!("failed to write {}: {e}", ts_path.display()))?;
 
     let summary_path = point_dir.join("summary.tsv");
+    let brake_torque_nm = obs.torque_net_nm + obs.torque_load_nm;
     let summary = format!(
-        "rpm\ttorque_net_nm\tpower_kw\tmap_kpa\tair_flow_gps\teta_indicated\n{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\n",
+        "rpm\tbrake_torque_nm\tbrake_power_kw\tnet_torque_nm\tload_torque_nm\tbrake_bmep_bar\tmap_kpa\tair_flow_gps\teta_indicated\n{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\n",
         obs.rpm,
+        brake_torque_nm,
+        shaft_power_kw(obs.rpm, brake_torque_nm),
         obs.torque_net_nm,
-        shaft_power_kw(obs.rpm, obs.torque_net_nm),
+        obs.torque_load_nm,
+        obs.brake_bmep_bar,
         obs.map_kpa,
         obs.air_flow_gps,
         obs.eta_thermal_indicated_pv,
@@ -473,15 +495,17 @@ fn write_sweep_summary(
 ) -> Result<(), String> {
     let torque_curve_path = output_dir.join("torque_curve.tsv");
     let mut body = String::from(
-        "target_rpm\tmean_rpm\ttorque_nm\tpower_kw\tmap_kpa\tair_flow_gps\teta_indicated\tload_cmd\toutput_dir\n",
+        "target_rpm\tmean_rpm\tbrake_torque_nm\tbrake_power_kw\tnet_torque_nm\tload_torque_nm\tmap_kpa\tair_flow_gps\teta_indicated\tload_cmd\toutput_dir\n",
     );
     for result in results {
         body.push_str(&format!(
-            "{:.3}\t{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\n",
+            "{:.3}\t{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\n",
             result.target_rpm,
             result.mean_rpm,
-            result.torque_nm,
-            result.power_kw,
+            result.brake_torque_nm,
+            result.brake_power_kw,
+            result.net_torque_nm,
+            result.load_torque_nm,
             result.map_kpa,
             result.air_flow_gps,
             result.eta_indicated,
@@ -506,9 +530,9 @@ fn write_sweep_summary(
             "point_count: {}\n",
             "torque_curve_assessment:\n",
             "  looks_plausible: {}\n",
-            "  peak_torque_nm: {:.6}\n",
+            "  peak_brake_torque_nm: {:.6}\n",
             "  peak_torque_rpm: {:.3}\n",
-            "  peak_power_kw: {:.6}\n",
+            "  peak_brake_power_kw: {:.6}\n",
             "  peak_power_rpm: {:.3}\n"
         ),
         config_path.display(),
@@ -523,9 +547,9 @@ fn write_sweep_summary(
             .unwrap_or(cfg.engine.max_rpm),
         results.len(),
         assessment.looks_plausible(),
-        assessment.peak_torque_nm,
+        assessment.peak_brake_torque_nm,
         assessment.peak_torque_rpm,
-        assessment.peak_power_kw,
+        assessment.peak_brake_power_kw,
         assessment.peak_power_rpm,
     );
     fs::write(&manifest_path, manifest)
@@ -546,12 +570,12 @@ fn write_torque_curve_assessment(
         "- overall verdict: **{}**\n- point count: {}\n- torque peak: {:.1} Nm at {:.0} rpm\n- power peak: {:.1} kW at {:.0} rpm\n- low-end torque: {:.1} Nm\n- high-end torque: {:.1} Nm\n- low-to-peak torque gain: {:.1} Nm\n- peak-to-high torque drop: {:.1} Nm\n\n",
         if assessment.looks_plausible() { "plausible" } else { "needs review" },
         assessment.point_count,
-        assessment.peak_torque_nm,
+        assessment.peak_brake_torque_nm,
         assessment.peak_torque_rpm,
-        assessment.peak_power_kw,
+        assessment.peak_brake_power_kw,
         assessment.peak_power_rpm,
-        assessment.low_end_torque_nm,
-        assessment.high_end_torque_nm,
+        assessment.low_end_brake_torque_nm,
+        assessment.high_end_brake_torque_nm,
         assessment.low_to_peak_gain_nm,
         assessment.peak_to_high_drop_nm,
     ));
@@ -563,7 +587,7 @@ fn write_torque_curve_assessment(
         } else {
             " "
         },
-        assessment.min_torque_nm,
+        assessment.min_brake_torque_nm,
     ));
     report.push_str(&format!(
         "- [{}] torque rises toward a mid-range peak\n",
@@ -605,7 +629,7 @@ set key autotitle columnhead
 set xlabel 'Engine speed [rpm]'
 set ylabel 'Torque [Nm]'
 set grid
-plot 'torque_curve.tsv' using 'mean_rpm':'torque_nm' with linespoints lw 2 pt 7
+plot 'torque_curve.tsv' using 'mean_rpm':'brake_torque_nm' with linespoints lw 2 pt 7
 "#;
     fs::write(&script_path, script)
         .map_err(|e| format!("failed to write {}: {e}", script_path.display()))?;
@@ -683,8 +707,10 @@ mod tests {
             .map(|(rpm, torque, power)| super::SweepPointResult {
                 target_rpm: rpm,
                 mean_rpm: rpm,
-                torque_nm: torque,
-                power_kw: power,
+                brake_torque_nm: torque,
+                brake_power_kw: power,
+                net_torque_nm: 0.0,
+                load_torque_nm: torque,
                 map_kpa: cfg.environment.ambient_pressure_pa / 1.0e3,
                 air_flow_gps: 0.0,
                 eta_indicated: 0.0,
