@@ -1007,7 +1007,13 @@ impl Simulator {
     }
 
     fn overlap_ve_multiplier(&self, state: EngineState) -> f64 {
+        let rpm = rad_s_to_rpm(state.omega_rad_s.max(0.0));
         let overlap = self.overlap_lift_fraction();
+        let rpm_decay = logistic_decay(
+            rpm,
+            self.model.gas_path.overlap_rpm_decay_center,
+            self.model.gas_path.overlap_rpm_decay_width,
+        );
         let pressure_term =
             (state.p_intake_runner_pa - state.p_exhaust_runner_pa) / self.env.ambient_pressure_pa;
         let flow_term = state.m_dot_exhaust_runner_kg_s
@@ -1017,6 +1023,7 @@ impl Simulator {
                 .overlap_flow_reference_kg_s
                 .max(f64::EPSILON);
         (1.0 + overlap
+            * rpm_decay
             * (self.model.gas_path.overlap_pressure_coeff * pressure_term
                 + self.model.gas_path.overlap_flow_coeff * flow_term))
             .clamp(
@@ -1046,25 +1053,38 @@ impl Simulator {
     }
 
     fn base_intake_cylinder_boundary_pa(&self, state: EngineState) -> f64 {
+        let rpm = rad_s_to_rpm(state.omega_rad_s.max(0.0));
         lerp(
             state.p_intake_pa,
             state.p_intake_runner_pa,
-            self.model
-                .gas_path
-                .intake_boundary_runner_weight
-                .clamp(0.0, 1.0),
+            self.boundary_runner_weight(
+                rpm,
+                self.model.gas_path.intake_boundary_runner_weight,
+                self.model.gas_path.intake_boundary_runner_weight_high_rpm,
+            ),
         )
     }
 
     fn base_exhaust_cylinder_boundary_pa(&self, state: EngineState) -> f64 {
+        let rpm = rad_s_to_rpm(state.omega_rad_s.max(0.0));
         lerp(
             state.p_exhaust_pa,
             state.p_exhaust_runner_pa,
-            self.model
-                .gas_path
-                .exhaust_boundary_runner_weight
-                .clamp(0.0, 1.0),
+            self.boundary_runner_weight(
+                rpm,
+                self.model.gas_path.exhaust_boundary_runner_weight,
+                self.model.gas_path.exhaust_boundary_runner_weight_high_rpm,
+            ),
         )
+    }
+
+    fn boundary_runner_weight(&self, rpm: f64, low_rpm_weight: f64, high_rpm_weight: f64) -> f64 {
+        let blend = logistic_rise(
+            rpm,
+            self.model.gas_path.boundary_weight_rpm_center,
+            self.model.gas_path.boundary_weight_rpm_width,
+        );
+        lerp(low_rpm_weight, high_rpm_weight, blend).clamp(0.0, 1.0)
     }
 
     fn intake_cylinder_boundary_pa(&self, state: EngineState, wave_boundary_pa: f64) -> f64 {
@@ -1106,6 +1126,8 @@ impl Simulator {
             return 0.0;
         }
 
+        let rpm = rad_s_to_rpm(state.omega_rad_s.max(0.0));
+        let rpm_decay = logistic_decay(rpm, egr.rpm_decay_center, egr.rpm_decay_width);
         let pressure_backflow = ((state.p_exhaust_runner_pa - state.p_intake_runner_pa)
             / self.env.ambient_pressure_pa)
             .max(0.0);
@@ -1114,6 +1136,7 @@ impl Simulator {
             / egr.reverse_flow_reference_kg_s.max(f64::EPSILON))
         .max(0.0);
         (overlap
+            * rpm_decay
             * (egr.overlap_base_fraction
                 + egr.pressure_backflow_gain * pressure_backflow
                 + egr.wave_backflow_gain * wave_backflow
@@ -2619,8 +2642,14 @@ pub(crate) fn volumetric_efficiency(
         ((rpm - ve_model.vvt_rpm_low) / (ve_model.vvt_rpm_high - ve_model.vvt_rpm_low))
             .clamp(0.0, 1.0)
     };
+    let rpm_delta = rpm - ve_model.rpm_center;
+    let rpm_width = if rpm_delta >= 0.0 {
+        ve_model.rpm_width * ve_model.rpm_high_width_scale.max(1.0e-3)
+    } else {
+        ve_model.rpm_width
+    };
     let rpm_term = (ve_model.rpm_base
-        + ve_model.rpm_gain * (-(rpm - ve_model.rpm_center).powi(2) / ve_model.rpm_width).exp())
+        + ve_model.rpm_gain * (-(rpm_delta.powi(2)) / rpm_width).exp())
     .clamp(ve_model.rpm_min, ve_model.rpm_max);
     let intake_opt_deg = lerp(
         ve_model.vvt_intake_opt_low_deg,
@@ -2642,6 +2671,15 @@ pub(crate) fn volumetric_efficiency(
     let throttle_term = (ve_model.throttle_base + ve_model.throttle_gain * throttle_eff.sqrt())
         .clamp(ve_model.throttle_min, ve_model.throttle_max);
     (rpm_term * vvt_term * throttle_term).clamp(ve_model.overall_min, ve_model.overall_max)
+}
+
+fn logistic_rise(x: f64, center: f64, width: f64) -> f64 {
+    let width = width.abs().max(1.0);
+    1.0 / (1.0 + (-(x - center) / width).exp())
+}
+
+fn logistic_decay(x: f64, center: f64, width: f64) -> f64 {
+    1.0 - logistic_rise(x, center, width)
 }
 
 /// Returns the simple speed-scheduled VVT targets implied by the VE closure itself.

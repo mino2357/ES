@@ -12,6 +12,8 @@ const DEFAULT_OUTPUT_DIR: &str = "output/cli";
 const DEFAULT_SETTLE_TIME_S: f64 = 12.0;
 const DEFAULT_AVERAGE_TIME_S: f64 = 1.5;
 const DEFAULT_DIAGNOSTIC_SAMPLES: usize = 720;
+const SETTLE_RPM_TOLERANCE: f64 = 25.0;
+const SETTLE_NET_TORQUE_TOLERANCE_NM: f64 = 6.0;
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let command = Command::parse(args)?;
@@ -118,7 +120,15 @@ struct SweepPointResult {
     air_flow_gps: f64,
     eta_indicated: f64,
     load_cmd: f64,
+    ignition_timing_deg: f64,
+    vvt_intake_deg: f64,
+    vvt_exhaust_deg: f64,
     output_subdir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepInputMode {
+    FixedInput,
 }
 
 /// Summarizes whether the simulated torque curve looks like a plausible full-load curve
@@ -145,11 +155,16 @@ struct TorqueCurveAssessment {
     high_end_brake_torque_nm: f64,
     low_to_peak_gain_nm: f64,
     peak_to_high_drop_nm: f64,
+    high_rpm_retention_ratio: f64,
     min_brake_torque_nm: f64,
+    monotonic_before_peak_ratio: f64,
+    monotonic_after_peak_ratio: f64,
     positive_torque_everywhere: bool,
     rises_to_peak: bool,
     falls_after_peak: bool,
     power_peaks_after_torque: bool,
+    reference_mape_pct: Option<f64>,
+    reference_rmse_nm: Option<f64>,
 }
 
 impl TorqueCurveAssessment {
@@ -157,7 +172,10 @@ impl TorqueCurveAssessment {
     ///
     /// We use finite differences of the sweep results instead of fitting a spline so that the
     /// resulting report is easy to audit directly against `torque_curve.tsv`.
-    fn from_results(results: &[SweepPointResult]) -> Result<Self, String> {
+    fn from_results(
+        results: &[SweepPointResult],
+        reference_curve: Option<&[(f64, f64)]>,
+    ) -> Result<Self, String> {
         let first = results
             .first()
             .ok_or_else(|| "cannot assess an empty torque curve".to_string())?;
@@ -180,13 +198,14 @@ impl TorqueCurveAssessment {
 
         // Before the peak we expect mostly non-negative slope. A tiny tolerance avoids false
         // negatives from numerical noise and controller ripple in the settled mean values.
-        let rises_to_peak = monotonic_ratio(
+        let monotonic_before_peak_ratio = monotonic_ratio(
             &results[..=results
                 .iter()
                 .position(|point| point.target_rpm == peak_torque.target_rpm)
                 .unwrap_or(0)],
             |prev, next| next.brake_torque_nm >= prev.brake_torque_nm - 5.0,
-        ) >= 0.70
+        );
+        let rises_to_peak = monotonic_before_peak_ratio >= 0.70
             && peak_torque.brake_torque_nm
                 > (first.brake_torque_nm + 3.0).max(first.brake_torque_nm * 1.08);
 
@@ -197,10 +216,17 @@ impl TorqueCurveAssessment {
             .iter()
             .position(|point| point.target_rpm == peak_torque.target_rpm)
             .unwrap_or(0);
-        let falls_after_peak = monotonic_ratio(&results[peak_index..], |prev, next| {
+        let monotonic_after_peak_ratio = monotonic_ratio(&results[peak_index..], |prev, next| {
             next.brake_torque_nm <= prev.brake_torque_nm + 5.0
-        }) >= 0.65
+        });
+        let falls_after_peak = monotonic_after_peak_ratio >= 0.65
             && peak_torque.brake_torque_nm > last.brake_torque_nm + 10.0;
+        let torque_8000 =
+            interpolate_torque_at_rpm(results, 8_000.0).unwrap_or(last.brake_torque_nm);
+        let (reference_mape_pct, reference_rmse_nm) = reference_curve
+            .map(|curve| compare_against_reference_curve(results, curve))
+            .transpose()?
+            .unwrap_or((None, None));
 
         Ok(Self {
             point_count: results.len(),
@@ -212,11 +238,16 @@ impl TorqueCurveAssessment {
             high_end_brake_torque_nm: last.brake_torque_nm,
             low_to_peak_gain_nm: peak_torque.brake_torque_nm - first.brake_torque_nm,
             peak_to_high_drop_nm: peak_torque.brake_torque_nm - last.brake_torque_nm,
+            high_rpm_retention_ratio: torque_8000 / peak_torque.brake_torque_nm.max(f64::EPSILON),
             min_brake_torque_nm: min_torque,
+            monotonic_before_peak_ratio,
+            monotonic_after_peak_ratio,
             positive_torque_everywhere: min_torque > 0.0,
             rises_to_peak,
             falls_after_peak,
             power_peaks_after_torque: peak_power.mean_rpm + 50.0 >= peak_torque.mean_rpm,
+            reference_mape_pct,
+            reference_rmse_nm,
         })
     }
 
@@ -235,6 +266,54 @@ impl TorqueCurveAssessment {
             "power peaking after torque follows directly from P = tau * omega.",
         ]
     }
+}
+
+fn interpolate_torque_at_rpm(results: &[SweepPointResult], rpm: f64) -> Option<f64> {
+    let first = results.first()?;
+    let last = results.last()?;
+    if rpm <= first.mean_rpm {
+        return Some(first.brake_torque_nm);
+    }
+    if rpm >= last.mean_rpm {
+        return Some(last.brake_torque_nm);
+    }
+    for pair in results.windows(2) {
+        let a = &pair[0];
+        let b = &pair[1];
+        if rpm >= a.mean_rpm && rpm <= b.mean_rpm {
+            let span = (b.mean_rpm - a.mean_rpm).max(f64::EPSILON);
+            let t = (rpm - a.mean_rpm) / span;
+            return Some(a.brake_torque_nm + (b.brake_torque_nm - a.brake_torque_nm) * t);
+        }
+    }
+    None
+}
+
+fn compare_against_reference_curve(
+    results: &[SweepPointResult],
+    reference_curve: &[(f64, f64)],
+) -> Result<(Option<f64>, Option<f64>), String> {
+    if reference_curve.is_empty() {
+        return Ok((None, None));
+    }
+    let mut ape_sum = 0.0;
+    let mut se_sum = 0.0;
+    let mut count = 0usize;
+    for (rpm, tau_ref) in reference_curve {
+        if let Some(tau_sim) = interpolate_torque_at_rpm(results, *rpm) {
+            let abs_ref = tau_ref.abs().max(1.0e-6);
+            ape_sum += (tau_sim - tau_ref).abs() / abs_ref;
+            se_sum += (tau_sim - tau_ref).powi(2);
+            count = count.saturating_add(1);
+        }
+    }
+    if count == 0 {
+        return Ok((None, None));
+    }
+    Ok((
+        Some(100.0 * ape_sum / count as f64),
+        Some((se_sum / count as f64).sqrt()),
+    ))
 }
 
 fn monotonic_ratio(
@@ -274,10 +353,12 @@ fn run_sweep(options: SweepOptions) -> Result<(), String> {
         .map_err(|e| format!("failed to create {}: {e}", options.output_dir.display()))?;
 
     let mut results = Vec::new();
+    let input_mode = SweepInputMode::FixedInput;
     for target_rpm in rpm_grid(rpm_start, rpm_end, options.rpm_step) {
         let result = solve_operating_point(&cfg, &options, target_rpm)?;
         results.push(result);
     }
+    let reference_curve = load_reference_curve(&options.config_path)?;
 
     write_sweep_summary(
         &options.output_dir,
@@ -285,6 +366,8 @@ fn run_sweep(options: SweepOptions) -> Result<(), String> {
         &results,
         options.rpm_step,
         &options.config_path,
+        input_mode,
+        reference_curve.as_deref(),
     )?;
     write_gnuplot_script(&options.output_dir)?;
 
@@ -315,23 +398,40 @@ fn solve_operating_point(
     let dt = accuracy_priority_dt(target_rpm, &sim.numerics).min(cfg.environment.dt);
     let settle_steps = (options.settle_time_s / dt).ceil() as usize;
     let average_steps = (options.average_time_s / dt).ceil() as usize;
+    let max_extra_settle_steps = settle_steps.max(1);
     let mut rpm_integral = 0.0;
     let kp = 0.060;
     let ki = 0.400;
     let mut last_obs = sim.step(dt);
 
     for _ in 0..settle_steps.max(1) {
-        let rpm_error = last_obs.rpm - target_rpm;
-        rpm_integral = (rpm_integral + rpm_error * dt).clamp(-8_000.0, 8_000.0);
-        let desired_load_torque = (last_obs.torque_load_nm + kp * rpm_error + ki * rpm_integral)
-            .clamp(0.0, cfg.model.external_load.torque_max_nm);
-        sim.control.load_cmd = external_load_command_for_torque_nm(
-            desired_load_torque,
-            rpm_to_rad_s(last_obs.rpm),
-            &cfg.model.external_load,
-        )
-        .clamp(0.0, 1.0);
-        last_obs = sim.step(dt);
+        last_obs = advance_speed_hold_step(
+            cfg,
+            &mut sim,
+            target_rpm,
+            dt,
+            kp,
+            ki,
+            &mut rpm_integral,
+            last_obs,
+        );
+    }
+    for _ in 0..max_extra_settle_steps {
+        if (last_obs.rpm - target_rpm).abs() <= SETTLE_RPM_TOLERANCE
+            && last_obs.torque_net_nm.abs() <= SETTLE_NET_TORQUE_TOLERANCE_NM
+        {
+            break;
+        }
+        last_obs = advance_speed_hold_step(
+            cfg,
+            &mut sim,
+            target_rpm,
+            dt,
+            kp,
+            ki,
+            &mut rpm_integral,
+            last_obs,
+        );
     }
 
     let mut rpm_sum = 0.0;
@@ -343,17 +443,16 @@ fn solve_operating_point(
     let mut air_sum = 0.0;
     let mut eta_sum = 0.0;
     for _ in 0..average_steps.max(1) {
-        let rpm_error = last_obs.rpm - target_rpm;
-        rpm_integral = (rpm_integral + rpm_error * dt).clamp(-8_000.0, 8_000.0);
-        let desired_load_torque = (last_obs.torque_load_nm + kp * rpm_error + ki * rpm_integral)
-            .clamp(0.0, cfg.model.external_load.torque_max_nm);
-        sim.control.load_cmd = external_load_command_for_torque_nm(
-            desired_load_torque,
-            rpm_to_rad_s(last_obs.rpm),
-            &cfg.model.external_load,
-        )
-        .clamp(0.0, 1.0);
-        last_obs = sim.step(dt);
+        last_obs = advance_speed_hold_step(
+            cfg,
+            &mut sim,
+            target_rpm,
+            dt,
+            kp,
+            ki,
+            &mut rpm_integral,
+            last_obs,
+        );
         // A speed-held dyno sweep should report shaft brake torque, not residual acceleration
         // torque. Under steady hold, brake torque is what the engine produces before the
         // absorber subtracts `torque_load_nm`, so it is `net + load`.
@@ -395,8 +494,34 @@ fn solve_operating_point(
         air_flow_gps: air_sum / denom,
         eta_indicated: eta_sum / denom,
         load_cmd: sim.control.load_cmd,
+        ignition_timing_deg: sim.control.ignition_timing_deg,
+        vvt_intake_deg: sim.control.vvt_intake_deg,
+        vvt_exhaust_deg: sim.control.vvt_exhaust_deg,
         output_subdir: point_dir,
     })
+}
+
+fn advance_speed_hold_step(
+    cfg: &AppConfig,
+    sim: &mut Simulator,
+    target_rpm: f64,
+    dt: f64,
+    kp: f64,
+    ki: f64,
+    rpm_integral: &mut f64,
+    last_obs: Observation,
+) -> Observation {
+    let rpm_error = last_obs.rpm - target_rpm;
+    *rpm_integral = (*rpm_integral + rpm_error * dt).clamp(-8_000.0, 8_000.0);
+    let desired_load_torque = (last_obs.torque_load_nm + kp * rpm_error + ki * *rpm_integral)
+        .clamp(0.0, cfg.model.external_load.torque_max_nm);
+    sim.control.load_cmd = external_load_command_for_torque_nm(
+        desired_load_torque,
+        rpm_to_rad_s(last_obs.rpm),
+        &cfg.model.external_load,
+    )
+    .clamp(0.0, 1.0);
+    sim.step(dt)
 }
 
 fn write_operating_point_outputs(
@@ -480,14 +605,16 @@ fn write_sweep_summary(
     results: &[SweepPointResult],
     rpm_step: f64,
     config_path: &Path,
+    input_mode: SweepInputMode,
+    reference_curve: Option<&[(f64, f64)]>,
 ) -> Result<(), String> {
     let torque_curve_path = output_dir.join("torque_curve.tsv");
     let mut body = String::from(
-        "target_rpm\tmean_rpm\tbrake_torque_nm\tbrake_power_kw\tnet_torque_nm\tload_torque_nm\tmap_kpa\tair_flow_gps\teta_indicated\tload_cmd\toutput_dir\n",
+        "target_rpm\tmean_rpm\tbrake_torque_nm\tbrake_power_kw\tnet_torque_nm\tload_torque_nm\tmap_kpa\tair_flow_gps\teta_indicated\tload_cmd\tignition_timing_deg\tvvt_intake_deg\tvvt_exhaust_deg\toutput_dir\n",
     );
     for result in results {
         body.push_str(&format!(
-            "{:.3}\t{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\n",
+            "{:.3}\t{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\n",
             result.target_rpm,
             result.mean_rpm,
             result.brake_torque_nm,
@@ -498,13 +625,17 @@ fn write_sweep_summary(
             result.air_flow_gps,
             result.eta_indicated,
             result.load_cmd,
+            result.ignition_timing_deg,
+            result.vvt_intake_deg,
+            result.vvt_exhaust_deg,
             result.output_subdir.display(),
         ));
     }
     fs::write(&torque_curve_path, body)
         .map_err(|e| format!("failed to write {}: {e}", torque_curve_path.display()))?;
 
-    let assessment = TorqueCurveAssessment::from_results(results)?;
+    let assessment = TorqueCurveAssessment::from_results(results, reference_curve)?;
+    write_torque_curve_metrics_tsv(output_dir, &assessment)?;
     write_torque_curve_assessment(output_dir, &assessment)?;
 
     let manifest_path = output_dir.join("run_manifest.yaml");
@@ -512,6 +643,7 @@ fn write_sweep_summary(
         concat!(
             "config_path: {}\n",
             "external_load_mode: brake_map\n",
+            "input_mode: {}\n",
             "rpm_step: {}\n",
             "rpm_start: {}\n",
             "rpm_end: {}\n",
@@ -524,6 +656,9 @@ fn write_sweep_summary(
             "  peak_power_rpm: {:.3}\n"
         ),
         config_path.display(),
+        match input_mode {
+            SweepInputMode::FixedInput => "fixed_input",
+        },
         rpm_step,
         results
             .first()
@@ -543,6 +678,38 @@ fn write_sweep_summary(
     fs::write(&manifest_path, manifest)
         .map_err(|e| format!("failed to write {}: {e}", manifest_path.display()))?;
     Ok(())
+}
+
+fn write_torque_curve_metrics_tsv(
+    output_dir: &Path,
+    assessment: &TorqueCurveAssessment,
+) -> Result<(), String> {
+    let metrics_path = output_dir.join("torque_curve_metrics.tsv");
+    let body = format!(
+        concat!(
+            "metric\tvalue\n",
+            "peak_brake_torque_nm\t{:.6}\n",
+            "peak_torque_rpm\t{:.6}\n",
+            "peak_brake_power_kw\t{:.6}\n",
+            "peak_power_rpm\t{:.6}\n",
+            "low_to_peak_gain_nm\t{:.6}\n",
+            "peak_to_high_drop_nm\t{:.6}\n",
+            "high_rpm_retention_ratio\t{:.6}\n",
+            "monotonic_before_peak_ratio\t{:.6}\n",
+            "monotonic_after_peak_ratio\t{:.6}\n"
+        ),
+        assessment.peak_brake_torque_nm,
+        assessment.peak_torque_rpm,
+        assessment.peak_brake_power_kw,
+        assessment.peak_power_rpm,
+        assessment.low_to_peak_gain_nm,
+        assessment.peak_to_high_drop_nm,
+        assessment.high_rpm_retention_ratio,
+        assessment.monotonic_before_peak_ratio,
+        assessment.monotonic_after_peak_ratio,
+    );
+    fs::write(&metrics_path, body)
+        .map_err(|e| format!("failed to write {}: {e}", metrics_path.display()))
 }
 
 /// Writes a human-readable audit note that explains why the generated curve does or does not
@@ -567,6 +734,19 @@ fn write_torque_curve_assessment(
         assessment.low_to_peak_gain_nm,
         assessment.peak_to_high_drop_nm,
     ));
+    report.push_str(&format!(
+        "- high-rpm retention ratio at 8000 rpm: {:.3}\n- monotonicity before peak: {:.3}\n- monotonicity after peak: {:.3}\n",
+        assessment.high_rpm_retention_ratio,
+        assessment.monotonic_before_peak_ratio,
+        assessment.monotonic_after_peak_ratio,
+    ));
+    if let Some(mape) = assessment.reference_mape_pct {
+        report.push_str(&format!("- reference-curve MAPE: {:.2}%\n", mape));
+    }
+    if let Some(rmse) = assessment.reference_rmse_nm {
+        report.push_str(&format!("- reference-curve RMSE: {:.2} Nm\n", rmse));
+    }
+    report.push('\n');
     report.push_str("## Heuristic checks\n\n");
     report.push_str(&format!(
         "- [{}] positive torque everywhere (minimum {:.1} Nm)\n",
@@ -637,6 +817,38 @@ fn rpm_grid(start: f64, end: f64, step: f64) -> Vec<f64> {
     grid
 }
 
+fn load_reference_curve(config_path: &Path) -> Result<Option<Vec<(f64, f64)>>, String> {
+    let stem = config_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("invalid config filename: {}", config_path.display()))?;
+    let reference_path = config_path.with_file_name(format!("{stem}_dyno.tsv"));
+    if !reference_path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&reference_path)
+        .map_err(|e| format!("failed to read {}: {e}", reference_path.display()))?;
+    let mut points = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        if idx == 0 || line.trim().is_empty() {
+            continue;
+        }
+        let cols = line.split('\t').collect::<Vec<_>>();
+        if cols.len() < 2 {
+            return Err(format!(
+                "invalid reference curve row {} in {}",
+                idx + 1,
+                reference_path.display()
+            ));
+        }
+        points.push((
+            parse_f64(cols[0], "reference_rpm")?,
+            parse_f64(cols[1], "reference_torque")?,
+        ));
+    }
+    Ok(Some(points))
+}
+
 fn parse_f64(value: &str, flag: &str) -> Result<f64, String> {
     value
         .parse::<f64>()
@@ -659,6 +871,7 @@ fn usage_text() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -703,12 +916,127 @@ mod tests {
                 air_flow_gps: 0.0,
                 eta_indicated: 0.0,
                 load_cmd: 0.0,
+                ignition_timing_deg: cfg.control_defaults.ignition_timing_deg,
+                vvt_intake_deg: cfg.control_defaults.vvt_intake_deg,
+                vvt_exhaust_deg: cfg.control_defaults.vvt_exhaust_deg,
                 output_subdir: output_dir.join(format!("point_{rpm:.0}")),
             })
             .collect::<Vec<_>>();
-        let assessment = TorqueCurveAssessment::from_results(&synthetic)
+        let assessment = TorqueCurveAssessment::from_results(&synthetic, None)
             .expect("synthetic educational curve should assess");
         assert!(assessment.looks_plausible());
+    }
+
+    #[test]
+    fn assessment_reports_high_rpm_retention_ratio() {
+        let output_dir = unique_temp_dir("cli_retention_ratio");
+        let synthetic = [120.0, 160.0, 200.0, 180.0]
+            .into_iter()
+            .zip([1000.0, 3000.0, 6000.0, 8000.0])
+            .map(|(torque, rpm)| super::SweepPointResult {
+                target_rpm: rpm,
+                mean_rpm: rpm,
+                brake_torque_nm: torque,
+                brake_power_kw: torque * rpm,
+                net_torque_nm: 0.0,
+                load_torque_nm: torque,
+                map_kpa: 101.3,
+                air_flow_gps: 0.0,
+                eta_indicated: 0.0,
+                load_cmd: 0.0,
+                ignition_timing_deg: 22.0,
+                vvt_intake_deg: 10.0,
+                vvt_exhaust_deg: -6.0,
+                output_subdir: output_dir.join(format!("point_{rpm:.0}")),
+            })
+            .collect::<Vec<_>>();
+        let assessment =
+            TorqueCurveAssessment::from_results(&synthetic, None).expect("assessment should work");
+        assert!((assessment.high_rpm_retention_ratio - 0.9).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn representative_metrics_match_saved_regression_file() {
+        let output_dir = unique_temp_dir("cli_metrics_regression");
+        let representative = [
+            (1000.0, 978.429, 44.474815, 4.410748),
+            (2000.0, 1990.464, 187.479901, 39.081020),
+            (3000.0, 2996.215, 187.365514, 58.785547),
+            (4000.0, 4000.650, 185.573233, 77.736887),
+            (5000.0, 5000.677, 134.375173, 70.364384),
+            (6000.0, 6000.158, 138.754783, 87.180618),
+            (7000.0, 6999.332, 108.012848, 79.170253),
+            (8000.0, 8001.184, 60.580158, 50.759256),
+            (8500.0, 8504.926, 39.625496, 35.293936),
+        ]
+        .into_iter()
+        .map(
+            |(target_rpm, mean_rpm, brake_torque_nm, brake_power_kw)| super::SweepPointResult {
+                target_rpm,
+                mean_rpm,
+                brake_torque_nm,
+                brake_power_kw,
+                net_torque_nm: 0.0,
+                load_torque_nm: brake_torque_nm,
+                map_kpa: 101.3,
+                air_flow_gps: 0.0,
+                eta_indicated: 0.0,
+                load_cmd: 0.0,
+                ignition_timing_deg: 22.0,
+                vvt_intake_deg: 10.0,
+                vvt_exhaust_deg: -6.0,
+                output_subdir: output_dir.join(format!("point_{target_rpm:.0}")),
+            },
+        )
+        .collect::<Vec<_>>();
+        let assessment = TorqueCurveAssessment::from_results(&representative, None)
+            .expect("assessment should succeed");
+        super::write_torque_curve_metrics_tsv(&output_dir, &assessment)
+            .expect("metrics TSV should be written");
+        let actual = fs::read_to_string(output_dir.join("torque_curve_metrics.tsv"))
+            .expect("actual metrics file should exist");
+        let expected = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("config")
+                .join("reference_na_i4_metrics_golden.tsv"),
+        )
+        .expect("golden metrics file should exist");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn docs_keep_primary_symbols_and_paths_in_sync() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let model_reference =
+            fs::read_to_string(repo.join("docs").join("MODEL_REFERENCE.md")).expect("model docs");
+        let user_manual =
+            fs::read_to_string(repo.join("docs").join("USER_MANUAL.md")).expect("user docs");
+        for token in [
+            "alpha_th",
+            "p_{im}",
+            "p_{ir}",
+            "p_{em}",
+            "p_{er}",
+            "dot m_{ir}",
+            "dot m_{er}",
+            "src/simulator.rs",
+            "src/cli.rs",
+        ] {
+            assert!(
+                model_reference.contains(token),
+                "MODEL_REFERENCE.md missing {token}"
+            );
+        }
+        for token in [
+            "fixed_input",
+            "torque_curve_metrics.tsv",
+            "torque_curve_assessment.md",
+        ] {
+            assert!(
+                user_manual.contains(token),
+                "USER_MANUAL.md missing {token}"
+            );
+        }
     }
 
     #[test]
@@ -721,6 +1049,37 @@ mod tests {
         ])
         .expect("sweep command should parse");
         assert!(matches!(command, Command::Sweep(_)));
+    }
+
+    #[test]
+    fn fixed_input_sweep_keeps_configured_ignition_and_vvt_commands() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("config")
+            .join("reference_na_i4.yaml");
+        let cfg = load_config(&config_path);
+        let mut sim = crate::simulator::Simulator::new(&cfg);
+        sim.control.spark_cmd = true;
+        sim.control.fuel_cmd = true;
+        sim.control.throttle_cmd = 1.0;
+        sim.seed_operating_point(3_000.0, 1.0, sim.control.ignition_timing_deg);
+        for _ in 0..200 {
+            let _ = sim.step(crate::simulator::accuracy_priority_dt(
+                3_000.0,
+                &sim.numerics,
+            ));
+        }
+        assert_eq!(
+            sim.control.ignition_timing_deg,
+            cfg.control_defaults.ignition_timing_deg
+        );
+        assert_eq!(
+            sim.control.vvt_intake_deg,
+            cfg.control_defaults.vvt_intake_deg
+        );
+        assert_eq!(
+            sim.control.vvt_exhaust_deg,
+            cfg.control_defaults.vvt_exhaust_deg
+        );
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

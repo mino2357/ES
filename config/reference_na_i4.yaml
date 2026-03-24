@@ -24,7 +24,7 @@ engine:
   inertia_kgm2: 0.19
   friction_c0_nm: 9.0
   friction_c1_nms: 0.0100
-  friction_c2_nms2: 0.000090
+  friction_c2_nms2: 0.000055
   intake_volume_m3: 0.0038
   intake_runner_volume_m3: 0.00046
   exhaust_volume_m3: 0.0056
@@ -72,7 +72,7 @@ model:
   lambda_max: 1.02
   eta_base_offset: 0.44
   eta_load_coeff: 0.15
-  eta_rpm_abs_coeff: 0.000045
+  eta_rpm_abs_coeff: 0.000025
   eta_rpm_reference: 5200.0
   eta_base_min: 0.30
   eta_base_max: 0.50
@@ -82,9 +82,10 @@ model:
     heat_loss_fraction_max: 0.08
   volumetric_efficiency:
     rpm_base: 0.80
-    rpm_gain: 0.36
-    rpm_center: 6400.0
+    rpm_gain: 0.42
+    rpm_center: 7000.0
     rpm_width: 7.5e6
+    rpm_high_width_scale: 4.5
     rpm_min: 0.70
     rpm_max: 1.08
     throttle_base: 0.44
@@ -100,13 +101,25 @@ model:
     exhaust_runner_diameter_m: 0.038
     intake_runner_friction_factor: 0.028
     exhaust_runner_friction_factor: 0.032
+    intake_boundary_runner_weight: 0.38
+    intake_boundary_runner_weight_high_rpm: 0.78
+    exhaust_boundary_runner_weight: 0.46
+    exhaust_boundary_runner_weight_high_rpm: 0.72
+    boundary_weight_rpm_center: 5600.0
+    boundary_weight_rpm_width: 1200.0
+    overlap_rpm_decay_center: 4000.0
+    overlap_rpm_decay_width: 1000.0
   wave_action:
     intake_runner_length_m: 0.36
     exhaust_primary_length_m: 0.82
-    intake_pressure_gain: 0.05
-    exhaust_pressure_gain: 0.06
-    intake_ram_gain: 0.18
-    exhaust_scavenge_gain: 0.12
+    intake_pressure_gain: 0.12
+    exhaust_pressure_gain: 0.05
+    intake_ram_gain: 0.42
+    exhaust_scavenge_gain: 0.10
+    ve_pulse_max: 1.12
+  internal_egr:
+    rpm_decay_center: 3800.0
+    rpm_decay_width: 900.0
   external_load:
     mode: brake_map
     base_torque_nm: 30.0

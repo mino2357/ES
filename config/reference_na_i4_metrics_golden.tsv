@@ -1,0 +1,10 @@
+metric	value
+peak_brake_torque_nm	187.479901
+peak_torque_rpm	1990.464000
+peak_brake_power_kw	87.180618
+peak_power_rpm	6000.158000
+low_to_peak_gain_nm	143.005086
+peak_to_high_drop_nm	147.854405
+high_rpm_retention_ratio	0.323428
+monotonic_before_peak_ratio	1.000000
+monotonic_after_peak_ratio	1.000000
