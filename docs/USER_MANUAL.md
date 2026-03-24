@@ -19,7 +19,7 @@ cargo run --release -- sweep \
   --diagnostic-samples 180
 ```
 
-This is the repository's recommended reference run when you want a dyno-style naturally aspirated 2.0 L brake torque curve while keeping the YAML-defined ignition and VVT inputs fixed and letting only the documented ODE system settle.
+This is the repository's recommended reference run when you want a dyno-style naturally aspirated 2.0 L brake torque curve while keeping the YAML-defined ignition timing, VVT, fuel enable, and spark enable inputs fixed and letting only the documented ODE system settle. In the generated `run_manifest.yaml` this appears as `input_mode: fixed_input`.
 
 ## 3. Why the CLI reports brake torque
 
@@ -49,6 +49,9 @@ Columns:
 - `air_flow_gps`
 - `eta_indicated`
 - `load_cmd`
+- `ignition_timing_deg`
+- `vvt_intake_deg`
+- `vvt_exhaust_deg`
 - `output_dir`
 
 ### 4.2 `point_XXXXrpm/summary.tsv`
@@ -65,6 +68,24 @@ Per-point summary columns:
 - `air_flow_gps`
 - `eta_indicated`
 
+### 4.4 `torque_curve_metrics.tsv`
+
+Scalar torque-shape metrics exported from the fixed-input sweep:
+The same run also writes `torque_curve_assessment.md`, a Markdown audit note that explains why the fixed-input curve does or does not resemble a plausible naturally aspirated full-load shape.
+
+
+- `peak_brake_torque_nm`
+- `peak_torque_rpm`
+- `peak_brake_power_kw`
+- `peak_power_rpm`
+- `low_to_peak_gain_nm`
+- `peak_to_high_drop_nm`
+- `high_rpm_retention_ratio` with `r_hi = tau(8000 rpm) / tau_max`
+- `monotonic_before_peak_ratio`
+- `monotonic_after_peak_ratio`
+
+These metrics are designed for regression testing and for identifying whether a shape problem comes from low-speed build, mid-range peak placement, or excessive high-rpm falloff.
+
 ### 4.3 Diagnostic traces
 
 Each `point_XXXXrpm/` directory also contains:
@@ -78,24 +99,36 @@ Each `point_XXXXrpm/` directory also contains:
 The current checked-in reference case is intentionally only an **approximate** match to a generic high-rev naturally aspirated torque trend.
 Its goal is to reproduce the broad naturally aspirated high-rev trend using the documented reduced-order model and plausible constants.
 
-Representative result from the recommended command above:
+Representative result from a short regression sweep (`rpm-step = 1000`, `settle-time = 0.08 s`, `average-time = 0.04 s`):
 
 | Mean rpm | Brake torque [Nm] | Brake power [kW] | Net torque [Nm] |
 |---:|---:|---:|---:|
-| 1005 | 157.6 | 16.6 | 16.3 |
-| 1999 | 134.3 | 28.1 | 15.5 |
-| 2999 | 173.0 | 54.3 | 8.9 |
-| 4002 | 178.5 | 74.8 | 6.8 |
-| 5000 | 149.4 | 78.2 | 4.4 |
-| 6000 | 158.5 | 99.6 | 4.6 |
-| 6999 | 141.6 | 103.8 | 3.4 |
-| 7999 | 92.9 | 77.8 | 2.0 |
-| 8499 | 68.4 | 60.9 | 1.1 |
+| 978 | 44.5 | 4.4 | 25.1 |
+| 1990 | 187.5 | 39.1 | 28.9 |
+| 2996 | 187.4 | 58.8 | 19.3 |
+| 4001 | 185.6 | 77.7 | 13.2 |
+| 5001 | 134.4 | 70.4 | 6.4 |
+| 6000 | 138.8 | 87.2 | 5.4 |
+| 6999 | 108.0 | 79.2 | 3.5 |
+| 8001 | 60.6 | 50.8 | -1.4 |
+| 8505 | 39.6 | 35.3 | -3.1 |
+
+Representative torque-shape metrics from the same fixed_input sweep:
+
+| Metric | Value |
+|---|---:|
+| Peak brake torque rpm | 1990 rpm |
+| Peak brake power rpm | 6000 rpm |
+| Low-to-peak gain | 143.0 Nm |
+| Peak-to-high drop | 147.9 Nm |
+| High-rpm retention ratio `r_hi` | 0.323 |
+| Pre-peak monotonicity | 1.000 |
+| Post-peak monotonicity | 1.000 |
 
 Interpretation:
 
-- the model currently captures a positive WOT brake curve and a power peak after the torque peak
-- high-rpm torque retention remains the weakest part of the current reference sweep, so closing that gap requires revisiting the mathematical model and the missing high-speed gas-exchange physics
+- the updated closure set improves high-rpm retention compared with the previous fixed-input reference run because the cylinder boundary pressure follows runner pressure more strongly at high speed and the high-rpm side of `VE_base` decays more slowly
+- the same run still peaks too early for a true high-rev NA 2.0 L reference, which indicates that further work is still needed in combustion phasing, trapped-residual modeling, and possibly fueling / lambda treatment rather than adding any hidden helper or torque remap
 - the documentation keeps this mismatch explicit so further calibration can be traced back to the exact model terms involved
 
 ## 6. gnuplot example

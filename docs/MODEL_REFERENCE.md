@@ -58,7 +58,7 @@ For the CLI artifacts, the exported dyno-style brake quantity is
 \tau_{brake} = \tau_{net} + \tau_{load}
 ```
 
-which matches a speed-held dynamometer interpretation better than reporting `tau_net` alone.
+which matches a speed-held dynamometer interpretation better than reporting `tau_net` alone. The CLI writes both a fixed-input sweep result table and the derived metrics files `torque_curve_metrics.tsv` / `torque_curve_assessment.md`; the checked-in workflow uses `input_mode: fixed_input`.
 
 ## Literature Anchors
 
@@ -168,6 +168,118 @@ p_{er} \\
 
 This is the full differential system actually integrated by the realtime solver.
 Everything else described later in this document enters through the algebraic closure vector `z(x,u)`.
+
+
+## Torque-Shape Decomposition
+
+At a fixed speed-held operating point, the reported brake torque is
+
+```math
+\tau_{brake}=\tau_{comb}-\tau_{fric}-\tau_{pump}
+```
+
+because the dynamometer load is added back in the exported brake quantity after the ODE solves
+
+```math
+\tau_{net}=\tau_{comb}-\tau_{fric}-\tau_{pump}-\tau_{load}.
+```
+
+The principal shape-setting closures are therefore:
+
+```math
+VE_{eff}=VE_{base}(N,VVT_i,VVT_e,\alpha_{th})\,M_{ov}(N,p_{ir},p_{er},\dot m_{er})\,M_{wave}(N,p_{wave,i},p_{wave,e})
+```
+
+```math
+m_{air,cyl}=\frac{V_d}{n_c}\frac{VE_{eff} p_{ic}}{R T_{ch}}
+```
+
+```math
+\eta_{th}=\operatorname{clip}\left(\eta_{th,base}(N,\lambda,load)\,M_{phase}(\theta_{ign},EGR_i)-\frac{Q_{loss}}{m_f LHV},\,\eta_{min},\eta_{max}\right)
+```
+
+```math
+\tau_{comb}=\frac{n_c}{4\pi}m_f LHV\,\eta_{th}\,\dot x_b(\theta)
+```
+
+```math
+\tau_{fric}=c_0+c_1\omega+c_2\omega^2
+```
+
+```math
+\tau_{pump}=\frac{(p_{ec}-p_{ic})V_d}{4\pi}
+```
+
+where `N` is engine speed in rpm, `V_d` is displacement, `n_c` is cylinder count, `p_{ic}` / `p_{ec}` are reconstructed intake / exhaust cylinder boundary pressures, `T_{ch}` is mixed charge temperature, and `EGR_i` is the internal residual fraction.
+
+### Current Closure Forms
+
+The present Rust implementation uses the following explicit algebraic forms.
+
+1. **Base volumetric efficiency**
+
+```math
+VE_{base}=\operatorname{clip}\left[\left(VE_0+\Delta VE\exp\left(-\frac{(N-N_c)^2}{W(N)}\right)\right) M_{VVT} M_{th},VE_{min},VE_{max}\right]
+```
+
+with `W(N) = rpm_width` for `N < N_c` and `W(N) = rpm_width * rpm_high_width_scale` for `N \ge N_c`, so the high-rpm side can decay more slowly than the low-rpm side.
+
+2. **Overlap multiplier**
+
+```math
+M_{ov}=\operatorname{clip}\left[1+\phi_{ov} S_{ov}(N)\left(c_{p,ov}\frac{p_{ir}-p_{er}}{p_a}+c_{\dot m,ov}\frac{\dot m_{er}}{\dot m_{ov,ref}}\right),M_{ov,min},M_{ov,max}\right]
+```
+
+where `\phi_{ov}` is the overlap lift fraction at `360 degCA` and `S_{ov}(N)=1/(1+\exp((N-N_{ov})/W_{ov}))` attenuates overlap penalty at high speed instead of letting low-speed backflow dominate the whole sweep.
+
+3. **Wave-action multiplier**
+
+```math
+M_{wave}=M_{ram}M_{scav}
+```
+
+```math
+M_{ram}=1+k_{ram}\frac{p_{wave,i}^{close}}{p_a}, \qquad
+M_{scav}=1+k_{scav}\frac{p_{wave,i}^{ov}-p_{wave,e}^{ov}}{p_a}
+```
+
+with both wave pressures reconstructed from the documented event-memory runner model; no separate runtime or post-hoc torque remap is used.
+
+4. **Internal EGR surrogate inside the closure vector**
+
+```math
+EGR_i=\operatorname{clip}\left[\phi_{ov} S_{egr}(N)\left(f_0+k_p\Pi_{back}+k_w\Pi_{wave}+k_r\Pi_{rev}\right),EGR_{min},EGR_{max}\right]
+```
+
+where `S_{egr}(N)=1/(1+\exp((N-N_{egr})/W_{egr}))`, `\Pi_{back}=\max((p_{er}-p_{ir})/p_a,0)`, `\Pi_{wave}=\max(-(p_{wave,i}^{ov}-p_{wave,e}^{ov})/p_a,0)`, and `\Pi_{rev}=\max(-\dot m_{er}/\dot m_{rev,ref},0)`.
+
+5. **Boundary-pressure reconstruction**
+
+```math
+p_{ic}=(1-w_i(N))p_{im}+w_i(N)p_{ir}+p_{wave,i}^{close}
+```
+
+```math
+p_{ec}=(1-w_e(N))p_{em}+w_e(N)p_{er}+p_{wave,e}^{ov}
+```
+
+with logistic runner weighting `w_i(N), w_e(N)` so the cylinder boundary follows the runner more strongly at high rpm, which directly reduces artificial high-speed filling collapse from over-plenum-weighted pressure reconstruction.
+
+6. **Heat loss**
+
+```math
+Q_{loss}=h_w A_w (T_g-T_w)\,\Delta t_{burn}
+```
+
+with Woschni-style pressure, temperature, and piston-speed exponents in `h_w`. This term subtracts from indicated efficiency rather than being hidden in a post-hoc torque correction.
+
+7. **Dyno load coupling**
+
+```math
+\tau_{load}=\tau_{dyno}(u_{load},\omega)
+```
+
+The speed-hold loop changes only `u_load`; it does not modify `	heta_{ign}`, `VVT_i`, `VVT_e`, `u_{spark}`, or `u_{fuel}` during the fixed-input sweep.
 
 ## Governing Differential Equations
 
